@@ -13,30 +13,37 @@
  */
 package com.facebook.presto.raptor.metadata;
 
+import com.facebook.airlift.configuration.AbstractConfigurationAwareModule;
+import com.facebook.airlift.dbpool.H2EmbeddedDataSourceModule;
+import com.facebook.airlift.dbpool.MySqlDataSource;
+import com.facebook.airlift.dbpool.MySqlDataSourceConfig;
+import com.facebook.airlift.discovery.client.ServiceDescriptor;
+import com.facebook.airlift.discovery.client.testing.StaticServiceSelector;
+import com.facebook.presto.raptor.RaptorMetadataFactory;
+import com.facebook.presto.raptor.RaptorTableProperties;
 import com.facebook.presto.raptor.util.DaoSupplier;
 import com.google.common.reflect.TypeParameter;
 import com.google.common.reflect.TypeToken;
 import com.google.inject.Binder;
-import com.google.inject.Inject;
 import com.google.inject.Injector;
 import com.google.inject.Key;
-import com.google.inject.Provider;
+import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.TypeLiteral;
-import io.airlift.configuration.AbstractConfigurationAwareModule;
-import io.airlift.dbpool.H2EmbeddedDataSourceModule;
-import io.airlift.dbpool.MySqlDataSourceModule;
 import org.skife.jdbi.v2.IDBI;
 import org.skife.jdbi.v2.tweak.ConnectionFactory;
 
+import javax.inject.Inject;
+import javax.inject.Provider;
 import javax.inject.Singleton;
 import javax.sql.DataSource;
 
-import java.lang.annotation.Annotation;
 import java.lang.reflect.Type;
 
-import static com.facebook.presto.raptor.util.ConditionalModule.installIfPropertyEquals;
+import static com.facebook.airlift.configuration.ConditionalModule.installModuleIf;
+import static com.facebook.airlift.configuration.ConfigBinder.configBinder;
+import static com.facebook.airlift.discovery.client.ServiceDescriptor.serviceDescriptor;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
 
@@ -46,7 +53,24 @@ public class DatabaseMetadataModule
     @Override
     protected void setup(Binder binder)
     {
-        bindDataSource("metadata", ForMetadata.class);
+        install(installModuleIf(
+                DatabaseConfig.class,
+                config -> "mysql".equals(config.getDatabaseType()),
+                innerBinder -> {
+                    binder.install(new MySqlDataSourceModule());
+                    bindDaoSupplier(innerBinder, ShardDao.class, MySqlShardDao.class);
+                }));
+
+        install(installModuleIf(
+                DatabaseConfig.class,
+                config -> "h2".equals(config.getDatabaseType()),
+                innerBinder -> {
+                    binder.install(new H2EmbeddedDataSourceModule("metadata", ForMetadata.class));
+                    bindDaoSupplier(binder, ShardDao.class, H2ShardDao.class);
+                }));
+
+        binder.bind(RaptorMetadataFactory.class).in(Scopes.SINGLETON);
+        binder.bind(RaptorTableProperties.class).in(Scopes.SINGLETON);
     }
 
     @ForMetadata
@@ -55,21 +79,6 @@ public class DatabaseMetadataModule
     public ConnectionFactory createConnectionFactory(@ForMetadata DataSource dataSource)
     {
         return dataSource::getConnection;
-    }
-
-    private void bindDataSource(String type, Class<? extends Annotation> annotation)
-    {
-        String property = type + ".db.type";
-
-        install(installIfPropertyEquals(property, "mysql", binder -> {
-            binder.install(new MySqlDataSourceModule(type, annotation));
-            bindDaoSupplier(binder, ShardDao.class, MySqlShardDao.class);
-        }));
-
-        install(installIfPropertyEquals(property, "h2", binder -> {
-            binder.install(new H2EmbeddedDataSourceModule(type, annotation));
-            bindDaoSupplier(binder, ShardDao.class, H2ShardDao.class);
-        }));
     }
 
     public static <B, T extends B> void bindDaoSupplier(Binder binder, Class<B> baseType, Class<T> type)
@@ -111,6 +120,32 @@ public class DatabaseMetadataModule
             checkState(injector != null, "injector was not set");
             IDBI dbi = injector.getInstance(Key.get(IDBI.class, ForMetadata.class));
             return new DaoSupplier<>(dbi, type);
+        }
+    }
+
+    private static class MySqlDataSourceModule
+            implements Module
+    {
+        @Override
+        public void configure(Binder binder)
+        {
+            configBinder(binder).bindConfig(JdbcDatabaseConfig.class);
+            configBinder(binder).bindConfig(MySqlDataSourceConfig.class, ForMetadata.class, "metadata");
+            configBinder(binder).bindConfigDefaults(MySqlDataSourceConfig.class, ForMetadata.class, config -> {
+                config.setMaxConnections(100);
+                config.setDefaultFetchSize(1000);
+            });
+        }
+
+        @ForMetadata
+        @Singleton
+        @Provides
+        DataSource createDataSource(JdbcDatabaseConfig config, @ForMetadata MySqlDataSourceConfig mysqlConfig)
+        {
+            ServiceDescriptor descriptor = serviceDescriptor("mysql")
+                    .addProperty("jdbc", config.getUrl())
+                    .build();
+            return new MySqlDataSource(new StaticServiceSelector(descriptor), mysqlConfig);
         }
     }
 }

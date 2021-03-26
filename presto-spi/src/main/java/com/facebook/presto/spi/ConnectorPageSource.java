@@ -13,24 +13,28 @@
  */
 package com.facebook.presto.spi;
 
+import com.facebook.presto.common.Page;
+
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.concurrent.CompletableFuture;
 
 public interface ConnectorPageSource
         extends Closeable
 {
-    /**
-     * Gets the total input bytes that will be processed by this page source.
-     * This is normally the same size as the split.  If size is not available,
-     * this method should return zero.
-     */
-    long getTotalBytes();
+    CompletableFuture<?> NOT_BLOCKED = CompletableFuture.completedFuture(null);
 
     /**
      * Gets the number of input bytes processed by this page source so far.
      * If size is not available, this method should return zero.
      */
     long getCompletedBytes();
+
+    /**
+     * Gets the number of input rows processed by this page source so far.
+     * If number is not available, this method should return zero.
+     */
+    long getCompletedPositions();
 
     /**
      * Gets the wall time this page source spent reading data from the input.
@@ -49,10 +53,10 @@ public interface ConnectorPageSource
     Page getNextPage();
 
     /**
-     * Get the total memory that needs to be reserved in the system memory pool.
+     * Get the total memory that needs to be reserved in the general memory pool.
      * This memory should include any buffers, etc. that are used for reading data.
      *
-     * @return the system memory used so far in table read
+     * @return the memory used so far in table read
      */
     long getSystemMemoryUsage();
 
@@ -62,4 +66,14 @@ public interface ConnectorPageSource
     @Override
     void close()
             throws IOException;
+
+    /**
+     * Returns a future that will be completed when the page source becomes
+     * unblocked.  If the page source is not blocked, this method should return
+     * {@code NOT_BLOCKED}.
+     */
+    default CompletableFuture<?> isBlocked()
+    {
+        return NOT_BLOCKED;
+    }
 }

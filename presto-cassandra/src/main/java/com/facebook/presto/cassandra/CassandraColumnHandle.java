@@ -14,9 +14,9 @@
 package com.facebook.presto.cassandra;
 
 import com.facebook.presto.cassandra.util.CassandraCqlUtils;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
-import com.facebook.presto.spi.type.Type;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.MoreObjects.ToStringHelper;
@@ -33,8 +33,6 @@ import static java.util.Objects.requireNonNull;
 public class CassandraColumnHandle
         implements ColumnHandle
 {
-    public static final String SAMPLE_WEIGHT_COLUMN_NAME = "presto_sample_weight";
-
     private final String connectorId;
     private final String name;
     private final int ordinalPosition;

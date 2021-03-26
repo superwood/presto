@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.operator.aggregation;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.StandardTypes;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
 
@@ -68,6 +68,7 @@ public class TestLongMaxNAggregation
         testCustomAggregation(new Long[] {1L, 2L, null, 3L}, 5);
         testInvalidAggregation(new Long[] {1L, 2L, 3L}, 0);
         testInvalidAggregation(new Long[] {1L, 2L, 3L}, -1);
+        testInvalidAggregation(new Long[] {1L, 2L, 3L}, 10001);
     }
 
     private void testInvalidAggregation(Long[] x, int n)
@@ -82,7 +83,7 @@ public class TestLongMaxNAggregation
 
     private void testCustomAggregation(Long[] values, int n)
     {
-        PriorityQueue<Long> heap = new PriorityQueue<Long>(n);
+        PriorityQueue<Long> heap = new PriorityQueue<>(n);
         Arrays.stream(values).filter(x -> x != null).forEach(heap::add);
         Long[] expected = new Long[heap.size()];
         for (int i = heap.size() - 1; i >= 0; i--) {

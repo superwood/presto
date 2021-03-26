@@ -13,14 +13,14 @@
  */
 package com.facebook.presto.execution;
 
+import com.facebook.airlift.configuration.testing.ConfigAssertions;
 import com.facebook.presto.execution.scheduler.NodeSchedulerConfig;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.configuration.testing.ConfigAssertions;
 import org.testng.annotations.Test;
 
 import java.util.Map;
 
-import static com.facebook.presto.execution.scheduler.NodeSchedulerConfig.LEGACY_NETWORK_TOPOLOGY;
+import static com.facebook.presto.execution.scheduler.NodeSchedulerConfig.NetworkTopologyType.LEGACY;
 
 public class TestNodeSchedulerConfig
 {
@@ -28,12 +28,12 @@ public class TestNodeSchedulerConfig
     public void testDefaults()
     {
         ConfigAssertions.assertRecordedDefaults(ConfigAssertions.recordDefaults(NodeSchedulerConfig.class)
-                .setNetworkTopology(LEGACY_NETWORK_TOPOLOGY)
+                .setNetworkTopology(LEGACY)
                 .setMinCandidates(10)
                 .setMaxSplitsPerNode(100)
-                .setMaxPendingSplitsPerNodePerTask(10)
-                .setIncludeCoordinator(true)
-                .setMultipleTasksPerNodeEnabled(false));
+                .setMaxPendingSplitsPerTask(10)
+                .setMaxUnacknowledgedSplitsPerTask(500)
+                .setIncludeCoordinator(true));
     }
 
     @Test
@@ -43,17 +43,17 @@ public class TestNodeSchedulerConfig
                 .put("node-scheduler.network-topology", "flat")
                 .put("node-scheduler.min-candidates", "11")
                 .put("node-scheduler.include-coordinator", "false")
-                .put("node-scheduler.max-pending-splits-per-node-per-task", "11")
+                .put("node-scheduler.max-pending-splits-per-task", "11")
+                .put("node-scheduler.max-unacknowledged-splits-per-task", "501")
                 .put("node-scheduler.max-splits-per-node", "101")
-                .put("node-scheduler.multiple-tasks-per-node-enabled", "true")
                 .build();
 
         NodeSchedulerConfig expected = new NodeSchedulerConfig()
                 .setNetworkTopology("flat")
                 .setIncludeCoordinator(false)
-                .setMultipleTasksPerNodeEnabled(true)
                 .setMaxSplitsPerNode(101)
-                .setMaxPendingSplitsPerNodePerTask(11)
+                .setMaxPendingSplitsPerTask(11)
+                .setMaxUnacknowledgedSplitsPerTask(501)
                 .setMinCandidates(11);
 
         ConfigAssertions.assertFullMapping(properties, expected);

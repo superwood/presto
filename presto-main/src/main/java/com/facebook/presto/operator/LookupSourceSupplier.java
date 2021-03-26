@@ -13,22 +13,17 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.type.Type;
-import com.google.common.util.concurrent.ListenableFuture;
-
-import java.util.List;
+import java.util.function.Supplier;
 
 public interface LookupSourceSupplier
+        extends Supplier<LookupSource>
 {
-    List<Type> getTypes();
+    long getHashCollisions();
 
-    ListenableFuture<LookupSource> getLookupSource(OperatorContext operatorContext);
+    double getExpectedHashCollisions();
 
     /**
-     * NOTE: LookupSourceSupplier must be reference counted, because some of them own a SharedLookupSource.
-     * Ideally, that would be owned by the pipeline instead.
+     * @return checksum of this entity for heuristic checking equivalence of two instances
      */
-    void retain();
-
-    void release();
+    long checksum();
 }

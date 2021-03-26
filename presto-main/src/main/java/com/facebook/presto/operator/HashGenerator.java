@@ -13,23 +13,18 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.Page;
-
-import static com.google.common.base.Preconditions.checkState;
+import com.facebook.presto.common.Page;
 
 public interface HashGenerator
 {
-    int hashPosition(int position, Page page);
+    long hashPosition(int position, Page page);
 
     default int getPartition(int partitionCount, int position, Page page)
     {
-        int rawHash = hashPosition(position, page);
+        long rawHash = hashPosition(position, page);
 
-        // clear the sign bit
-        rawHash &= 0x7fff_ffffL;
-
-        int partition = rawHash % partitionCount;
-        checkState(partition >= 0 && partition < partitionCount);
-        return partition;
+        // This function reduces the 64 bit rawHash to [0, partitionCount) uniformly. It first reduces the rawHash to 32 bit
+        // integer x then normalize it to x / 2^32 * partitionCount to reduce the range of x from [0, 2^32) to [0, partitionCount)
+        return (int) ((Integer.toUnsignedLong(Long.hashCode(rawHash)) * partitionCount) >> 32);
     }
 }

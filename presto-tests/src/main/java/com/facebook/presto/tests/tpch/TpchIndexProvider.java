@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.tests.tpch;
 
+import com.facebook.presto.common.predicate.NullableValue;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorIndex;
 import com.facebook.presto.spi.ConnectorIndexHandle;
@@ -20,9 +23,6 @@ import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.RecordSet;
 import com.facebook.presto.spi.connector.ConnectorIndexProvider;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.predicate.NullableValue;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.split.MappedRecordSet;
 import com.facebook.presto.tpch.TpchColumnHandle;
 import com.google.common.base.Function;
@@ -33,7 +33,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static com.facebook.presto.util.Types.checkType;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
@@ -57,7 +56,7 @@ public class TpchIndexProvider
             List<ColumnHandle> lookupSchema,
             List<ColumnHandle> outputSchema)
     {
-        TpchIndexHandle tpchIndexHandle = checkType(indexHandle, TpchIndexHandle.class, "indexHandle");
+        TpchIndexHandle tpchIndexHandle = (TpchIndexHandle) indexHandle;
 
         Map<ColumnHandle, NullableValue> fixedValues = TupleDomain.extractFixedValues(tpchIndexHandle.getFixedValues()).get();
         checkArgument(lookupSchema.stream().noneMatch(handle -> fixedValues.keySet().contains(handle)),
@@ -109,7 +108,7 @@ public class TpchIndexProvider
     static List<String> handleToNames(List<ColumnHandle> columnHandles)
     {
         return columnHandles.stream()
-                .map(handle -> checkType(handle, TpchColumnHandle.class, "column"))
+                .map(TpchColumnHandle.class::cast)
                 .map(TpchColumnHandle::getColumnName)
                 .collect(toList());
     }

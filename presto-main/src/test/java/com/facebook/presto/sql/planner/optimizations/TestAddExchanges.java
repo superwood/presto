@@ -13,12 +13,11 @@
  */
 package com.facebook.presto.sql.planner.optimizations;
 
+import com.facebook.presto.common.block.SortOrder;
 import com.facebook.presto.spi.ConstantProperty;
 import com.facebook.presto.spi.GroupingProperty;
 import com.facebook.presto.spi.SortingProperty;
-import com.facebook.presto.spi.block.SortOrder;
-import com.facebook.presto.sql.planner.PartitionFunctionBinding.PartitionFunctionArgumentBinding;
-import com.facebook.presto.sql.planner.Symbol;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.planner.optimizations.ActualProperties.Global;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -32,21 +31,25 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
-import static com.facebook.presto.spi.block.SortOrder.ASC_NULLS_FIRST;
+import static com.facebook.presto.common.block.SortOrder.ASC_NULLS_FIRST;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.FIXED_HASH_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.optimizations.ActualProperties.Global.arbitraryPartition;
 import static com.facebook.presto.sql.planner.optimizations.ActualProperties.Global.partitionedOn;
 import static com.facebook.presto.sql.planner.optimizations.ActualProperties.Global.singleStreamPartition;
 import static com.facebook.presto.sql.planner.optimizations.ActualProperties.builder;
 import static com.facebook.presto.sql.planner.optimizations.AddExchanges.streamingExecutionPreference;
-import static com.facebook.presto.util.ImmutableCollectors.toImmutableList;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static org.testng.Assert.assertEquals;
 
+/**
+ * These are unit test for the internal logic in AddExchanges.
+ * For plan tests see {@link TestAddExchangesPlans}
+ */
 public class TestAddExchanges
 {
     @Test
     public void testPickLayoutAnyPreference()
-            throws Exception
     {
         Comparator<ActualProperties> preference = streamingExecutionPreference(PreferredProperties.any());
 
@@ -82,7 +85,6 @@ public class TestAddExchanges
 
     @Test
     public void testPickLayoutPartitionedPreference()
-            throws Exception
     {
         Comparator<ActualProperties> preference = streamingExecutionPreference(PreferredProperties.distributed());
 
@@ -144,7 +146,6 @@ public class TestAddExchanges
 
     @Test
     public void testPickLayoutUnpartitionedPreference()
-            throws Exception
     {
         Comparator<ActualProperties> preference = streamingExecutionPreference(PreferredProperties.undistributed());
 
@@ -206,10 +207,9 @@ public class TestAddExchanges
 
     @Test
     public void testPickLayoutPartitionedOnSingle()
-            throws Exception
     {
         Comparator<ActualProperties> preference = streamingExecutionPreference(
-                PreferredProperties.partitioned(ImmutableSet.of(symbol("a"))));
+                PreferredProperties.partitioned(ImmutableSet.of(variable("a"))));
 
         List<ActualProperties> input = ImmutableList.<ActualProperties>builder()
                 .add(builder()
@@ -269,10 +269,9 @@ public class TestAddExchanges
 
     @Test
     public void testPickLayoutPartitionedOnMultiple()
-            throws Exception
     {
         Comparator<ActualProperties> preference = streamingExecutionPreference(
-                PreferredProperties.partitioned(ImmutableSet.of(symbol("a"), symbol("b"))));
+                PreferredProperties.partitioned(ImmutableSet.of(variable("a"), variable("b"))));
 
         List<ActualProperties> input = ImmutableList.<ActualProperties>builder()
                 .add(builder()
@@ -338,7 +337,6 @@ public class TestAddExchanges
 
     @Test
     public void testPickLayoutGrouped()
-            throws Exception
     {
         Comparator<ActualProperties> preference = streamingExecutionPreference
                 (PreferredProperties.local(ImmutableList.of(grouped("a"))));
@@ -407,7 +405,6 @@ public class TestAddExchanges
 
     @Test
     public void testPickLayoutGroupedMultiple()
-            throws Exception
     {
         Comparator<ActualProperties> preference = streamingExecutionPreference
                 (PreferredProperties.local(ImmutableList.of(grouped("a", "b"))));
@@ -476,7 +473,6 @@ public class TestAddExchanges
 
     @Test
     public void testPickLayoutGroupedMultipleProperties()
-            throws Exception
     {
         Comparator<ActualProperties> preference = streamingExecutionPreference
                 (PreferredProperties.local(ImmutableList.of(grouped("a"), grouped("b"))));
@@ -545,7 +541,6 @@ public class TestAddExchanges
 
     @Test
     public void testPickLayoutGroupedWithSort()
-            throws Exception
     {
         Comparator<ActualProperties> preference = streamingExecutionPreference
                 (PreferredProperties.local(ImmutableList.of(grouped("a"), sorted("b", ASC_NULLS_FIRST))));
@@ -614,7 +609,6 @@ public class TestAddExchanges
 
     @Test
     public void testPickLayoutUnpartitionedWithGroupAndSort()
-            throws Exception
     {
         Comparator<ActualProperties> preference = streamingExecutionPreference
                 (PreferredProperties.undistributedWithLocal(ImmutableList.of(grouped("a"), sorted("b", ASC_NULLS_FIRST))));
@@ -683,11 +677,10 @@ public class TestAddExchanges
 
     @Test
     public void testPickLayoutPartitionedWithGroup()
-            throws Exception
     {
         Comparator<ActualProperties> preference = streamingExecutionPreference
                 (PreferredProperties.partitionedWithLocal(
-                        ImmutableSet.of(symbol("a")),
+                        ImmutableSet.of(variable("a")),
                         ImmutableList.of(grouped("a"))));
 
         List<ActualProperties> input = ImmutableList.<ActualProperties>builder()
@@ -766,44 +759,38 @@ public class TestAddExchanges
 
     public static Global singleStream()
     {
-        return streamPartitionedOn(ImmutableList.of());
+        return Global.streamPartitionedOn(ImmutableList.of());
     }
 
     private static Global streamPartitionedOn(String... columnNames)
     {
-        return streamPartitionedOn(arguments(columnNames));
+        return Global.streamPartitionedOn(arguments(columnNames));
     }
 
-    public static Global streamPartitionedOn(List<PartitionFunctionArgumentBinding> partitionColumns)
+    private static ConstantProperty<VariableReferenceExpression> constant(String column)
     {
-        return Global.streamPartitionedOn(partitionColumns);
+        return new ConstantProperty<>(variable(column));
     }
 
-    private static ConstantProperty<Symbol> constant(String column)
+    private static GroupingProperty<VariableReferenceExpression> grouped(String... columns)
     {
-        return new ConstantProperty<>(symbol(column));
+        return new GroupingProperty<>(Lists.transform(Arrays.asList(columns), column -> new VariableReferenceExpression(column, BIGINT)));
     }
 
-    private static GroupingProperty<Symbol> grouped(String... columns)
+    private static SortingProperty<VariableReferenceExpression> sorted(String column, SortOrder order)
     {
-        return new GroupingProperty<>(Lists.transform(Arrays.asList(columns), Symbol::new));
+        return new SortingProperty<>(variable(column), order);
     }
 
-    private static SortingProperty<Symbol> sorted(String column, SortOrder order)
+    private static VariableReferenceExpression variable(String name)
     {
-        return new SortingProperty<>(symbol(column), order);
+        return new VariableReferenceExpression(name, BIGINT);
     }
 
-    private static Symbol symbol(String name)
-    {
-        return new Symbol(name);
-    }
-
-    private static List<PartitionFunctionArgumentBinding> arguments(String[] columnNames)
+    private static List<VariableReferenceExpression> arguments(String[] columnNames)
     {
         return Arrays.asList(columnNames).stream()
-                .map(Symbol::new)
-                .map(PartitionFunctionArgumentBinding::new)
+                .map(column -> new VariableReferenceExpression(column, BIGINT))
                 .collect(toImmutableList());
     }
 }

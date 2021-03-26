@@ -13,21 +13,19 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.metadata.OperatorType;
-import com.facebook.presto.operator.Description;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.aggregation.TypedSet;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.type.SqlType;
+import com.facebook.presto.spi.function.Description;
+import com.facebook.presto.spi.function.ScalarFunction;
+import com.facebook.presto.spi.function.SqlType;
+import com.facebook.presto.spi.function.TypeParameter;
+import com.facebook.presto.type.TypeUtils;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 
-import java.lang.invoke.MethodHandle;
-
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 
 @ScalarFunction("array_distinct")
 @Description("Remove duplicate values from the given array")
@@ -37,17 +35,15 @@ public final class ArrayDistinctFunction
 
     @TypeParameter("E")
     @SqlType("array(E)")
-    public static Block distinct(
-            @OperatorDependency(operator = OperatorType.EQUAL, returnType = StandardTypes.BOOLEAN, argumentTypes = {"E", "E"}) MethodHandle equals,
-            @TypeParameter("E") Type type,
-            @SqlType("array(E)") Block array)
+    public static Block distinct(@TypeParameter("E") Type type, @SqlType("array(E)") Block array)
     {
-        if (array.getPositionCount() < 2) {
+        int arrayLength = array.getPositionCount();
+        if (arrayLength < 2) {
             return array;
         }
 
-        if (array.getPositionCount() == 2) {
-            if (type.equalTo(array, 0, array, 1)) {
+        if (arrayLength == 2) {
+            if (TypeUtils.positionEqualsPosition(type, array, 0, array, 1)) {
                 return array.getSingleValueBlock(0);
             }
             else {
@@ -55,12 +51,56 @@ public final class ArrayDistinctFunction
             }
         }
 
-        TypedSet typedSet = new TypedSet(type, array.getPositionCount());
-        BlockBuilder distinctElementBlockBuilder = type.createBlockBuilder(new BlockBuilderStatus(), array.getPositionCount());
-        for (int i = 0; i < array.getPositionCount(); i++) {
-            if (!typedSet.contains(array, i)) {
-                typedSet.add(array, i);
-                type.appendTo(array, i, distinctElementBlockBuilder);
+        TypedSet typedSet = new TypedSet(type, arrayLength, "array_distinct");
+        BlockBuilder distinctElementBlockBuilder;
+
+        if (array.mayHaveNull()) {
+            int firstDuplicatePosition = 0;
+            // Keep adding the element to the set as long as there are no dupes.
+            while (firstDuplicatePosition < arrayLength && typedSet.add(array, firstDuplicatePosition)) {
+                firstDuplicatePosition++;
+            }
+
+            if (firstDuplicatePosition == arrayLength) {
+                // All elements are distinct, so just return the original.
+                return array;
+            }
+
+            int position = 0;
+            distinctElementBlockBuilder = type.createBlockBuilder(null, arrayLength);
+            while (position < firstDuplicatePosition) {
+                type.appendTo(array, position, distinctElementBlockBuilder);
+                position++;
+            }
+            while (position < arrayLength) {
+                if (typedSet.add(array, position)) {
+                    type.appendTo(array, position, distinctElementBlockBuilder);
+                }
+                position++;
+            }
+        }
+        else {
+            int firstDuplicatePosition = 0;
+            while (firstDuplicatePosition < arrayLength && typedSet.addNonNull(array, firstDuplicatePosition)) {
+                firstDuplicatePosition++;
+            }
+
+            if (firstDuplicatePosition == arrayLength) {
+                // All elements are distinct, so just return the original.
+                return array;
+            }
+
+            int position = 0;
+            distinctElementBlockBuilder = type.createBlockBuilder(null, arrayLength);
+            while (position < firstDuplicatePosition) {
+                type.appendTo(array, position, distinctElementBlockBuilder);
+                position++;
+            }
+            while (position < arrayLength) {
+                if (typedSet.addNonNull(array, position)) {
+                    type.appendTo(array, position, distinctElementBlockBuilder);
+                }
+                position++;
             }
         }
 
@@ -70,22 +110,77 @@ public final class ArrayDistinctFunction
     @SqlType("array(bigint)")
     public static Block bigintDistinct(@SqlType("array(bigint)") Block array)
     {
-        if (array.getPositionCount() == 0) {
+        final int arrayLength = array.getPositionCount();
+        if (arrayLength < 2) {
             return array;
         }
 
-        boolean containsNull = false;
-        LongSet set = new LongOpenHashSet(array.getPositionCount());
-        BlockBuilder distinctElementBlockBuilder = BIGINT.createBlockBuilder(new BlockBuilderStatus(), array.getPositionCount());
-        for (int i = 0; i < array.getPositionCount(); i++) {
-            if (!containsNull && array.isNull(i)) {
-                containsNull = true;
-                distinctElementBlockBuilder.appendNull();
-                continue;
+        BlockBuilder distinctElementBlockBuilder;
+        LongSet set = new LongOpenHashSet(arrayLength);
+
+        if (array.mayHaveNull()) {
+            int position = 0;
+            boolean containsNull = false;
+
+            // Keep adding the element to the set as long as there are no dupes.
+            while (position < arrayLength) {
+                if (array.isNull(position)) {
+                    if (!containsNull) {
+                        containsNull = true;
+                    }
+                    else {
+                        // Second null.
+                        break;
+                    }
+                }
+                else if (!set.add(BIGINT.getLong(array, position))) {
+                    // Dupe found.
+                    break;
+                }
+                position++;
             }
-            long value = BIGINT.getLong(array, i);
-            if (set.add(value)) {
-                BIGINT.writeLong(distinctElementBlockBuilder, value);
+
+            if (position == arrayLength) {
+                // All elements are distinct, so just return the original.
+                return array;
+            }
+
+            distinctElementBlockBuilder = BIGINT.createBlockBuilder(null, arrayLength);
+            for (int i = 0; i < position; i++) {
+                BIGINT.appendTo(array, i, distinctElementBlockBuilder);
+            }
+
+            for (position++; position < arrayLength; position++) {
+                if (array.isNull(position)) {
+                    if (!containsNull) {
+                        BIGINT.appendTo(array, position, distinctElementBlockBuilder);
+                    }
+                }
+                else if (set.add(BIGINT.getLong(array, position))) {
+                    BIGINT.appendTo(array, position, distinctElementBlockBuilder);
+                }
+            }
+        }
+        else {
+            int position = 0;
+            // Keep adding the element to the set as long as there are no dupes.
+            while (position < arrayLength && set.add(BIGINT.getLong(array, position))) {
+                position++;
+            }
+            if (position == arrayLength) {
+                // All elements are distinct, so just return the original.
+                return array;
+            }
+
+            distinctElementBlockBuilder = BIGINT.createBlockBuilder(null, arrayLength);
+            for (int i = 0; i < position; i++) {
+                BIGINT.appendTo(array, i, distinctElementBlockBuilder);
+            }
+
+            for (position++; position < arrayLength; position++) {
+                if (set.add(BIGINT.getLong(array, position))) {
+                    BIGINT.appendTo(array, position, distinctElementBlockBuilder);
+                }
             }
         }
 

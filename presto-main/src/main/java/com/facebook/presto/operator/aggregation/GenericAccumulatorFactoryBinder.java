@@ -13,66 +13,86 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.operator.aggregation.state.AccumulatorStateFactory;
-import com.facebook.presto.operator.aggregation.state.AccumulatorStateSerializer;
-import com.google.common.base.Throwables;
+import com.facebook.presto.Session;
+import com.facebook.presto.common.block.SortOrder;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.operator.PagesIndex;
+import com.facebook.presto.operator.aggregation.AggregationMetadata.AccumulatorStateDescriptor;
+import com.facebook.presto.sql.gen.JoinCompiler;
+import com.google.common.annotations.VisibleForTesting;
 
 import java.lang.reflect.Constructor;
 import java.util.List;
 import java.util.Optional;
 
-import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
 public class GenericAccumulatorFactoryBinder
         implements AccumulatorFactoryBinder
 {
-    private final boolean approximationSupported;
-    private final AccumulatorStateSerializer<?> stateSerializer;
-    private final AccumulatorStateFactory<?> stateFactory;
+    private final List<AccumulatorStateDescriptor> stateDescriptors;
     private final Constructor<? extends Accumulator> accumulatorConstructor;
     private final Constructor<? extends GroupedAccumulator> groupedAccumulatorConstructor;
 
     public GenericAccumulatorFactoryBinder(
-            AccumulatorStateSerializer<?> stateSerializer,
-            AccumulatorStateFactory<?> stateFactory,
+            List<AccumulatorStateDescriptor> stateDescriptors,
             Class<? extends Accumulator> accumulatorClass,
-            Class<? extends GroupedAccumulator> groupedAccumulatorClass,
-            boolean approximationSupported)
+            Class<? extends GroupedAccumulator> groupedAccumulatorClass)
     {
-        this.stateSerializer = requireNonNull(stateSerializer, "stateSerializer is null");
-        this.stateFactory = requireNonNull(stateFactory, "stateFactory is null");
-        this.approximationSupported = approximationSupported;
+        this.stateDescriptors = requireNonNull(stateDescriptors, "stateDescriptors is null");
 
         try {
             accumulatorConstructor = accumulatorClass.getConstructor(
-                    AccumulatorStateSerializer.class,
-                    AccumulatorStateFactory.class,
-                    List.class,
-                    Optional.class,
-                    Optional.class,
-                    double.class);
+                    List.class,     /* List<AccumulatorStateDescriptor> stateDescriptors */
+                    List.class,     /* List<Integer> inputChannel */
+                    Optional.class, /* Optional<Integer> maskChannel */
+                    List.class      /* List<LambdaProvider> lambdaProviders */);
 
             groupedAccumulatorConstructor = groupedAccumulatorClass.getConstructor(
-                    AccumulatorStateSerializer.class,
-                    AccumulatorStateFactory.class,
-                    List.class,
-                    Optional.class,
-                    Optional.class,
-                    double.class);
+                    List.class,     /* List<AccumulatorStateDescriptor> stateDescriptors */
+                    List.class,     /* List<Integer> inputChannel */
+                    Optional.class, /* Optional<Integer> maskChannel */
+                    List.class      /* List<LambdaProvider> lambdaProviders */);
         }
         catch (NoSuchMethodException e) {
-            throw Throwables.propagate(e);
+            throw new RuntimeException(e);
         }
     }
 
     @Override
-    public AccumulatorFactory bind(List<Integer> argumentChannels, Optional<Integer> maskChannel, Optional<Integer> sampleWeightChannel, double confidence)
+    public AccumulatorFactory bind(
+            List<Integer> argumentChannels,
+            Optional<Integer> maskChannel,
+            List<Type> sourceTypes,
+            List<Integer> orderByChannels,
+            List<SortOrder> orderings,
+            PagesIndex.Factory pagesIndexFactory,
+            boolean distinct,
+            JoinCompiler joinCompiler,
+            List<LambdaProvider> lambdaProviders,
+            boolean spillEnabled,
+            Session session)
     {
-        if (!approximationSupported) {
-            checkArgument(confidence == 1.0, "Approximate queries not supported");
-            checkArgument(!sampleWeightChannel.isPresent(), "Sampled data not supported");
-        }
-        return new GenericAccumulatorFactory(stateSerializer, stateFactory, accumulatorConstructor, groupedAccumulatorConstructor, argumentChannels, maskChannel, sampleWeightChannel, confidence);
+        return new GenericAccumulatorFactory(
+                stateDescriptors,
+                accumulatorConstructor,
+                groupedAccumulatorConstructor,
+                lambdaProviders,
+                argumentChannels,
+                maskChannel,
+                sourceTypes,
+                orderByChannels,
+                orderings,
+                pagesIndexFactory,
+                joinCompiler,
+                session,
+                distinct,
+                spillEnabled);
+    }
+
+    @VisibleForTesting
+    public List<AccumulatorStateDescriptor> getStateDescriptors()
+    {
+        return stateDescriptors;
     }
 }

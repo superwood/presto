@@ -13,34 +13,44 @@
  */
 package com.facebook.presto.execution;
 
-import com.facebook.presto.SequencePageBuilder;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.DictionaryBlock;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.testing.MaterializedResult;
 import com.google.common.collect.ImmutableList;
+import io.airlift.slice.Slice;
+import io.airlift.slice.Slices;
 import org.testng.annotations.Test;
 
 import java.util.List;
 
+import static com.facebook.airlift.testing.Assertions.assertGreaterThan;
+import static com.facebook.airlift.testing.Assertions.assertLessThanOrEqual;
+import static com.facebook.presto.SequencePageBuilder.createSequencePage;
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
+import static com.facebook.presto.block.BlockAssertions.createRandomDictionaryBlock;
+import static com.facebook.presto.block.BlockAssertions.createSlicesBlock;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.execution.buffer.PageSplitterUtil.splitPage;
 import static com.facebook.presto.operator.OperatorAssertion.toMaterializedResult;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static io.airlift.testing.Assertions.assertGreaterThan;
-import static io.airlift.testing.Assertions.assertLessThanOrEqual;
-import static org.testng.Assert.assertEquals;
+import static com.facebook.presto.testing.assertions.Assert.assertEquals;
+import static io.airlift.slice.Slices.wrappedBuffer;
 
 public class TestPageSplitterUtil
 {
     @Test
     public void testSplitPage()
-            throws Exception
     {
         int positionCount = 10;
         int maxPageSizeInBytes = 100;
         List<Type> types = ImmutableList.of(BIGINT, BIGINT, BIGINT);
 
-        Page largePage = SequencePageBuilder.createSequencePage(types, positionCount, 0, 1, 1);
-        List<Page> pages = PageSplitterUtil.splitPage(largePage, maxPageSizeInBytes);
+        Page largePage = createSequencePage(types, positionCount, 0, 1, 1);
+        List<Page> pages = splitPage(largePage, maxPageSizeInBytes);
 
         assertGreaterThan(pages.size(), 1);
         assertPageSize(pages, maxPageSizeInBytes);
@@ -64,5 +74,47 @@ public class TestPageSplitterUtil
             totalPositionCount += page.getPositionCount();
         }
         assertEquals(totalPositionCount, positionCount);
+    }
+
+    @Test
+    private void testSplitPageNonDecreasingPageSize()
+    {
+        int positionCount = 100;
+        int maxPageSizeInBytes = 1;
+        List<Type> types = ImmutableList.of(VARCHAR);
+
+        Slice expectedValue = wrappedBuffer("test".getBytes());
+        BlockBuilder blockBuilder = VARCHAR.createBlockBuilder(null, 1, expectedValue.length());
+        blockBuilder.writeBytes(expectedValue, 0, expectedValue.length()).closeEntry();
+        Block rleBlock = new RunLengthEncodedBlock(blockBuilder.build(), positionCount);
+        Page initialPage = new Page(rleBlock);
+        List<Page> pages = splitPage(initialPage, maxPageSizeInBytes);
+
+        // the page should only be split in half as the recursion should terminate
+        // after seeing that the size of the Page doesn't decrease
+        assertEquals(pages.size(), 2);
+        Page first = pages.get(0);
+        Page second = pages.get(1);
+
+        // the size of the pages will remain the same and should be greater than the maxPageSizeInBytes
+        assertGreaterThan((int) first.getSizeInBytes(), maxPageSizeInBytes);
+        assertGreaterThan((int) second.getSizeInBytes(), maxPageSizeInBytes);
+        assertPositionCount(pages, positionCount);
+        MaterializedResult actual = toMaterializedResult(TEST_SESSION, types, pages);
+        MaterializedResult expected = toMaterializedResult(TEST_SESSION, types, ImmutableList.of(initialPage));
+        assertEquals(actual, expected);
+    }
+
+    @Test
+    public void testSplitDictionaryBlock()
+    {
+        // create a huge dictionary with a single entry
+        Block dictionary = createSlicesBlock(Slices.utf8Slice(new String(new char[1_000_000])));
+
+        // make every row in the block identical to the single entry in the dictionary
+        DictionaryBlock dictionaryBlock = createRandomDictionaryBlock(dictionary, 50000);
+
+        List<Page> pages = splitPage(new Page(dictionaryBlock), 1000);
+        assertEquals(pages.size(), 2);
     }
 }

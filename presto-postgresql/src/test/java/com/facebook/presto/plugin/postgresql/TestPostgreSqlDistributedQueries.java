@@ -13,26 +13,20 @@
  */
 package com.facebook.presto.plugin.postgresql;
 
-import com.facebook.presto.tests.AbstractTestQueries;
-import io.airlift.testing.postgresql.TestingPostgreSqlServer;
+import com.facebook.airlift.testing.postgresql.TestingPostgreSqlServer;
+import com.facebook.presto.tests.AbstractTestDistributedQueries;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.tpch.TpchTable;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
 import java.io.IOException;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.sql.Statement;
 
 import static com.facebook.presto.plugin.postgresql.PostgreSqlQueryRunner.createPostgreSqlQueryRunner;
-import static io.airlift.testing.Closeables.closeAllRuntimeException;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
 
 @Test
 public class TestPostgreSqlDistributedQueries
-        extends AbstractTestQueries
+        extends AbstractTestDistributedQueries
 {
     private final TestingPostgreSqlServer postgreSqlServer;
 
@@ -43,47 +37,36 @@ public class TestPostgreSqlDistributedQueries
     }
 
     public TestPostgreSqlDistributedQueries(TestingPostgreSqlServer postgreSqlServer)
-            throws Exception
     {
-        super(createPostgreSqlQueryRunner(postgreSqlServer, TpchTable.getTables()));
+        super(() -> createPostgreSqlQueryRunner(postgreSqlServer, ImmutableMap.of(), TpchTable.getTables()));
         this.postgreSqlServer = postgreSqlServer;
+    }
+
+    @Override
+    protected boolean supportsViews()
+    {
+        return false;
     }
 
     @AfterClass(alwaysRun = true)
     public final void destroy()
             throws IOException
     {
-        closeAllRuntimeException(postgreSqlServer);
+        postgreSqlServer.close();
     }
 
-    @Test
-    public void testDropTable()
-            throws Exception
+    @Override
+    public void testInsert()
     {
-        assertUpdate("CREATE TABLE test_drop AS SELECT 123 x", 1);
-        assertTrue(queryRunner.tableExists(getSession(), "test_drop"));
-
-        assertUpdate("DROP TABLE test_drop");
-        assertFalse(queryRunner.tableExists(getSession(), "test_drop"));
+        // no op -- test not supported due to lack of support for array types.  See
+        // TestPostgreSqlIntegrationSmokeTest for insertion tests.
     }
 
-    @Test
-    public void testViews()
-            throws Exception
+    @Override
+    public void testDelete()
     {
-        execute("CREATE OR REPLACE VIEW tpch.test_view AS SELECT * FROM tpch.orders");
-
-        assertQuery("SELECT orderkey FROM test_view", "SELECT orderkey FROM orders");
-
-        execute("DROP VIEW IF EXISTS tpch.test_view");
+        // Delete is currently unsupported
     }
 
-    private void execute(String sql)
-            throws SQLException
-    {
-        try (Connection connection = DriverManager.getConnection(postgreSqlServer.getJdbcUrl());
-                Statement statement = connection.createStatement()) {
-            statement.execute(sql);
-        }
-    }
+    // PostgreSQL specific tests should normally go in TestPostgreSqlIntegrationSmokeTest
 }

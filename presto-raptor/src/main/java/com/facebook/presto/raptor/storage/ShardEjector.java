@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.raptor.storage;
 
+import com.facebook.airlift.log.Logger;
+import com.facebook.airlift.stats.CounterStat;
+import com.facebook.presto.raptor.NodeSupplier;
 import com.facebook.presto.raptor.RaptorConnectorId;
 import com.facebook.presto.raptor.backup.BackupStore;
 import com.facebook.presto.raptor.metadata.ShardManager;
@@ -20,9 +23,9 @@ import com.facebook.presto.raptor.metadata.ShardMetadata;
 import com.facebook.presto.spi.Node;
 import com.facebook.presto.spi.NodeManager;
 import com.google.common.annotations.VisibleForTesting;
-import io.airlift.log.Logger;
-import io.airlift.stats.CounterStat;
 import io.airlift.units.Duration;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.RawLocalFileSystem;
 import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;
 
@@ -30,7 +33,7 @@ import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 import javax.inject.Inject;
 
-import java.io.File;
+import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -45,12 +48,12 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static com.facebook.presto.spi.NodeState.ACTIVE;
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.presto.raptor.filesystem.LocalOrcDataEnvironment.tryGetLocalFileSystem;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.Maps.filterKeys;
 import static com.google.common.collect.Maps.filterValues;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static java.lang.Math.round;
 import static java.util.Comparator.comparingLong;
 import static java.util.Objects.requireNonNull;
@@ -64,12 +67,14 @@ public class ShardEjector
 {
     private static final Logger log = Logger.get(ShardEjector.class);
 
-    private final NodeManager nodeManager;
+    private final String currentNode;
+    private final NodeSupplier nodeSupplier;
     private final ShardManager shardManager;
     private final StorageService storageService;
     private final Duration interval;
     private final Optional<BackupStore> backupStore;
     private final ScheduledExecutorService executor;
+    private final Optional<RawLocalFileSystem> localFileSystem;
 
     private final AtomicBoolean started = new AtomicBoolean();
 
@@ -79,34 +84,44 @@ public class ShardEjector
     @Inject
     public ShardEjector(
             NodeManager nodeManager,
+            NodeSupplier nodeSupplier,
             ShardManager shardManager,
             StorageService storageService,
             StorageManagerConfig config,
             Optional<BackupStore> backupStore,
+            OrcDataEnvironment environment,
             RaptorConnectorId connectorId)
     {
-        this(nodeManager,
+        this(nodeManager.getCurrentNode().getNodeIdentifier(),
+                nodeSupplier,
                 shardManager,
                 storageService,
                 config.getShardEjectorInterval(),
                 backupStore,
+                environment,
                 connectorId.toString());
     }
 
     public ShardEjector(
-            NodeManager nodeManager,
+            String currentNode,
+            NodeSupplier nodeSupplier,
             ShardManager shardManager,
             StorageService storageService,
             Duration interval,
             Optional<BackupStore> backupStore,
+            OrcDataEnvironment environment,
             String connectorId)
     {
-        this.nodeManager = requireNonNull(nodeManager, "nodeManager is null");
+        this.currentNode = requireNonNull(currentNode, "currentNode is null");
+        this.nodeSupplier = requireNonNull(nodeSupplier, "nodeSupplier is null");
         this.shardManager = requireNonNull(shardManager, "shardManager is null");
         this.storageService = requireNonNull(storageService, "storageService is null");
         this.interval = requireNonNull(interval, "interval is null");
         this.backupStore = requireNonNull(backupStore, "backupStore is null");
         this.executor = newScheduledThreadPool(1, daemonThreadsNamed("shard-ejector-" + connectorId));
+        this.localFileSystem = tryGetLocalFileSystem(requireNonNull(environment, "environment is null"));
+
+        checkState((!backupStore.isPresent() || localFileSystem.isPresent()), "cannot support backup for remote file system");
     }
 
     @PostConstruct
@@ -161,13 +176,14 @@ public class ShardEjector
 
     @VisibleForTesting
     void process()
+            throws IOException
     {
         checkState(backupStore.isPresent(), "backup store must be present");
 
         // get the size of assigned shards for each node
         Map<String, Long> nodes = shardManager.getNodeBytes();
 
-        Set<String> activeNodes = nodeManager.getNodes(ACTIVE).stream()
+        Set<String> activeNodes = nodeSupplier.getWorkerNodes().stream()
                 .map(Node::getNodeIdentifier)
                 .collect(toSet());
 
@@ -179,7 +195,6 @@ public class ShardEjector
         }
 
         // get current node size
-        String currentNode = nodeManager.getCurrentNode().getNodeIdentifier();
         if (!nodes.containsKey(currentNode)) {
             return;
         }
@@ -200,7 +215,7 @@ public class ShardEjector
         // only include nodes that are below threshold
         nodes = new HashMap<>(filterValues(nodes, size -> size <= averageSize));
 
-        // get non-bucketed node shards by size, largest to smallest
+        // get non-bucketed node shards(only) by size, largest to smallest
         List<ShardMetadata> shards = shardManager.getNodeShards(currentNode).stream()
                 .filter(shard -> !shard.getBucketNumber().isPresent())
                 .sorted(comparingLong(ShardMetadata::getCompressedSize).reversed())
@@ -212,6 +227,7 @@ public class ShardEjector
             ShardMetadata shard = queue.remove();
             long shardSize = shard.getCompressedSize();
             UUID shardUuid = shard.getShardUuid();
+            Optional<UUID> deltaUuid = shard.getDeltaUuid();
 
             // verify backup exists
             if (!backupStore.get().shardExists(shardUuid)) {
@@ -235,12 +251,11 @@ public class ShardEjector
             nodeSize -= shardSize;
 
             // move assignment
-            shardManager.assignShard(shard.getTableId(), shardUuid, target, false);
-            shardManager.unassignShard(shard.getTableId(), shardUuid, currentNode);
+            shardManager.replaceShardAssignment(shard.getTableId(), shardUuid, deltaUuid, target, false);
 
             // delete local file
-            File file = storageService.getStorageFile(shardUuid);
-            if (file.exists() && !file.delete()) {
+            Path file = storageService.getStorageFile(shardUuid);
+            if (localFileSystem.get().exists(file) && !localFileSystem.get().delete(file, false)) {
                 log.warn("Failed to delete shard file: %s", file);
             }
         }

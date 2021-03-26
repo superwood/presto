@@ -13,35 +13,32 @@
  */
 package com.facebook.presto.operator.index;
 
-import com.facebook.presto.block.BlockEncodingManager;
-import com.facebook.presto.metadata.FunctionRegistry;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.spi.InMemoryRecordSet;
 import com.facebook.presto.spi.RecordCursor;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.type.ArrayType;
-import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DateTimeEncoding.packDateTimeWithZone;
-import static com.facebook.presto.spi.type.TimeZoneKey.getTimeZoneKeyForOffset;
-import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DateTimeEncoding.packDateTimeWithZone;
+import static com.facebook.presto.common.type.TimeZoneKey.getTimeZoneKeyForOffset;
+import static com.facebook.presto.common.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
 import static com.facebook.presto.util.StructuralTestUtil.arrayBlockOf;
 import static org.testng.Assert.assertTrue;
 
 public class TestFieldSetFilteringRecordSet
 {
-    private static final TypeManager TYPE_MANAGER = new TypeRegistry();
-    private static final FunctionRegistry FUNCTION_REGISTRY = new FunctionRegistry(TYPE_MANAGER, new BlockEncodingManager(TYPE_MANAGER), false);
-
     @Test
     public void test()
     {
+        FunctionAndTypeManager functionAndTypeManager = createTestFunctionAndTypeManager();
+
         ArrayType arrayOfBigintType = new ArrayType(BIGINT);
         FieldSetFilteringRecordSet fieldSetFilteringRecordSet = new FieldSetFilteringRecordSet(
-                FUNCTION_REGISTRY,
+                functionAndTypeManager,
                 new InMemoryRecordSet(
                         ImmutableList.of(BIGINT, BIGINT, TIMESTAMP_WITH_TIME_ZONE, TIMESTAMP_WITH_TIME_ZONE, arrayOfBigintType, arrayOfBigintType),
                         ImmutableList.of(
@@ -53,8 +50,7 @@ public class TestFieldSetFilteringRecordSet
                                         packDateTimeWithZone(100, getTimeZoneKeyForOffset(234)),
                                         // test structural type
                                         arrayBlockOf(BIGINT, 12, 34, 56),
-                                        arrayBlockOf(BIGINT, 12, 34, 56)
-                                ))),
+                                        arrayBlockOf(BIGINT, 12, 34, 56)))),
                 ImmutableList.of(ImmutableSet.of(0, 1), ImmutableSet.of(2, 3), ImmutableSet.of(4, 5)));
         RecordCursor recordCursor = fieldSetFilteringRecordSet.cursor();
         assertTrue(recordCursor.advanceNextPosition());

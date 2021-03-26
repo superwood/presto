@@ -13,7 +13,9 @@
  */
 package com.facebook.presto.spi;
 
-import com.facebook.presto.spi.block.SortOrder;
+import com.facebook.presto.common.block.SortOrder;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.Collections;
 import java.util.Objects;
@@ -29,7 +31,10 @@ public final class SortingProperty<E>
     private final E column;
     private final SortOrder order;
 
-    public SortingProperty(E column, SortOrder order)
+    @JsonCreator
+    public SortingProperty(
+            @JsonProperty("column") E column,
+            @JsonProperty("order") SortOrder order)
     {
         requireNonNull(column, "column is null");
         requireNonNull(order, "order is null");
@@ -38,6 +43,13 @@ public final class SortingProperty<E>
         this.order = order;
     }
 
+    @Override
+    public boolean isOrderSensitive()
+    {
+        return true;
+    }
+
+    @JsonProperty
     public E getColumn()
     {
         return column;
@@ -48,6 +60,7 @@ public final class SortingProperty<E>
         return Collections.singleton(column);
     }
 
+    @JsonProperty
     public SortOrder getOrder()
     {
         return order;
@@ -59,13 +72,8 @@ public final class SortingProperty<E>
     @Override
     public <T> Optional<LocalProperty<T>> translate(Function<E, Optional<T>> translator)
     {
-        Optional<T> translated = translator.apply(column);
-
-        if (translated.isPresent()) {
-            return Optional.of(new SortingProperty<>(translated.get(), order));
-        }
-
-        return Optional.empty();
+        return translator.apply(column)
+                .map(translated -> new SortingProperty<>(translated, order));
     }
 
     @Override
@@ -86,11 +94,11 @@ public final class SortingProperty<E>
                 break;
             case ASC_NULLS_LAST:
                 ordering = "\u2191";
-                nullOrdering = "\u2190";
+                nullOrdering = "\u2192";
                 break;
             case DESC_NULLS_FIRST:
                 ordering = "\u2193";
-                nullOrdering = "\u2192";
+                nullOrdering = "\u2190";
                 break;
             case DESC_NULLS_LAST:
                 ordering = "\u2193";

@@ -13,12 +13,10 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.SqlIntervalYearMonth;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
 
-import static com.facebook.presto.spi.type.IntervalYearMonthType.INTERVAL_YEAR_MONTH;
+import static com.facebook.presto.type.IntervalYearMonthType.INTERVAL_YEAR_MONTH;
 
 public class TestIntervalYearMonthType
         extends AbstractTestType
@@ -30,7 +28,7 @@ public class TestIntervalYearMonthType
 
     public static Block createTestBlock()
     {
-        BlockBuilder blockBuilder = INTERVAL_YEAR_MONTH.createBlockBuilder(new BlockBuilderStatus(), 15);
+        BlockBuilder blockBuilder = INTERVAL_YEAR_MONTH.createBlockBuilder(null, 15);
         INTERVAL_YEAR_MONTH.writeLong(blockBuilder, 1111);
         INTERVAL_YEAR_MONTH.writeLong(blockBuilder, 1111);
         INTERVAL_YEAR_MONTH.writeLong(blockBuilder, 1111);

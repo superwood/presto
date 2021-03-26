@@ -13,14 +13,15 @@
  */
 package com.facebook.presto.operator.window;
 
-import com.facebook.presto.metadata.Signature;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.operator.UpdateMemory;
 import com.facebook.presto.operator.aggregation.Accumulator;
 import com.facebook.presto.operator.aggregation.AccumulatorFactory;
 import com.facebook.presto.operator.aggregation.InternalAggregationFunction;
-import com.facebook.presto.spi.PageBuilder;
-import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.spi.function.Signature;
+import com.facebook.presto.spi.function.WindowFunction;
+import com.facebook.presto.spi.function.WindowIndex;
 import com.google.common.collect.ImmutableList;
-import com.google.common.primitives.Ints;
 
 import java.util.List;
 import java.util.Optional;
@@ -30,8 +31,7 @@ import static java.util.Objects.requireNonNull;
 public class AggregateWindowFunction
         implements WindowFunction
 {
-    private final InternalAggregationFunction function;
-    private final int[] argumentChannels;
+    private final List<Integer> argumentChannels;
     private final AccumulatorFactory accumulatorFactory;
 
     private WindowIndex windowIndex;
@@ -41,9 +41,8 @@ public class AggregateWindowFunction
 
     private AggregateWindowFunction(InternalAggregationFunction function, List<Integer> argumentChannels)
     {
-        this.function = requireNonNull(function, "function is null");
-        this.argumentChannels = Ints.toArray(argumentChannels);
-        this.accumulatorFactory = function.bind(createArgs(function), Optional.empty(), Optional.empty(), 1.0);
+        this.argumentChannels = ImmutableList.copyOf(argumentChannels);
+        this.accumulatorFactory = function.bind(createArgs(function), Optional.empty());
     }
 
     @Override
@@ -78,21 +77,16 @@ public class AggregateWindowFunction
 
     private void accumulate(int start, int end)
     {
-        // TODO: add Accumulator method that does not require creating pages
-        PageBuilder pageBuilder = new PageBuilder(function.getParameterTypes());
-        for (int position = start; position <= end; position++) {
-            for (int i = 0; i < function.getParameterTypes().size(); i++) {
-                windowIndex.appendTo(argumentChannels[i], position, pageBuilder.getBlockBuilder(i));
-            }
-            pageBuilder.declarePosition();
-        }
-        accumulator.addInput(pageBuilder.build());
+        accumulator.addInput(windowIndex, argumentChannels, start, end);
     }
 
     private void resetAccumulator()
     {
         if (currentStart >= 0) {
-            accumulator = accumulatorFactory.createAccumulator();
+            // updateMemory callback is used by distinct and ordering accumulators
+            // since window functions do not support distinct and ordering accumulators
+            // it is ok not to provide the memory reservation callback
+            accumulator = accumulatorFactory.createAccumulator(UpdateMemory.NOOP);
             currentStart = -1;
             currentEnd = -1;
         }
@@ -104,7 +98,7 @@ public class AggregateWindowFunction
         return new AbstractWindowFunctionSupplier(signature, null)
         {
             @Override
-            protected WindowFunction newWindowFunction(List<Integer> inputs)
+            protected WindowFunction newWindowFunction(List<Integer> inputs, boolean ignoreNulls)
             {
                 return new AggregateWindowFunction(function, inputs);
             }

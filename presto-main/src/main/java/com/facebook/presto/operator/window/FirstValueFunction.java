@@ -13,12 +13,15 @@
  */
 package com.facebook.presto.operator.window;
 
-import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.spi.function.ValueWindowFunction;
+import com.facebook.presto.spi.function.WindowFunctionSignature;
 
 import java.util.List;
 
 import static com.google.common.collect.Iterables.getOnlyElement;
 
+@WindowFunctionSignature(name = "first_value", typeVariable = "T", returnType = "T", argumentTypes = "T")
 public class FirstValueFunction
         extends ValueWindowFunction
 {
@@ -37,6 +40,23 @@ public class FirstValueFunction
             return;
         }
 
-        windowIndex.appendTo(argumentChannel, frameStart, output);
+        int valuePosition = frameStart;
+
+        if (ignoreNulls) {
+            while (valuePosition >= 0 && valuePosition <= frameEnd) {
+                if (!windowIndex.isNull(argumentChannel, valuePosition)) {
+                    break;
+                }
+
+                valuePosition++;
+            }
+
+            if (valuePosition > frameEnd) {
+                output.appendNull();
+                return;
+            }
+        }
+
+        windowIndex.appendTo(argumentChannel, valuePosition, output);
     }
 }

@@ -13,10 +13,12 @@
  */
 package com.facebook.presto.raptor;
 
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ConnectorTableHandle;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -35,10 +37,13 @@ public final class RaptorTableHandle
     private final String tableName;
     private final long tableId;
     private final OptionalLong distributionId;
+    private final Optional<String> distributionName;
     private final OptionalInt bucketCount;
+    private final boolean organized;
     private final OptionalLong transactionId;
-    private final Optional<RaptorColumnHandle> sampleWeightColumnHandle;
+    private final Optional<Map<String, Type>> columnTypes;
     private final boolean delete;
+    private final boolean tableSupportsDeltaDelete;
 
     @JsonCreator
     public RaptorTableHandle(
@@ -47,10 +52,13 @@ public final class RaptorTableHandle
             @JsonProperty("tableName") String tableName,
             @JsonProperty("tableId") long tableId,
             @JsonProperty("distributionId") OptionalLong distributionId,
+            @JsonProperty("distributionName") Optional<String> distributionName,
             @JsonProperty("bucketCount") OptionalInt bucketCount,
+            @JsonProperty("organized") boolean organized,
             @JsonProperty("transactionId") OptionalLong transactionId,
-            @JsonProperty("sampleWeightColumnHandle") Optional<RaptorColumnHandle> sampleWeightColumnHandle,
-            @JsonProperty("delete") boolean delete)
+            @JsonProperty("columnTypes") Optional<Map<String, Type>> columnTypes,
+            @JsonProperty("delete") boolean delete,
+            @JsonProperty("tableSupportsDeltaDelete") boolean tableSupportsDeltaDelete)
     {
         this.connectorId = requireNonNull(connectorId, "connectorId is null");
         this.schemaName = checkSchemaName(schemaName);
@@ -59,12 +67,20 @@ public final class RaptorTableHandle
         checkArgument(tableId > 0, "tableId must be greater than zero");
         this.tableId = tableId;
 
-        this.sampleWeightColumnHandle = requireNonNull(sampleWeightColumnHandle, "sampleWeightColumnHandle is null");
+        this.distributionName = requireNonNull(distributionName, "distributionName is null");
         this.distributionId = requireNonNull(distributionId, "distributionId is null");
         this.bucketCount = requireNonNull(bucketCount, "bucketCount is null");
+        this.organized = organized;
         this.transactionId = requireNonNull(transactionId, "transactionId is null");
+        this.columnTypes = requireNonNull(columnTypes, "columnTypes is null");
 
         this.delete = delete;
+        this.tableSupportsDeltaDelete = tableSupportsDeltaDelete;
+    }
+
+    public boolean isBucketed()
+    {
+        return this.distributionId.isPresent();
     }
 
     @JsonProperty
@@ -98,9 +114,21 @@ public final class RaptorTableHandle
     }
 
     @JsonProperty
+    public Optional<String> getDistributionName()
+    {
+        return distributionName;
+    }
+
+    @JsonProperty
     public OptionalInt getBucketCount()
     {
         return bucketCount;
+    }
+
+    @JsonProperty
+    public boolean isOrganized()
+    {
+        return organized;
     }
 
     @JsonProperty
@@ -110,15 +138,21 @@ public final class RaptorTableHandle
     }
 
     @JsonProperty
-    public Optional<RaptorColumnHandle> getSampleWeightColumnHandle()
+    public Optional<Map<String, Type>> getColumnTypes()
     {
-        return sampleWeightColumnHandle;
+        return columnTypes;
     }
 
     @JsonProperty
     public boolean isDelete()
     {
         return delete;
+    }
+
+    @JsonProperty
+    public boolean isTableSupportsDeltaDelete()
+    {
+        return tableSupportsDeltaDelete;
     }
 
     @Override

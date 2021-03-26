@@ -13,26 +13,30 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.memory.LocalMemoryContext;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.metadata.Split;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorPageSource;
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.UpdatablePageSource;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.plan.PlanNodeId;
+import com.facebook.presto.split.EmptySplit;
+import com.facebook.presto.split.EmptySplitPageSource;
 import com.facebook.presto.split.PageSourceProvider;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
+import static com.facebook.airlift.concurrent.MoreFutures.toListenableFuture;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
 
@@ -45,7 +49,7 @@ public class TableScanOperator
         private final int operatorId;
         private final PlanNodeId sourceId;
         private final PageSourceProvider pageSourceProvider;
-        private final List<Type> types;
+        private final TableHandle table;
         private final List<ColumnHandle> columns;
         private boolean closed;
 
@@ -53,13 +57,13 @@ public class TableScanOperator
                 int operatorId,
                 PlanNodeId sourceId,
                 PageSourceProvider pageSourceProvider,
-                List<Type> types,
+                TableHandle table,
                 Iterable<ColumnHandle> columns)
         {
             this.operatorId = operatorId;
             this.sourceId = requireNonNull(sourceId, "sourceId is null");
-            this.types = requireNonNull(types, "types is null");
-            this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceManager is null");
+            this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
+            this.table = requireNonNull(table, "table is null");
             this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
         }
 
@@ -67,12 +71,6 @@ public class TableScanOperator
         public PlanNodeId getSourceId()
         {
             return sourceId;
-        }
-
-        @Override
-        public List<Type> getTypes()
-        {
-            return types;
         }
 
         @Override
@@ -84,12 +82,12 @@ public class TableScanOperator
                     operatorContext,
                     sourceId,
                     pageSourceProvider,
-                    types,
+                    table,
                     columns);
         }
 
         @Override
-        public void close()
+        public void noMoreOperators()
         {
             closed = true;
         }
@@ -98,7 +96,7 @@ public class TableScanOperator
     private final OperatorContext operatorContext;
     private final PlanNodeId planNodeId;
     private final PageSourceProvider pageSourceProvider;
-    private final List<Type> types;
+    private final TableHandle table;
     private final List<ColumnHandle> columns;
     private final LocalMemoryContext systemMemoryContext;
     private final SettableFuture<?> blocked = SettableFuture.create();
@@ -109,21 +107,22 @@ public class TableScanOperator
     private boolean finished;
 
     private long completedBytes;
+    private long completedPositions;
     private long readTimeNanos;
 
     public TableScanOperator(
             OperatorContext operatorContext,
             PlanNodeId planNodeId,
             PageSourceProvider pageSourceProvider,
-            List<Type> types,
+            TableHandle table,
             Iterable<ColumnHandle> columns)
     {
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
         this.planNodeId = requireNonNull(planNodeId, "planNodeId is null");
-        this.types = requireNonNull(types, "types is null");
-        this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceManager is null");
+        this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
+        this.table = requireNonNull(table, "table is null");
         this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
-        this.systemMemoryContext = operatorContext.getSystemMemoryContext().newLocalMemoryContext();
+        this.systemMemoryContext = operatorContext.newLocalSystemMemoryContext(TableScanOperator.class.getSimpleName());
     }
 
     @Override
@@ -152,10 +151,14 @@ public class TableScanOperator
 
         Object splitInfo = split.getInfo();
         if (splitInfo != null) {
-            operatorContext.setInfoSupplier(() -> splitInfo);
+            operatorContext.setInfoSupplier(() -> new SplitOperatorInfo(splitInfo));
         }
 
         blocked.set(null);
+
+        if (split.getConnectorSplit() instanceof EmptySplit) {
+            source = new EmptySplitPageSource();
+        }
 
         return () -> {
             if (source instanceof UpdatablePageSource) {
@@ -175,12 +178,6 @@ public class TableScanOperator
     }
 
     @Override
-    public List<Type> getTypes()
-    {
-        return types;
-    }
-
-    @Override
     public void close()
     {
         finish();
@@ -197,7 +194,7 @@ public class TableScanOperator
                 source.close();
             }
             catch (IOException e) {
-                throw Throwables.propagate(e);
+                throw new UncheckedIOException(e);
             }
             systemMemoryContext.setBytes(source.getSystemMemoryUsage());
         }
@@ -207,7 +204,6 @@ public class TableScanOperator
     public boolean isFinished()
     {
         if (!finished) {
-            createSourceIfNecessary();
             finished = (source != null) && source.isFinished();
             if (source != null) {
                 systemMemoryContext.setBytes(source.getSystemMemoryUsage());
@@ -220,7 +216,14 @@ public class TableScanOperator
     @Override
     public ListenableFuture<?> isBlocked()
     {
-        return blocked;
+        if (!blocked.isDone()) {
+            return blocked;
+        }
+        if (source != null) {
+            CompletableFuture<?> pageSourceBlocked = source.isBlocked();
+            return pageSourceBlocked.isDone() ? NOT_BLOCKED : toListenableFuture(pageSourceBlocked);
+        }
+        return NOT_BLOCKED;
     }
 
     @Override
@@ -238,22 +241,20 @@ public class TableScanOperator
     @Override
     public Page getOutput()
     {
-        createSourceIfNecessary();
-        if (source == null) {
+        if (split == null) {
             return null;
+        }
+        if (source == null) {
+            source = pageSourceProvider.createPageSource(operatorContext.getSession(), split, table, columns);
         }
 
         Page page = source.getNextPage();
         if (page != null) {
             // assure the page is in memory before handing to another operator
-            page.assureLoaded();
+            page = page.getLoadedPage();
 
             // update operator stats
-            long endCompletedBytes = source.getCompletedBytes();
-            long endReadTimeNanos = source.getReadTimeNanos();
-            operatorContext.recordGeneratedInput(endCompletedBytes - completedBytes, page.getPositionCount(), endReadTimeNanos - readTimeNanos);
-            completedBytes = endCompletedBytes;
-            readTimeNanos = endReadTimeNanos;
+            recordInputStats();
         }
 
         // updating system memory usage should happen after page is loaded.
@@ -262,10 +263,19 @@ public class TableScanOperator
         return page;
     }
 
-    private void createSourceIfNecessary()
+    private void recordInputStats()
     {
-        if ((split != null) && (source == null)) {
-            source = pageSourceProvider.createPageSource(operatorContext.getSession(), split, columns);
-        }
+        checkState(source != null, "source must not be null");
+        // update operator stats
+        long endCompletedBytes = source.getCompletedBytes();
+        long endCompletedPositions = source.getCompletedPositions();
+        long endReadTimeNanos = source.getReadTimeNanos();
+        long inputBytes = endCompletedBytes - completedBytes;
+        long positionCount = endCompletedPositions - completedPositions;
+        operatorContext.recordProcessedInput(inputBytes, positionCount);
+        operatorContext.recordRawInputWithTiming(inputBytes, positionCount, endReadTimeNanos - readTimeNanos);
+        completedBytes = endCompletedBytes;
+        completedPositions = endCompletedPositions;
+        readTimeNanos = endReadTimeNanos;
     }
 }

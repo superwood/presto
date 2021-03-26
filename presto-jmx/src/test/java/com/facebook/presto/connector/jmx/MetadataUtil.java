@@ -13,19 +13,19 @@
  */
 package com.facebook.presto.connector.jmx;
 
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.airlift.json.JsonCodecFactory;
+import com.facebook.airlift.json.ObjectMapperProvider;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.deser.std.FromStringDeserializer;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.json.JsonCodec;
-import io.airlift.json.JsonCodecFactory;
-import io.airlift.json.ObjectMapperProvider;
 
 import java.util.Map;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Locale.ENGLISH;
 
@@ -51,7 +51,7 @@ public final class MetadataUtil
     {
         private final Map<String, Type> types = ImmutableMap.<String, Type>builder()
                 .put(StandardTypes.BIGINT, BIGINT)
-                .put(VARCHAR.getTypeSignature().toString(), VARCHAR) // with max value length in signature
+                .put(StandardTypes.VARCHAR, createUnboundedVarcharType()) // with max value length in signature
                 .build();
 
         public TestingTypeDeserializer()

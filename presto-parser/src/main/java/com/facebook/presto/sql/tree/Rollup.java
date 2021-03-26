@@ -13,59 +13,52 @@
  */
 package com.facebook.presto.sql.tree;
 
-import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
-import java.util.stream.IntStream;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
-import static java.util.stream.Collectors.toList;
-import static java.util.stream.Collectors.toSet;
 
-public class Rollup
+public final class Rollup
         extends GroupingElement
 {
-    private final List<QualifiedName> columns;
+    private final List<Expression> columns;
 
-    public Rollup(List<QualifiedName> columns)
+    public Rollup(List<Expression> columns)
     {
         this(Optional.empty(), columns);
     }
 
-    public Rollup(NodeLocation location, List<QualifiedName> columns)
+    public Rollup(NodeLocation location, List<Expression> columns)
     {
         this(Optional.of(location), columns);
     }
 
-    private Rollup(Optional<NodeLocation> location, List<QualifiedName> columns)
+    private Rollup(Optional<NodeLocation> location, List<Expression> columns)
     {
         super(location);
-        requireNonNull(columns, "columns is null");
-        this.columns = columns;
+        this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
     }
 
-    public List<QualifiedName> getColumns()
+    @Override
+    public List<Expression> getExpressions()
     {
         return columns;
     }
 
     @Override
-    public List<Set<Expression>> enumerateGroupingSets()
+    protected <R, C> R accept(AstVisitor<R, C> visitor, C context)
     {
-        int numColumns = columns.size();
-        List<Set<Expression>> enumeratedGroupingSets = IntStream.range(0, numColumns)
-                .mapToObj(i -> columns.subList(0, numColumns - i)
-                        .stream()
-                        .map(QualifiedNameReference::new)
-                        .map(Expression.class::cast)
-                        .collect(toSet()))
-                .collect(toList());
-        enumeratedGroupingSets.add(ImmutableSet.of());
-        return enumeratedGroupingSets;
+        return visitor.visitRollup(this, context);
+    }
+
+    @Override
+    public List<Node> getChildren()
+    {
+        return ImmutableList.of();
     }
 
     @Override

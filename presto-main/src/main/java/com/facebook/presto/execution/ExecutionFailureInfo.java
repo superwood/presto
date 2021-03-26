@@ -13,25 +13,31 @@
  */
 package com.facebook.presto.execution;
 
+import com.facebook.drift.annotations.ThriftConstructor;
+import com.facebook.drift.annotations.ThriftField;
+import com.facebook.drift.annotations.ThriftStruct;
 import com.facebook.presto.client.ErrorLocation;
 import com.facebook.presto.client.FailureInfo;
 import com.facebook.presto.spi.ErrorCode;
+import com.facebook.presto.spi.HostAddress;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.Immutable;
-import javax.validation.constraints.NotNull;
 
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static com.facebook.presto.util.ImmutableCollectors.toImmutableList;
+import static com.facebook.drift.annotations.ThriftField.Recursiveness.TRUE;
+import static com.facebook.drift.annotations.ThriftField.Requiredness.OPTIONAL;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
 
 @Immutable
+@ThriftStruct
 public class ExecutionFailureInfo
 {
     private static final Pattern STACK_TRACE_PATTERN = Pattern.compile("(.*)\\.(.*)\\(([^:]*)(?::(.*))?\\)");
@@ -43,8 +49,11 @@ public class ExecutionFailureInfo
     private final List<String> stack;
     private final ErrorLocation errorLocation;
     private final ErrorCode errorCode;
+    // use for transport errors
+    private final HostAddress remoteHost;
 
     @JsonCreator
+    @ThriftConstructor
     public ExecutionFailureInfo(
             @JsonProperty("type") String type,
             @JsonProperty("message") String message,
@@ -52,7 +61,8 @@ public class ExecutionFailureInfo
             @JsonProperty("suppressed") List<ExecutionFailureInfo> suppressed,
             @JsonProperty("stack") List<String> stack,
             @JsonProperty("errorLocation") @Nullable ErrorLocation errorLocation,
-            @JsonProperty("errorCode") @Nullable ErrorCode errorCode)
+            @JsonProperty("errorCode") @Nullable ErrorCode errorCode,
+            @JsonProperty("remoteHost") @Nullable HostAddress remoteHost)
     {
         requireNonNull(type, "type is null");
         requireNonNull(suppressed, "suppressed is null");
@@ -65,10 +75,11 @@ public class ExecutionFailureInfo
         this.stack = ImmutableList.copyOf(stack);
         this.errorLocation = errorLocation;
         this.errorCode = errorCode;
+        this.remoteHost = remoteHost;
     }
 
-    @NotNull
     @JsonProperty
+    @ThriftField(1)
     public String getType()
     {
         return type;
@@ -76,6 +87,7 @@ public class ExecutionFailureInfo
 
     @Nullable
     @JsonProperty
+    @ThriftField(2)
     public String getMessage()
     {
         return message;
@@ -83,20 +95,21 @@ public class ExecutionFailureInfo
 
     @Nullable
     @JsonProperty
+    @ThriftField(value = 3, isRecursive = TRUE, requiredness = OPTIONAL)
     public ExecutionFailureInfo getCause()
     {
         return cause;
     }
 
-    @NotNull
     @JsonProperty
+    @ThriftField(4)
     public List<ExecutionFailureInfo> getSuppressed()
     {
         return suppressed;
     }
 
-    @NotNull
     @JsonProperty
+    @ThriftField(5)
     public List<String> getStack()
     {
         return stack;
@@ -104,6 +117,7 @@ public class ExecutionFailureInfo
 
     @Nullable
     @JsonProperty
+    @ThriftField(6)
     public ErrorLocation getErrorLocation()
     {
         return errorLocation;
@@ -111,9 +125,18 @@ public class ExecutionFailureInfo
 
     @Nullable
     @JsonProperty
+    @ThriftField(7)
     public ErrorCode getErrorCode()
     {
         return errorCode;
+    }
+
+    @Nullable
+    @JsonProperty
+    @ThriftField(8)
+    public HostAddress getRemoteHost()
+    {
+        return remoteHost;
     }
 
     public FailureInfo toFailureInfo()
@@ -126,6 +149,11 @@ public class ExecutionFailureInfo
     }
 
     public RuntimeException toException()
+    {
+        return toException(this);
+    }
+
+    public Failure toFailure()
     {
         return toException(this);
     }

@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.operator.index;
 
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.RecordSet;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 
@@ -63,12 +63,6 @@ public class PageRecordSet
             this.types = ImmutableList.copyOf(requireNonNull(types, "types is null"));
             this.page = requireNonNull(page, "page is null");
             checkArgument(types.size() == page.getChannelCount(), "Types do not match page channels");
-        }
-
-        @Override
-        public long getTotalBytes()
-        {
-            return page.getSizeInBytes();
         }
 
         @Override

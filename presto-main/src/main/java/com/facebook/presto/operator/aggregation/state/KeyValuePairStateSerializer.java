@@ -13,22 +13,21 @@
  */
 package com.facebook.presto.operator.aggregation.state;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.aggregation.KeyValuePairs;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.type.MapType;
+import com.facebook.presto.spi.function.AccumulatorStateSerializer;
 
 public class KeyValuePairStateSerializer
         implements AccumulatorStateSerializer<KeyValuePairsState>
 {
     private final MapType mapType;
-    private final boolean isMultiValue;
 
-    public KeyValuePairStateSerializer(Type keyType, Type valueType, boolean isMultiValue)
+    public KeyValuePairStateSerializer(MapType mapType)
     {
-        this.mapType = new MapType(keyType, valueType);
-        this.isMultiValue = isMultiValue;
+        this.mapType = mapType;
     }
 
     @Override
@@ -44,15 +43,13 @@ public class KeyValuePairStateSerializer
             out.appendNull();
         }
         else {
-            mapType.writeObject(out, state.get().serialize());
+            state.get().serialize(out);
         }
     }
 
     @Override
     public void deserialize(Block block, int index, KeyValuePairsState state)
     {
-        if (!block.isNull(index)) {
-            state.set(new KeyValuePairs(mapType.getObject(block, index), state.getKeyType(), state.getValueType(), isMultiValue));
-        }
+        state.set(new KeyValuePairs(mapType.getObject(block, index), state.getKeyType(), state.getValueType()));
     }
 }

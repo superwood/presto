@@ -8,18 +8,27 @@ Functions and Operators
     functions/logical
     functions/comparison
     functions/conditional
+    functions/lambda
     functions/conversion
     functions/math
     functions/bitwise
+    functions/decimal
     functions/string
-    functions/binary
-    functions/datetime
     functions/regexp
+    functions/binary
     functions/json
-    functions/url
+    functions/datetime
     functions/aggregate
     functions/window
-    functions/color
     functions/array
     functions/map
+    functions/url
+    functions/ip
+    functions/geospatial
+    functions/hyperloglog
+    functions/khyperloglog
+    functions/qdigest
+    functions/color
+    functions/session
     functions/teradata
+    functions/internationalization

@@ -15,70 +15,72 @@ package com.facebook.presto.execution.scheduler;
 
 import com.facebook.presto.client.NodeVersion;
 import com.facebook.presto.execution.MockRemoteTaskFactory;
-import com.facebook.presto.execution.NodeTaskMap.PartitionedSplitCountTracker;
+import com.facebook.presto.execution.NodeTaskMap;
 import com.facebook.presto.execution.RemoteTask;
-import com.facebook.presto.execution.StageId;
 import com.facebook.presto.execution.TaskId;
-import com.facebook.presto.metadata.PrestoNode;
-import com.facebook.presto.spi.Node;
+import com.facebook.presto.metadata.InternalNode;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
 import java.net.URI;
-import java.util.Map;
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.stream.IntStream;
 
-import static com.facebook.presto.util.ImmutableCollectors.toImmutableSet;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.util.concurrent.Executors.newCachedThreadPool;
+import static java.util.concurrent.Executors.newScheduledThreadPool;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
 public class TestFixedCountScheduler
 {
     private final ExecutorService executor = newCachedThreadPool(daemonThreadsNamed("stageExecutor-%s"));
+    private final ScheduledExecutorService scheduledExecutor = newScheduledThreadPool(2, daemonThreadsNamed("stageScheduledExecutor-%s"));
     private final MockRemoteTaskFactory taskFactory;
 
     public TestFixedCountScheduler()
     {
-        taskFactory = new MockRemoteTaskFactory(executor);
+        taskFactory = new MockRemoteTaskFactory(executor, scheduledExecutor);
     }
 
-    @AfterClass
+    @AfterClass(alwaysRun = true)
     public void destroyExecutor()
     {
         executor.shutdownNow();
+        scheduledExecutor.shutdown();
     }
 
     @Test
     public void testSingleNode()
-            throws Exception
     {
         FixedCountScheduler nodeScheduler = new FixedCountScheduler(
-                (node, partition) -> taskFactory.createTableScanTask(
-                        new TaskId(new StageId("test", "1"), "1"),
-                        (Node) node, ImmutableList.of(),
-                        new PartitionedSplitCountTracker(delta -> { })),
+                (node, partition) -> Optional.of(taskFactory.createTableScanTask(
+                        new TaskId("test", 1, 0, 1),
+                        node, ImmutableList.of(),
+                        new NodeTaskMap.NodeStatsTracker(delta -> {}, delta -> {}, (age, delta) -> {}))),
                 generateRandomNodes(1));
 
         ScheduleResult result = nodeScheduler.schedule();
         assertTrue(result.isFinished());
         assertTrue(result.getBlocked().isDone());
         assertEquals(result.getNewTasks().size(), 1);
-        result.getNewTasks().iterator().next().getNodeId().equals("other 0");
+        assertTrue(result.getNewTasks().iterator().next().getNodeId().equals("other 0"));
     }
 
     @Test
     public void testMultipleNodes()
-            throws Exception
     {
         FixedCountScheduler nodeScheduler = new FixedCountScheduler(
-                (node, partition) -> taskFactory.createTableScanTask(
-                        new TaskId(new StageId("test", "1"), "1"),
-                        (Node) node, ImmutableList.of(),
-                        new PartitionedSplitCountTracker(delta -> { })),
+                (node, partition) -> Optional.of(taskFactory.createTableScanTask(
+                        new TaskId("test", 1, 0, 1),
+                        node, ImmutableList.of(),
+                        new NodeTaskMap.NodeStatsTracker(delta -> {}, delta -> {}, (age, delta) -> {}))),
                 generateRandomNodes(5));
 
         ScheduleResult result = nodeScheduler.schedule();
@@ -88,12 +90,10 @@ public class TestFixedCountScheduler
         assertEquals(result.getNewTasks().stream().map(RemoteTask::getNodeId).collect(toImmutableSet()).size(), 5);
     }
 
-    private static Map<Integer, Node> generateRandomNodes(int count)
+    private static List<InternalNode> generateRandomNodes(int count)
     {
-        ImmutableMap.Builder<Integer, Node> nodes = ImmutableMap.builder();
-        for (int i = 0; i < count; i++) {
-            nodes.put(i, new PrestoNode("other " + i, URI.create("http://127.0.0.1:11"), NodeVersion.UNKNOWN));
-        }
-        return nodes.build();
+        return IntStream.range(0, count)
+                .mapToObj(i -> new InternalNode("other " + i, URI.create("http://127.0.0.1:11"), NodeVersion.UNKNOWN, false))
+                .collect(toImmutableList());
     }
 }

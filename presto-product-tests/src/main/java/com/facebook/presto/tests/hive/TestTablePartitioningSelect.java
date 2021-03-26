@@ -11,41 +11,41 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package com.facebook.presto.tests.hive;
 
 import com.google.inject.Inject;
-import com.teradata.tempto.Requirement;
-import com.teradata.tempto.RequirementsProvider;
-import com.teradata.tempto.configuration.Configuration;
-import com.teradata.tempto.fulfillment.table.MutableTablesState;
-import com.teradata.tempto.fulfillment.table.hive.HiveDataSource;
-import com.teradata.tempto.fulfillment.table.hive.HiveTableDefinition;
-import com.teradata.tempto.query.QueryResult;
+import io.prestodb.tempto.ProductTest;
+import io.prestodb.tempto.Requirement;
+import io.prestodb.tempto.RequirementsProvider;
+import io.prestodb.tempto.configuration.Configuration;
+import io.prestodb.tempto.fulfillment.table.MutableTablesState;
+import io.prestodb.tempto.fulfillment.table.hive.HiveDataSource;
+import io.prestodb.tempto.fulfillment.table.hive.HiveTableDefinition;
+import io.prestodb.tempto.query.QueryExecutionException;
+import io.prestodb.tempto.query.QueryResult;
 import org.testng.annotations.Test;
 
-import java.sql.SQLException;
+import java.util.Locale;
 import java.util.Optional;
 
-import static com.facebook.presto.tests.TestGroups.HIVE_CONNECTOR;
-import static com.facebook.presto.tests.TestGroups.QUARANTINE;
-import static com.teradata.tempto.Requirements.allOf;
-import static com.teradata.tempto.assertions.QueryAssert.Row.row;
-import static com.teradata.tempto.assertions.QueryAssert.assertThat;
-import static com.teradata.tempto.fulfillment.table.MutableTableRequirement.State.LOADED;
-import static com.teradata.tempto.fulfillment.table.TableRequirements.mutableTable;
-import static com.teradata.tempto.fulfillment.table.hive.InlineDataSource.createResourceDataSource;
-import static com.teradata.tempto.query.QueryExecutor.query;
-import static org.assertj.core.api.Assertions.assertThat;
+import static io.prestodb.tempto.Requirements.allOf;
+import static io.prestodb.tempto.assertions.QueryAssert.Row.row;
+import static io.prestodb.tempto.assertions.QueryAssert.assertThat;
+import static io.prestodb.tempto.fulfillment.table.MutableTableRequirement.State.LOADED;
+import static io.prestodb.tempto.fulfillment.table.TableRequirements.mutableTable;
+import static io.prestodb.tempto.fulfillment.table.hive.InlineDataSource.createResourceDataSource;
+import static io.prestodb.tempto.fulfillment.table.hive.InlineDataSource.createStringDataSource;
+import static io.prestodb.tempto.query.QueryExecutor.query;
 
 public class TestTablePartitioningSelect
-        extends HivePartitioningTest
+        extends ProductTest
         implements RequirementsProvider
 {
     private static final HiveTableDefinition SINGLE_INT_COLUMN_PARTITIONEND_TEXTFILE = singleIntColumnPartitionedTableDefinition("TEXTFILE", Optional.of("DELIMITED FIELDS TERMINATED BY '|'"));
     private static final HiveTableDefinition SINGLE_INT_COLUMN_PARTITIONED_ORC = singleIntColumnPartitionedTableDefinition("ORC", Optional.empty());
     private static final HiveTableDefinition SINGLE_INT_COLUMN_PARTITIONED_RCFILE = singleIntColumnPartitionedTableDefinition("RCFILE", Optional.of("SERDE 'org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe'"));
     private static final HiveTableDefinition SINGLE_INT_COLUMN_PARTITIONED_PARQUET = singleIntColumnPartitionedTableDefinition("PARQUET", Optional.empty());
+    private static final HiveTableDefinition SINGLE_INT_COLUMN_PARTITIONED_AVRO = singleIntColumnPartitionedTableDefinition("AVRO", Optional.of("SERDE 'org.apache.hadoop.hive.serde2.avro.AvroSerDe'"));
     private static final String TABLE_NAME = "test_table";
 
     @Inject
@@ -53,11 +53,12 @@ public class TestTablePartitioningSelect
 
     private static HiveTableDefinition singleIntColumnPartitionedTableDefinition(String fileFormat, Optional<String> serde)
     {
-        String tableName = fileFormat.toLowerCase() + "_single_int_column_partitioned";
-        HiveDataSource dataSource = createResourceDataSource(tableName, "" + System.currentTimeMillis(), "com/facebook/presto/tests/hive/data/single_int_column/data." + fileFormat.toLowerCase());
+        String tableName = fileFormat.toLowerCase(Locale.ENGLISH) + "_single_int_column_partitioned";
+        HiveDataSource dataSource = createResourceDataSource(tableName, "com/facebook/presto/tests/hive/data/single_int_column/data." + fileFormat.toLowerCase(Locale.ENGLISH));
+        HiveDataSource invalidData = createStringDataSource(tableName, "INVALID DATA");
         return HiveTableDefinition.builder(tableName)
                 .setCreateTableDDLTemplate(buildSingleIntColumnPartitionedTableDDL(fileFormat, serde))
-                .addPartition("part_col = 1", dataSource)
+                .addPartition("part_col = 1", invalidData)
                 .addPartition("part_col = 2", dataSource)
                 .build();
     }
@@ -65,7 +66,7 @@ public class TestTablePartitioningSelect
     private static String buildSingleIntColumnPartitionedTableDDL(String fileFormat, Optional<String> rowFormat)
     {
         StringBuilder sb = new StringBuilder();
-        sb.append("CREATE EXTERNAL TABLE %NAME%(");
+        sb.append("CREATE %EXTERNAL% TABLE %NAME%(");
         sb.append("   col INT");
         sb.append(") ");
         sb.append("PARTITIONED BY (part_col INT) ");
@@ -83,41 +84,24 @@ public class TestTablePartitioningSelect
                 mutableTable(SINGLE_INT_COLUMN_PARTITIONEND_TEXTFILE, TABLE_NAME, LOADED),
                 mutableTable(SINGLE_INT_COLUMN_PARTITIONED_ORC, TABLE_NAME, LOADED),
                 mutableTable(SINGLE_INT_COLUMN_PARTITIONED_RCFILE, TABLE_NAME, LOADED),
-                mutableTable(SINGLE_INT_COLUMN_PARTITIONED_PARQUET, TABLE_NAME, LOADED)
-        );
+                mutableTable(SINGLE_INT_COLUMN_PARTITIONED_PARQUET, TABLE_NAME, LOADED),
+                mutableTable(SINGLE_INT_COLUMN_PARTITIONED_AVRO, TABLE_NAME, LOADED));
     }
 
-    @Test(groups = {HIVE_CONNECTOR, QUARANTINE})
+    @Test
     public void testSelectPartitionedHiveTableDifferentFormats()
-            throws SQLException
     {
         String tableNameInDatabase = tablesState.get(TABLE_NAME).getNameInDatabase();
-
-        String selectFromAllPartitionsSql = "SELECT * FROM " + tableNameInDatabase;
-        QueryResult allPartitionsQueryResult = query(selectFromAllPartitionsSql);
-        assertThat(allPartitionsQueryResult).containsOnly(row(42, 1), row(42, 2));
-        assertProcessedLinesCountEquals(selectFromAllPartitionsSql, allPartitionsQueryResult, 2);
 
         String selectFromOnePartitionsSql = "SELECT * FROM " + tableNameInDatabase + " WHERE part_col = 2";
         QueryResult onePartitionQueryResult = query(selectFromOnePartitionsSql);
         assertThat(onePartitionQueryResult).containsOnly(row(42, 2));
-        assertProcessedLinesCountEquals(selectFromOnePartitionsSql, onePartitionQueryResult, 1);
-    }
 
-    private static final long GET_PROCESSED_LINES_COUNT_RETRY_SLEEP = 500;
-
-    private void assertProcessedLinesCountEquals(String sqlStatement, QueryResult allPartitionsQueryResult, int expected)
-            throws SQLException
-    {
-        long processedLinesCountAllPartitions = getProcessedLinesCount(sqlStatement, allPartitionsQueryResult);
-        if (processedLinesCountAllPartitions != expected) {
-            try {
-                Thread.sleep(GET_PROCESSED_LINES_COUNT_RETRY_SLEEP);
-            }
-            catch (InterruptedException e) {
-            }
-            processedLinesCountAllPartitions = getProcessedLinesCount(sqlStatement, allPartitionsQueryResult);
+        try {
+            // This query should fail or return null values for invalid partition data
+            assertThat(query("SELECT * FROM " + tableNameInDatabase)).containsOnly(row(42, 2), row(null, 1));
         }
-        assertThat(processedLinesCountAllPartitions).isEqualTo(expected);
+        catch (QueryExecutionException expectedDueToInvalidPartitionData) {
+        }
     }
 }

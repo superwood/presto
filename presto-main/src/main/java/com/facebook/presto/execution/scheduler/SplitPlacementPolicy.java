@@ -13,18 +13,17 @@
  */
 package com.facebook.presto.execution.scheduler;
 
+import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.metadata.Split;
-import com.facebook.presto.spi.Node;
-import com.google.common.collect.Multimap;
 
 import java.util.List;
 import java.util.Set;
 
 public interface SplitPlacementPolicy
 {
-    Multimap<Node, Split> computeAssignments(Set<Split> splits);
+    SplitPlacementResult computeAssignments(Set<Split> splits);
 
     void lockDownNodes();
 
-    List<Node> allNodes();
+    List<InternalNode> allNodes();
 }

@@ -17,24 +17,29 @@ import com.facebook.presto.Session;
 import com.facebook.presto.execution.Column;
 import com.facebook.presto.execution.Input;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.TableHandle;
 import com.facebook.presto.metadata.TableMetadata;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.Constraint;
 import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.TableHandle;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.statistics.TableStatistics;
 import com.facebook.presto.sql.planner.plan.IndexSourceNode;
-import com.facebook.presto.sql.planner.plan.PlanNode;
-import com.facebook.presto.sql.planner.plan.PlanVisitor;
-import com.facebook.presto.sql.planner.plan.TableScanNode;
+import com.facebook.presto.sql.planner.plan.InternalPlanVisitor;
+import com.facebook.presto.sql.planner.plan.JoinNode;
+import com.facebook.presto.sql.planner.plan.SemiJoinNode;
+import com.facebook.presto.sql.planner.plan.SpatialJoinNode;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+
+import static com.google.common.collect.ImmutableList.toImmutableList;
 
 public class InputExtractor
 {
@@ -47,79 +52,110 @@ public class InputExtractor
         this.session = session;
     }
 
-    public List<Input> extract(PlanNode root)
+    public List<Input> extractInputs(PlanNode root)
     {
         Visitor visitor = new Visitor();
-        root.accept(visitor, null);
+        root.accept(visitor, new Context());
 
-        ImmutableList.Builder<Input> inputBuilder = ImmutableList.builder();
-        for (Map.Entry<TableEntry, Set<Column>> entry : visitor.getInputs().entrySet()) {
-            Input input = new Input(entry.getKey().getConnectorId(), entry.getKey().getSchema(), entry.getKey().getTable(), ImmutableList.copyOf(entry.getValue()));
-            inputBuilder.add(input);
-        }
-
-        return inputBuilder.build();
+        return ImmutableList.copyOf(visitor.getInputs());
     }
 
-    private static Column createColumnEntry(ColumnMetadata columnMetadata)
+    private static Column createColumn(ColumnMetadata columnMetadata)
     {
         return new Column(columnMetadata.getName(), columnMetadata.getType().toString());
     }
 
-    private static TableEntry createTableEntry(TableMetadata table)
+    private Input createInput(TableMetadata table, TableHandle tableHandle, Set<Column> columns, Optional<TableStatistics> statistics)
     {
         SchemaTableName schemaTable = table.getTable();
-        return new TableEntry(table.getConnectorId(), schemaTable.getSchemaName(), schemaTable.getTableName());
+        Optional<Object> inputMetadata = metadata.getInfo(session, tableHandle);
+        return new Input(table.getConnectorId(), schemaTable.getSchemaName(), schemaTable.getTableName(), inputMetadata, ImmutableList.copyOf(columns), statistics);
     }
 
     private class Visitor
-            extends PlanVisitor<Void, Void>
+            extends InternalPlanVisitor<Void, Context>
     {
-        private final Map<TableEntry, Set<Column>> inputs = new HashMap<>();
+        private final ImmutableSet.Builder<Input> inputs = ImmutableSet.builder();
 
-        public Map<TableEntry, Set<Column>> getInputs()
+        public Set<Input> getInputs()
         {
-            return inputs;
+            return inputs.build();
         }
 
         @Override
-        public Void visitTableScan(TableScanNode node, Void context)
+        public Void visitJoin(JoinNode node, Context context)
+        {
+            context.setExtractStatistics(true);
+            visitPlan(node, context);
+            return null;
+        }
+
+        @Override
+        public Void visitSemiJoin(SemiJoinNode node, Context context)
+        {
+            context.setExtractStatistics(true);
+            visitPlan(node, context);
+            return null;
+        }
+
+        @Override
+        public Void visitSpatialJoin(SpatialJoinNode node, Context context)
+        {
+            context.setExtractStatistics(true);
+            visitPlan(node, context);
+            return null;
+        }
+
+        @Override
+        public Void visitTableScan(TableScanNode node, Context context)
         {
             TableHandle tableHandle = node.getTable();
-            Optional<ColumnHandle> sampleWeightColumn = metadata.getSampleWeightColumnHandle(session, tableHandle);
 
             Set<Column> columns = new HashSet<>();
             for (ColumnHandle columnHandle : node.getAssignments().values()) {
-                if (!columnHandle.equals(sampleWeightColumn.orElse(null))) {
-                    columns.add(createColumnEntry(metadata.getColumnMetadata(session, tableHandle, columnHandle)));
-                }
+                columns.add(createColumn(metadata.getColumnMetadata(session, tableHandle, columnHandle)));
             }
 
-            inputs.put(createTableEntry(metadata.getTableMetadata(session, tableHandle)), columns);
+            List<ColumnHandle> desiredColumns = node.getAssignments().values().stream().collect(toImmutableList());
+
+            Optional<TableStatistics> statistics = Optional.empty();
+
+            if (context.isExtractStatistics()) {
+                Constraint<ColumnHandle> constraint = new Constraint<>(node.getCurrentConstraint());
+                statistics = Optional.of(metadata.getTableStatistics(session, tableHandle, desiredColumns, constraint));
+            }
+
+            inputs.add(createInput(metadata.getTableMetadata(session, tableHandle), tableHandle, columns, statistics));
 
             return null;
         }
 
         @Override
-        public Void visitIndexSource(IndexSourceNode node, Void context)
+        public Void visitIndexSource(IndexSourceNode node, Context context)
         {
             TableHandle tableHandle = node.getTableHandle();
-            Optional<ColumnHandle> sampleWeightColumn = metadata.getSampleWeightColumnHandle(session, tableHandle);
 
             Set<Column> columns = new HashSet<>();
             for (ColumnHandle columnHandle : node.getAssignments().values()) {
-                if (!columnHandle.equals(sampleWeightColumn.orElse(null))) {
-                    columns.add(createColumnEntry(metadata.getColumnMetadata(session, tableHandle, columnHandle)));
-                }
+                columns.add(createColumn(metadata.getColumnMetadata(session, tableHandle, columnHandle)));
             }
 
-            inputs.put(createTableEntry(metadata.getTableMetadata(session, tableHandle)), columns);
+            List<ColumnHandle> desiredColumns = node.getAssignments().values().stream().collect(toImmutableList());
+
+            Optional<TableStatistics> statistics = Optional.empty();
+
+            if (context.isExtractStatistics()) {
+                Constraint<ColumnHandle> constraint = new Constraint<>(node.getCurrentConstraint());
+                statistics = Optional.of(metadata.getTableStatistics(session, tableHandle, desiredColumns, constraint));
+            }
+
+            inputs.add(createInput(metadata.getTableMetadata(session, tableHandle), tableHandle, columns, statistics));
 
             return null;
         }
 
         @Override
-        protected Void visitPlan(PlanNode node, Void context)
+        public Void visitPlan(PlanNode node, Context context)
         {
             for (PlanNode child : node.getSources()) {
                 child.accept(this, context);
@@ -128,53 +164,20 @@ public class InputExtractor
         }
     }
 
-    private static final class TableEntry
+    private static class Context
     {
-        private final String connectorId;
-        private final String schema;
-        private final String table;
+        private boolean extractStatistics;
 
-        private TableEntry(String connectorId, String schema, String table)
+        public Context() {}
+
+        public boolean isExtractStatistics()
         {
-            this.connectorId = connectorId;
-            this.schema = schema;
-            this.table = table;
+            return extractStatistics;
         }
 
-        public String getConnectorId()
+        public void setExtractStatistics(boolean extractStatistics)
         {
-            return connectorId;
-        }
-
-        public String getSchema()
-        {
-            return schema;
-        }
-
-        public String getTable()
-        {
-            return table;
-        }
-
-        @Override
-        public int hashCode()
-        {
-            return Objects.hash(connectorId, schema, table);
-        }
-
-        @Override
-        public boolean equals(Object obj)
-        {
-            if (this == obj) {
-                return true;
-            }
-            if (obj == null || getClass() != obj.getClass()) {
-                return false;
-            }
-            final TableEntry other = (TableEntry) obj;
-            return Objects.equals(this.connectorId, other.connectorId) &&
-                    Objects.equals(this.schema, other.schema) &&
-                    Objects.equals(this.table, other.table);
+            this.extractStatistics = extractStatistics;
         }
     }
 }

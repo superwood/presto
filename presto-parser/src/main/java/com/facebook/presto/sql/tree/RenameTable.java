@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.google.common.collect.ImmutableList;
+
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -24,22 +27,24 @@ public final class RenameTable
 {
     private final QualifiedName source;
     private final QualifiedName target;
+    private final boolean exists;
 
-    public RenameTable(QualifiedName source, QualifiedName target)
+    public RenameTable(QualifiedName source, QualifiedName target, boolean exists)
     {
-        this(Optional.empty(), source, target);
+        this(Optional.empty(), source, target, exists);
     }
 
-    public RenameTable(NodeLocation location, QualifiedName source, QualifiedName target)
+    public RenameTable(NodeLocation location, QualifiedName source, QualifiedName target, boolean exists)
     {
-        this(Optional.of(location), source, target);
+        this(Optional.of(location), source, target, exists);
     }
 
-    private RenameTable(Optional<NodeLocation> location, QualifiedName source, QualifiedName target)
+    private RenameTable(Optional<NodeLocation> location, QualifiedName source, QualifiedName target, boolean exists)
     {
         super(location);
         this.source = requireNonNull(source, "source name is null");
         this.target = requireNonNull(target, "target name is null");
+        this.exists = exists;
     }
 
     public QualifiedName getSource()
@@ -52,10 +57,21 @@ public final class RenameTable
         return target;
     }
 
+    public boolean isExists()
+    {
+        return exists;
+    }
+
     @Override
     public <R, C> R accept(AstVisitor<R, C> visitor, C context)
     {
         return visitor.visitRenameTable(this, context);
+    }
+
+    @Override
+    public List<Node> getChildren()
+    {
+        return ImmutableList.of();
     }
 
     @Override

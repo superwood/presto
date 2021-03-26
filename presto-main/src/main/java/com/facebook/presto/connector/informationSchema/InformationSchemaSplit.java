@@ -13,16 +13,19 @@
  */
 package com.facebook.presto.connector.informationSchema;
 
+import com.facebook.presto.metadata.QualifiedTablePrefix;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.HostAddress;
-import com.facebook.presto.spi.predicate.NullableValue;
+import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 
+import static com.facebook.presto.spi.schedule.NodeSelectionStrategy.HARD_AFFINITY;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
@@ -31,18 +34,17 @@ public class InformationSchemaSplit
         implements ConnectorSplit
 {
     private final InformationSchemaTableHandle tableHandle;
-    private final Map<String, NullableValue> filters;
+    private final Set<QualifiedTablePrefix> prefixes;
     private final List<HostAddress> addresses;
 
     @JsonCreator
     public InformationSchemaSplit(
             @JsonProperty("tableHandle") InformationSchemaTableHandle tableHandle,
-            @JsonProperty("filters") Map<String, NullableValue> filters,
+            @JsonProperty("prefixes") Set<QualifiedTablePrefix> prefixes,
             @JsonProperty("addresses") List<HostAddress> addresses)
-
     {
         this.tableHandle = requireNonNull(tableHandle, "tableHandle is null");
-        this.filters = requireNonNull(filters, "filters is null");
+        this.prefixes = ImmutableSet.copyOf(requireNonNull(prefixes, "prefixes is null"));
 
         requireNonNull(addresses, "hosts is null");
         checkArgument(!addresses.isEmpty(), "hosts is empty");
@@ -50,14 +52,19 @@ public class InformationSchemaSplit
     }
 
     @Override
-    public boolean isRemotelyAccessible()
+    public NodeSelectionStrategy getNodeSelectionStrategy()
     {
-        return false;
+        return HARD_AFFINITY;
+    }
+
+    @JsonProperty
+    public List<HostAddress> getAddresses()
+    {
+        return addresses;
     }
 
     @Override
-    @JsonProperty
-    public List<HostAddress> getAddresses()
+    public List<HostAddress> getPreferredNodes(List<HostAddress> sortedCandidates)
     {
         return addresses;
     }
@@ -69,9 +76,9 @@ public class InformationSchemaSplit
     }
 
     @JsonProperty
-    public Map<String, NullableValue> getFilters()
+    public Set<QualifiedTablePrefix> getPrefixes()
     {
-        return filters;
+        return prefixes;
     }
 
     @Override
@@ -85,7 +92,7 @@ public class InformationSchemaSplit
     {
         return toStringHelper(this)
                 .add("tableHandle", tableHandle)
-                .add("filters", filters)
+                .add("prefixes", prefixes)
                 .add("addresses", addresses)
                 .toString();
     }

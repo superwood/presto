@@ -14,85 +14,52 @@
 package com.facebook.presto.operator.scalar;
 
 import com.facebook.presto.annotation.UsedByGeneratedCode;
-import com.facebook.presto.metadata.FunctionRegistry;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.metadata.BoundVariables;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.SqlOperator;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.common.collect.ImmutableList;
-import io.airlift.slice.Slice;
 
 import java.lang.invoke.MethodHandle;
-import java.util.Map;
 
-import static com.facebook.presto.metadata.OperatorType.CAST;
-import static com.facebook.presto.metadata.Signature.typeParameter;
+import static com.facebook.presto.common.function.OperatorType.CAST;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
+import static com.facebook.presto.spi.function.Signature.typeVariable;
 import static com.facebook.presto.util.Reflection.methodHandle;
 
 public final class CastFromUnknownOperator
         extends SqlOperator
 {
     public static final CastFromUnknownOperator CAST_FROM_UNKNOWN = new CastFromUnknownOperator();
-    private static final MethodHandle METHOD_HANDLE_LONG = methodHandle(CastFromUnknownOperator.class, "toLong", Void.class);
-    private static final MethodHandle METHOD_HANDLE_DOUBLE = methodHandle(CastFromUnknownOperator.class, "toDouble", Void.class);
-    private static final MethodHandle METHOD_HANDLE_BOOLEAN = methodHandle(CastFromUnknownOperator.class, "toBoolean", Void.class);
-    private static final MethodHandle METHOD_HANDLE_SLICE = methodHandle(CastFromUnknownOperator.class, "toSlice", Void.class);
-    private static final MethodHandle METHOD_HANDLE_OBJECT = methodHandle(CastFromUnknownOperator.class, "toObject", Void.class);
+    private static final MethodHandle METHOD_HANDLE_NON_NULL = methodHandle(CastFromUnknownOperator.class, "handleNonNull", boolean.class);
 
     public CastFromUnknownOperator()
     {
-        super(CAST, ImmutableList.of(typeParameter("E")), "E", ImmutableList.of("unknown"));
+        super(CAST,
+                ImmutableList.of(typeVariable("E")),
+                ImmutableList.of(),
+                parseTypeSignature("E"),
+                ImmutableList.of(parseTypeSignature("unknown")));
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(Map<String, Type> types, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public BuiltInScalarFunctionImplementation specialize(
+            BoundVariables boundVariables, int arity,
+            FunctionAndTypeManager functionAndTypeManager)
     {
-        Type toType = types.get("E");
-        MethodHandle methodHandle;
-        if (toType.getJavaType() == long.class) {
-            methodHandle = METHOD_HANDLE_LONG;
-        }
-        else if (toType.getJavaType() == double.class) {
-            methodHandle = METHOD_HANDLE_DOUBLE;
-        }
-        else if (toType.getJavaType() == boolean.class) {
-            methodHandle = METHOD_HANDLE_BOOLEAN;
-        }
-        else if (toType.getJavaType() == Slice.class) {
-            methodHandle = METHOD_HANDLE_SLICE;
-        }
-        else {
-            methodHandle = METHOD_HANDLE_OBJECT.asType(METHOD_HANDLE_OBJECT.type().changeReturnType(toType.getJavaType()));
-        }
-        return new ScalarFunctionImplementation(true, ImmutableList.of(true), methodHandle, isDeterministic());
+        Type toType = boundVariables.getTypeVariable("E");
+        MethodHandle methodHandle = METHOD_HANDLE_NON_NULL.asType(METHOD_HANDLE_NON_NULL.type().changeReturnType(toType.getJavaType()));
+        return new BuiltInScalarFunctionImplementation(
+                false,
+                ImmutableList.of(valueTypeArgumentProperty(RETURN_NULL_ON_NULL)),
+                methodHandle);
     }
 
     @UsedByGeneratedCode
-    public static Long toLong(Void arg)
+    public static Object handleNonNull(boolean arg)
     {
-        return null;
-    }
-
-    @UsedByGeneratedCode
-    public static Double toDouble(Void arg)
-    {
-        return null;
-    }
-
-    @UsedByGeneratedCode
-    public static Boolean toBoolean(Void arg)
-    {
-        return null;
-    }
-
-    @UsedByGeneratedCode
-    public static Slice toSlice(Void arg)
-    {
-        return null;
-    }
-
-    @UsedByGeneratedCode
-    public static Object toObject(Void arg)
-    {
-        return null;
+        throw new IllegalArgumentException("value of unknown type should always be null");
     }
 }

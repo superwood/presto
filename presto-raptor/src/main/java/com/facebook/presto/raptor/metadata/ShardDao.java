@@ -15,7 +15,6 @@ package com.facebook.presto.raptor.metadata;
 
 import com.facebook.presto.raptor.util.UuidUtil.UuidArgumentFactory;
 import com.facebook.presto.raptor.util.UuidUtil.UuidMapperFactory;
-import com.google.common.annotations.VisibleForTesting;
 import org.skife.jdbi.v2.sqlobject.Bind;
 import org.skife.jdbi.v2.sqlobject.GetGeneratedKeys;
 import org.skife.jdbi.v2.sqlobject.SqlBatch;
@@ -34,33 +33,23 @@ import java.util.UUID;
 @RegisterMapperFactory(UuidMapperFactory.class)
 public interface ShardDao
 {
+    int CLEANABLE_SHARDS_BATCH_SIZE = 1000;
+    int CLEANUP_TRANSACTIONS_BATCH_SIZE = 10_000;
+
+    String SHARD_METADATA_COLUMNS = "table_id, shard_id, shard_uuid, is_delta, delta_uuid, bucket_number, row_count, compressed_size, uncompressed_size, xxhash64";
+
     @SqlUpdate("INSERT INTO nodes (node_identifier) VALUES (:nodeIdentifier)")
     @GetGeneratedKeys
     int insertNode(@Bind("nodeIdentifier") String nodeIdentifier);
-
-    @SqlUpdate("INSERT INTO shards (shard_uuid, table_id, bucket_number, create_time, row_count, compressed_size, uncompressed_size)\n" +
-            "VALUES (:shardUuid, :tableId, :bucketNumber, CURRENT_TIMESTAMP, :rowCount, :compressedSize, :uncompressedSize)")
-    @GetGeneratedKeys
-    long insertShard(
-            @Bind("shardUuid") UUID shardUuid,
-            @Bind("tableId") long tableId,
-            @Bind("bucketNumber") Integer bucketNumber,
-            @Bind("rowCount") long rowCount,
-            @Bind("compressedSize") long compressedSize,
-            @Bind("uncompressedSize") long uncompressedSize);
-
-    @SqlUpdate("INSERT INTO shard_nodes (shard_id, node_id)\n" +
-            "VALUES (:shardId, :nodeId)\n")
-    void insertShardNode(@Bind("shardId") long shardId, @Bind("nodeId") int nodeId);
 
     @SqlUpdate("INSERT INTO shard_nodes (shard_id, node_id)\n" +
             "VALUES ((SELECT shard_id FROM shards WHERE shard_uuid = :shardUuid), :nodeId)")
     void insertShardNode(@Bind("shardUuid") UUID shardUuid, @Bind("nodeId") int nodeId);
 
-    @SqlUpdate("DELETE FROM shard_nodes\n" +
+    @SqlBatch("DELETE FROM shard_nodes\n" +
             "WHERE shard_id = (SELECT shard_id FROM shards WHERE shard_uuid = :shardUuid)\n" +
             "  AND node_id = :nodeId")
-    void deleteShardNode(@Bind("shardUuid") UUID shardUuid, @Bind("nodeId") int nodeId);
+    void deleteShardNodes(@Bind("shardUuid") UUID shardUuid, @Bind("nodeId") Iterable<Integer> nodeId);
 
     @SqlQuery("SELECT node_id FROM nodes WHERE node_identifier = :nodeIdentifier")
     Integer getNodeId(@Bind("nodeIdentifier") String nodeIdentifier);
@@ -72,28 +61,82 @@ public interface ShardDao
     @Mapper(RaptorNode.Mapper.class)
     List<RaptorNode> getNodes();
 
-    @SqlQuery("SELECT shard_uuid FROM shards WHERE table_id = :tableId")
-    List<UUID> getShards(@Bind("tableId") long tableId);
-
-    @SqlQuery("SELECT s.table_id, s.shard_id, s.shard_uuid, s.bucket_number, s.row_count, s.compressed_size, s.uncompressed_size\n" +
-            "FROM shards s\n" +
-            "JOIN shard_nodes sn ON (s.shard_id = sn.shard_id)\n" +
-            "JOIN nodes n ON (sn.node_id = n.node_id)\n" +
-            "WHERE n.node_identifier = :nodeIdentifier")
+    @SqlQuery("SELECT " + SHARD_METADATA_COLUMNS + " FROM shards WHERE shard_uuid = :shardUuid")
     @Mapper(ShardMetadata.Mapper.class)
-    Set<ShardMetadata> getNodeShards(@Bind("nodeIdentifier") String nodeIdentifier);
+    ShardMetadata getShard(@Bind("shardUuid") UUID shardUuid);
 
-    @SqlQuery("SELECT s.shard_uuid, n.node_identifier\n" +
-            "FROM shards s\n" +
-            "JOIN shard_nodes sn ON (s.shard_id = sn.shard_id)\n" +
-            "JOIN nodes n ON (sn.node_id = n.node_id)\n" +
-            "WHERE s.table_id = :tableId")
-    @Mapper(ShardNode.Mapper.class)
-    List<ShardNode> getShardNodes(@Bind("tableId") long tableId);
+    @SqlQuery("SELECT " + SHARD_METADATA_COLUMNS + "\n" +
+            "FROM (\n" +
+            "    SELECT s.*\n" +
+            "    FROM shards s\n" +
+            "    JOIN shard_nodes sn ON (s.shard_id = sn.shard_id)\n" +
+            "    JOIN nodes n ON (sn.node_id = n.node_id)\n" +
+            "    WHERE n.node_identifier = :nodeIdentifier\n" +
+            "      AND s.bucket_number IS NULL\n" +
+            "      AND (s.table_id = :tableId OR :tableId IS NULL)\n" +
+            "  UNION ALL\n" +
+            "    SELECT s.*\n" +
+            "    FROM shards s\n" +
+            "    JOIN tables t ON (s.table_id = t.table_id)\n" +
+            "    JOIN distributions d ON (t.distribution_id = d.distribution_id)\n" +
+            "    JOIN buckets b ON (\n" +
+            "      d.distribution_id = b.distribution_id AND\n" +
+            "      s.bucket_number = b.bucket_number)\n" +
+            "    JOIN nodes n ON (b.node_id = n.node_id)\n" +
+            "    WHERE n.node_identifier = :nodeIdentifier\n" +
+            "      AND (s.table_id = :tableId OR :tableId IS NULL)\n" +
+            ") x")
+    @Mapper(ShardMetadata.Mapper.class)
+    Set<ShardMetadata> getNodeShardsAndDeltas(@Bind("nodeIdentifier") String nodeIdentifier, @Bind("tableId") Long tableId);
 
-    @VisibleForTesting
-    @SqlQuery("SELECT node_identifier FROM nodes")
-    Set<String> getAllNodesInUse();
+    @SqlQuery("SELECT " + SHARD_METADATA_COLUMNS + "\n" +
+            "FROM (\n" +
+            "    SELECT s.*\n" +
+            "    FROM shards s\n" +
+            "    JOIN shard_nodes sn ON (s.shard_id = sn.shard_id)\n" +
+            "    JOIN nodes n ON (sn.node_id = n.node_id)\n" +
+            "    WHERE n.node_identifier = :nodeIdentifier\n" +
+            "      AND s.bucket_number IS NULL\n" +
+            "      AND s.is_delta = false\n" +
+            "      AND (s.table_id = :tableId OR :tableId IS NULL)\n" +
+            "  UNION ALL\n" +
+            "    SELECT s.*\n" +
+            "    FROM shards s\n" +
+            "    JOIN tables t ON (s.table_id = t.table_id)\n" +
+            "    JOIN distributions d ON (t.distribution_id = d.distribution_id)\n" +
+            "    JOIN buckets b ON (\n" +
+            "      d.distribution_id = b.distribution_id AND\n" +
+            "      s.bucket_number = b.bucket_number)\n" +
+            "    JOIN nodes n ON (b.node_id = n.node_id)\n" +
+            "    WHERE n.node_identifier = :nodeIdentifier\n" +
+            "      AND s.is_delta  = false\n" +
+            "      AND (s.table_id = :tableId OR :tableId IS NULL)\n" +
+            ") x")
+    @Mapper(ShardMetadata.Mapper.class)
+    Set<ShardMetadata> getNodeShards(@Bind("nodeIdentifier") String nodeIdentifier, @Bind("tableId") Long tableId);
+
+    @SqlQuery("SELECT n.node_identifier, x.bytes\n" +
+            "FROM (\n" +
+            "  SELECT node_id, sum(compressed_size) bytes\n" +
+            "  FROM (\n" +
+            "      SELECT sn.node_id, s.compressed_size\n" +
+            "      FROM shards s\n" +
+            "      JOIN shard_nodes sn ON (s.shard_id = sn.shard_id)\n" +
+            "      WHERE s.bucket_number IS NULL\n" +
+            "    UNION ALL\n" +
+            "      SELECT b.node_id, s.compressed_size\n" +
+            "      FROM shards s\n" +
+            "      JOIN tables t ON (s.table_id = t.table_id)\n" +
+            "      JOIN distributions d ON (t.distribution_id = d.distribution_id)\n" +
+            "      JOIN buckets b ON (\n" +
+            "        d.distribution_id = b.distribution_id AND\n" +
+            "        s.bucket_number = b.bucket_number)\n" +
+            "  ) x\n" +
+            "  GROUP BY node_id\n" +
+            ") x\n" +
+            "JOIN nodes n ON (x.node_id = n.node_id)")
+    @Mapper(NodeSize.Mapper.class)
+    Set<NodeSize> getNodeSizes();
 
     @SqlUpdate("DELETE FROM shard_nodes WHERE shard_id IN (\n" +
             "  SELECT shard_id\n" +
@@ -166,8 +209,8 @@ public interface ShardDao
     @SqlQuery("SELECT shard_uuid\n" +
             "FROM deleted_shards\n" +
             "WHERE delete_time < :maxDeleteTime\n" +
-            "LIMIT 1000")
-    List<UUID> getCleanableShardsBatch(@Bind("maxDeleteTime") Timestamp maxDeleteTime);
+            "LIMIT " + CLEANABLE_SHARDS_BATCH_SIZE)
+    Set<UUID> getCleanableShardsBatch(@Bind("maxDeleteTime") Timestamp maxDeleteTime);
 
     @SqlBatch("DELETE FROM deleted_shards WHERE shard_uuid = :shardUuid")
     void deleteCleanedShards(@Bind("shardUuid") Iterable<UUID> shardUuids);
@@ -187,6 +230,16 @@ public interface ShardDao
     @Mapper(BucketNode.Mapper.class)
     List<BucketNode> getBucketNodes(@Bind("distributionId") long distributionId);
 
+    @SqlQuery("SELECT distribution_id, distribution_name, column_types, bucket_count\n" +
+            "FROM distributions\n" +
+            "WHERE distribution_id IN (SELECT distribution_id FROM tables)")
+    List<Distribution> listActiveDistributions();
+
+    @SqlQuery("SELECT SUM(compressed_size)\n" +
+            "FROM tables\n" +
+            "WHERE distribution_id = :distributionId")
+    long getDistributionSizeBytes(@Bind("distributionId") long distributionId);
+
     @SqlUpdate("UPDATE buckets SET node_id = :nodeId\n" +
             "WHERE distribution_id = :distributionId\n" +
             "  AND bucket_number = :bucketNumber")
@@ -194,4 +247,6 @@ public interface ShardDao
             @Bind("distributionId") long distributionId,
             @Bind("bucketNumber") int bucketNumber,
             @Bind("nodeId") int nodeId);
+
+    int deleteOldCompletedTransactions(@Bind("maxEndTime") Timestamp maxEndTime);
 }

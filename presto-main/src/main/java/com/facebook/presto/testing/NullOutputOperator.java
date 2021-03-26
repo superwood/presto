@@ -13,17 +13,20 @@
  */
 package com.facebook.presto.testing;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.execution.buffer.PagesSerdeFactory;
 import com.facebook.presto.operator.DriverContext;
 import com.facebook.presto.operator.Operator;
 import com.facebook.presto.operator.OperatorContext;
 import com.facebook.presto.operator.OperatorFactory;
 import com.facebook.presto.operator.OutputFactory;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
-import com.google.common.collect.ImmutableList;
+import com.facebook.presto.spi.plan.PlanNodeId;
+import com.facebook.presto.sql.planner.OutputPartitioning;
 
 import java.util.List;
+import java.util.Optional;
+import java.util.function.Function;
 
 import static java.util.Objects.requireNonNull;
 
@@ -34,9 +37,15 @@ public class NullOutputOperator
             implements OutputFactory
     {
         @Override
-        public OperatorFactory createOutputOperator(int operatorId, PlanNodeId planNodeId, List<Type> sourceTypes)
+        public OperatorFactory createOutputOperator(
+                int operatorId,
+                PlanNodeId planNodeId,
+                List<Type> types,
+                Function<Page, Page> pagePreprocessor,
+                Optional<OutputPartitioning> outputPartitioning,
+                PagesSerdeFactory serdeFactory)
         {
-            return new NullOutputOperatorFactory(operatorId, planNodeId, sourceTypes);
+            return new NullOutputOperatorFactory(operatorId, planNodeId);
         }
     }
 
@@ -45,60 +54,44 @@ public class NullOutputOperator
     {
         private final int operatorId;
         private final PlanNodeId planNodeId;
-        private final List<Type> types;
 
-        public NullOutputOperatorFactory(int operatorId, PlanNodeId planNodeId, List<Type> types)
+        public NullOutputOperatorFactory(int operatorId, PlanNodeId planNodeId)
         {
             this.operatorId = operatorId;
             this.planNodeId = requireNonNull(planNodeId, "planNodeId is null");
-            this.types = types;
-        }
-
-        @Override
-        public List<Type> getTypes()
-        {
-            return types;
         }
 
         @Override
         public Operator createOperator(DriverContext driverContext)
         {
             OperatorContext operatorContext = driverContext.addOperatorContext(operatorId, planNodeId, NullOutputOperator.class.getSimpleName());
-            return new NullOutputOperator(operatorContext, types);
+            return new NullOutputOperator(operatorContext);
         }
 
         @Override
-        public void close()
+        public void noMoreOperators()
         {
         }
 
         @Override
         public OperatorFactory duplicate()
         {
-            return new NullOutputOperatorFactory(operatorId, planNodeId, types);
+            return new NullOutputOperatorFactory(operatorId, planNodeId);
         }
     }
 
     private final OperatorContext operatorContext;
-    private final List<Type> types;
     private boolean finished;
 
-    public NullOutputOperator(OperatorContext operatorContext, List<Type> types)
+    public NullOutputOperator(OperatorContext operatorContext)
     {
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
-        this.types = ImmutableList.copyOf(requireNonNull(types, "types is null"));
     }
 
     @Override
     public OperatorContext getOperatorContext()
     {
         return operatorContext;
-    }
-
-    @Override
-    public List<Type> getTypes()
-    {
-        return types;
     }
 
     @Override
@@ -122,7 +115,7 @@ public class NullOutputOperator
     @Override
     public void addInput(Page page)
     {
-        operatorContext.recordGeneratedOutput(page.getSizeInBytes(), page.getPositionCount());
+        operatorContext.recordOutput(page.getSizeInBytes(), page.getPositionCount());
     }
 
     @Override

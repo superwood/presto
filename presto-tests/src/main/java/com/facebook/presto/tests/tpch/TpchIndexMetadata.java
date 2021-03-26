@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.tests.tpch;
 
+import com.facebook.presto.common.predicate.NullableValue;
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorResolvedIndex;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableHandle;
-import com.facebook.presto.spi.predicate.NullableValue;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.tpch.TpchMetadata;
 import com.facebook.presto.tpch.TpchTableHandle;
 import com.google.common.collect.ImmutableList;
@@ -32,7 +32,6 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static com.facebook.presto.tests.tpch.TpchIndexProvider.handleToNames;
-import static com.facebook.presto.util.Types.checkType;
 import static com.google.common.base.Predicates.in;
 import static com.google.common.base.Predicates.not;
 import static java.util.Objects.requireNonNull;
@@ -56,7 +55,7 @@ public class TpchIndexMetadata
             Set<ColumnHandle> outputColumns,
             TupleDomain<ColumnHandle> tupleDomain)
     {
-        TpchTableHandle tpchTableHandle = checkType(tableHandle, TpchTableHandle.class, "tableHandle");
+        TpchTableHandle tpchTableHandle = (TpchTableHandle) tableHandle;
 
         // Keep the fixed values that don't overlap with the indexableColumns
         // Note: technically we could more efficiently utilize the overlapped columns, but this way is simpler for now

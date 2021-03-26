@@ -13,25 +13,25 @@
  */
 package com.facebook.presto.raptor;
 
-import com.facebook.presto.raptor.metadata.ShardInfo;
+import com.facebook.presto.hive.HdfsContext;
 import com.facebook.presto.raptor.storage.StorageManager;
 import com.facebook.presto.raptor.storage.StorageManagerConfig;
+import com.facebook.presto.raptor.storage.organization.TemporalFunction;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
 import com.facebook.presto.spi.ConnectorPageSink;
 import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.PageSinkContext;
 import com.facebook.presto.spi.PageSorter;
 import com.facebook.presto.spi.connector.ConnectorPageSinkProvider;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import io.airlift.json.JsonCodec;
-import io.airlift.units.DataSize;
 
 import javax.inject.Inject;
 
 import java.util.List;
-import java.util.Optional;
 
-import static com.facebook.presto.raptor.util.Types.checkType;
+import static com.facebook.presto.raptor.RaptorSessionProperties.getWriterMaxBufferSize;
+import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 
@@ -40,54 +40,62 @@ public class RaptorPageSinkProvider
 {
     private final StorageManager storageManager;
     private final PageSorter pageSorter;
-    private final JsonCodec<ShardInfo> shardInfoCodec;
-    private final DataSize maxBufferSize;
+    private final TemporalFunction temporalFunction;
+    private final int maxAllowedFilesPerWriter;
 
     @Inject
-    public RaptorPageSinkProvider(StorageManager storageManager, PageSorter pageSorter, JsonCodec<ShardInfo> shardInfoCodec, StorageManagerConfig config)
+    public RaptorPageSinkProvider(StorageManager storageManager, PageSorter pageSorter, TemporalFunction temporalFunction, StorageManagerConfig config)
     {
         this.storageManager = requireNonNull(storageManager, "storageManager is null");
         this.pageSorter = requireNonNull(pageSorter, "pageSorter is null");
-        this.shardInfoCodec = requireNonNull(shardInfoCodec, "shardInfoCodec is null");
-        this.maxBufferSize = config.getMaxBufferSize();
+        this.temporalFunction = requireNonNull(temporalFunction, "temporalFunction is null");
+        this.maxAllowedFilesPerWriter = config.getMaxAllowedFilesPerWriter();
     }
 
     @Override
-    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorOutputTableHandle tableHandle)
+    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorOutputTableHandle tableHandle, PageSinkContext pageSinkContext)
     {
-        RaptorOutputTableHandle handle = checkType(tableHandle, RaptorOutputTableHandle.class, "tableHandle");
+        checkArgument(!pageSinkContext.isCommitRequired(), "Raptor connector does not support page sink commit");
+
+        RaptorOutputTableHandle handle = (RaptorOutputTableHandle) tableHandle;
         return new RaptorPageSink(
+                new HdfsContext(session, handle.getSchemaName(), handle.getTableName()),
                 pageSorter,
                 storageManager,
-                shardInfoCodec,
+                temporalFunction,
                 handle.getTransactionId(),
                 toColumnIds(handle.getColumnHandles()),
                 handle.getColumnTypes(),
-                handle.getSampleWeightColumnHandle().map(RaptorColumnHandle::getColumnId),
                 toColumnIds(handle.getSortColumnHandles()),
                 handle.getSortOrders(),
                 handle.getBucketCount(),
                 toColumnIds(handle.getBucketColumnHandles()),
-                maxBufferSize);
+                handle.getTemporalColumnHandle(),
+                getWriterMaxBufferSize(session),
+                maxAllowedFilesPerWriter);
     }
 
     @Override
-    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorInsertTableHandle tableHandle)
+    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorInsertTableHandle tableHandle, PageSinkContext pageSinkContext)
     {
-        RaptorInsertTableHandle handle = checkType(tableHandle, RaptorInsertTableHandle.class, "tableHandle");
+        checkArgument(!pageSinkContext.isCommitRequired(), "Raptor connector does not support page sink commit");
+
+        RaptorInsertTableHandle handle = (RaptorInsertTableHandle) tableHandle;
         return new RaptorPageSink(
+                new HdfsContext(session),
                 pageSorter,
                 storageManager,
-                shardInfoCodec,
+                temporalFunction,
                 handle.getTransactionId(),
                 toColumnIds(handle.getColumnHandles()),
                 handle.getColumnTypes(),
-                Optional.empty(),
                 toColumnIds(handle.getSortColumnHandles()),
                 handle.getSortOrders(),
                 handle.getBucketCount(),
                 toColumnIds(handle.getBucketColumnHandles()),
-                maxBufferSize);
+                handle.getTemporalColumnHandle(),
+                getWriterMaxBufferSize(session),
+                maxAllowedFilesPerWriter);
     }
 
     private static List<Long> toColumnIds(List<RaptorColumnHandle> columnHandles)

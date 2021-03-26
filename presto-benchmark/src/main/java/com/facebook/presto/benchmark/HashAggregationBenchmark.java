@@ -13,11 +13,13 @@
  */
 package com.facebook.presto.benchmark;
 
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.operator.HashAggregationOperator.HashAggregationOperatorFactory;
 import com.facebook.presto.operator.OperatorFactory;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.plan.AggregationNode.Step;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
+import com.facebook.presto.operator.aggregation.InternalAggregationFunction;
+import com.facebook.presto.spi.plan.AggregationNode.Step;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.testing.LocalQueryRunner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Ints;
@@ -27,32 +29,43 @@ import java.util.List;
 import java.util.Optional;
 
 import static com.facebook.presto.benchmark.BenchmarkQueryRunner.createLocalQueryRunner;
-import static com.facebook.presto.operator.aggregation.DoubleSumAggregation.DOUBLE_SUM;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 
 public class HashAggregationBenchmark
         extends AbstractSimpleOperatorBenchmark
 {
+    private final InternalAggregationFunction doubleSum;
+
     public HashAggregationBenchmark(LocalQueryRunner localQueryRunner)
     {
         super(localQueryRunner, "hash_agg", 5, 25);
+
+        FunctionAndTypeManager functionAndTypeManager = localQueryRunner.getMetadata().getFunctionAndTypeManager();
+        doubleSum = functionAndTypeManager.getAggregateFunctionImplementation(
+                functionAndTypeManager.lookupFunction("sum", fromTypes(DOUBLE)));
     }
 
     @Override
     protected List<? extends OperatorFactory> createOperatorFactories()
     {
+        List<Type> tableTypes = getColumnTypes("orders", "orderstatus", "totalprice");
         OperatorFactory tableScanOperator = createTableScanOperator(0, new PlanNodeId("test"), "orders", "orderstatus", "totalprice");
-        List<Type> types = ImmutableList.of(tableScanOperator.getTypes().get(0));
-        HashAggregationOperatorFactory aggregationOperator = new HashAggregationOperatorFactory(1,
+        HashAggregationOperatorFactory aggregationOperator = new HashAggregationOperatorFactory(
+                1,
                 new PlanNodeId("test"),
-                types,
+                ImmutableList.of(tableTypes.get(0)),
                 Ints.asList(0),
+                ImmutableList.of(),
                 Step.SINGLE,
-                ImmutableList.of(DOUBLE_SUM.bind(ImmutableList.of(1), Optional.empty(), Optional.empty(), 1.0)),
+                ImmutableList.of(doubleSum.bind(ImmutableList.of(1), Optional.empty())),
                 Optional.empty(),
                 Optional.empty(),
                 100_000,
-                new DataSize(16, MEGABYTE));
+                Optional.of(new DataSize(16, MEGABYTE)),
+                JOIN_COMPILER,
+                false);
         return ImmutableList.of(tableScanOperator, aggregationOperator);
     }
 

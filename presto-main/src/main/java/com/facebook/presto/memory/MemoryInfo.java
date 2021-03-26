@@ -13,21 +13,28 @@
  */
 package com.facebook.presto.memory;
 
+import com.facebook.drift.annotations.ThriftConstructor;
+import com.facebook.drift.annotations.ThriftField;
+import com.facebook.drift.annotations.ThriftStruct;
+import com.facebook.presto.spi.memory.MemoryPoolId;
+import com.facebook.presto.spi.memory.MemoryPoolInfo;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
 
 import java.util.Map;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
+@ThriftStruct
 public class MemoryInfo
 {
     private final DataSize totalNodeMemory;
     private final Map<MemoryPoolId, MemoryPoolInfo> pools;
 
+    @ThriftConstructor
     @JsonCreator
     public MemoryInfo(@JsonProperty("totalNodeMemory") DataSize totalNodeMemory, @JsonProperty("pools") Map<MemoryPoolId, MemoryPoolInfo> pools)
     {
@@ -35,12 +42,14 @@ public class MemoryInfo
         this.pools = ImmutableMap.copyOf(requireNonNull(pools, "pools is null"));
     }
 
+    @ThriftField(1)
     @JsonProperty
     public DataSize getTotalNodeMemory()
     {
         return totalNodeMemory;
     }
 
+    @ThriftField(2)
     @JsonProperty
     public Map<MemoryPoolId, MemoryPoolInfo> getPools()
     {
@@ -50,7 +59,7 @@ public class MemoryInfo
     @Override
     public String toString()
     {
-        return MoreObjects.toStringHelper(this)
+        return toStringHelper(this)
                 .add("totalNodeMemory", totalNodeMemory)
                 .add("pools", pools)
                 .toString();

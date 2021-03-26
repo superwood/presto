@@ -29,7 +29,7 @@ import java.util.UUID;
 
 import static com.facebook.presto.raptor.RaptorErrorCode.RAPTOR_BACKUP_ERROR;
 import static com.facebook.presto.raptor.RaptorErrorCode.RAPTOR_BACKUP_NOT_FOUND;
-import static com.facebook.presto.raptor.storage.FileStorageService.getFileSystemPath;
+import static com.facebook.presto.raptor.filesystem.LocalFileStorageService.getFileSystemPath;
 import static java.nio.file.Files.deleteIfExists;
 import static java.util.Objects.requireNonNull;
 
@@ -58,11 +58,17 @@ public class FileBackupStore
     @Override
     public void backupShard(UUID uuid, File source)
     {
-        File backupFile = getFileSystemPath(baseDir, uuid);
-        createDirectories(backupFile.getParentFile());
+        File backupFile = getBackupFile(uuid);
 
         try {
-            copyFile(source, backupFile);
+            try {
+                // Optimistically assume the file can be created
+                copyFile(source, backupFile);
+            }
+            catch (FileNotFoundException e) {
+                createDirectories(backupFile.getParentFile());
+                copyFile(source, backupFile);
+            }
         }
         catch (IOException e) {
             throw new PrestoException(RAPTOR_BACKUP_ERROR, "Failed to create backup shard file", e);
@@ -84,10 +90,10 @@ public class FileBackupStore
     }
 
     @Override
-    public void deleteShard(UUID uuid)
+    public boolean deleteShard(UUID uuid)
     {
         try {
-            deleteIfExists(getBackupFile(uuid).toPath());
+            return deleteIfExists(getBackupFile(uuid).toPath());
         }
         catch (IOException e) {
             throw new PrestoException(RAPTOR_BACKUP_ERROR, "Failed to delete backup shard: " + uuid, e);

@@ -13,47 +13,63 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.RecordCursor;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.metadata.MetadataManager;
+import com.facebook.presto.operator.project.PageProcessor;
+import com.facebook.presto.spi.plan.PlanNodeId;
+import com.facebook.presto.spi.relation.RowExpression;
+import com.facebook.presto.sql.gen.ExpressionCompiler;
+import com.facebook.presto.sql.gen.PageFunctionCompiler;
 import com.facebook.presto.testing.MaterializedResult;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
+import io.airlift.units.DataSize;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
 import java.util.List;
-import java.util.Set;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.function.Supplier;
 
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.presto.RowPagesBuilder.rowPagesBuilder;
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
+import static com.facebook.presto.common.function.OperatorType.ADD;
+import static com.facebook.presto.common.function.OperatorType.BETWEEN;
+import static com.facebook.presto.common.function.OperatorType.EQUAL;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.metadata.MetadataManager.createTestMetadataManager;
 import static com.facebook.presto.operator.OperatorAssertion.assertOperatorEquals;
-import static com.facebook.presto.operator.ProjectionFunctions.singleColumn;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
+import static com.facebook.presto.sql.relational.Expressions.call;
+import static com.facebook.presto.sql.relational.Expressions.constant;
+import static com.facebook.presto.sql.relational.Expressions.field;
 import static com.facebook.presto.testing.TestingTaskContext.createTaskContext;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
-import static java.util.Collections.singleton;
+import static io.airlift.units.DataSize.Unit.BYTE;
+import static io.airlift.units.DataSize.Unit.KILOBYTE;
 import static java.util.concurrent.Executors.newCachedThreadPool;
+import static java.util.concurrent.Executors.newScheduledThreadPool;
 
 @Test(singleThreaded = true)
 public class TestFilterAndProjectOperator
 {
     private ExecutorService executor;
+    private ScheduledExecutorService scheduledExecutor;
     private DriverContext driverContext;
 
     @BeforeMethod
     public void setUp()
     {
-        executor = newCachedThreadPool(daemonThreadsNamed("test-%s"));
+        executor = newCachedThreadPool(daemonThreadsNamed("test-executor-%s"));
+        scheduledExecutor = newScheduledThreadPool(2, daemonThreadsNamed("test-scheduledExecutor-%s"));
 
-        driverContext = createTaskContext(executor, TEST_SESSION)
-                .addPipelineContext(true, true)
+        driverContext = createTaskContext(executor, scheduledExecutor, TEST_SESSION)
+                .addPipelineContext(0, true, true, false)
                 .addDriverContext();
     }
 
@@ -61,110 +77,97 @@ public class TestFilterAndProjectOperator
     public void tearDown()
     {
         executor.shutdownNow();
+        scheduledExecutor.shutdownNow();
     }
 
     @Test
     public void test()
-            throws Exception
     {
         List<Page> input = rowPagesBuilder(VARCHAR, BIGINT)
                 .addSequencePage(100, 0, 0)
                 .build();
 
-        FilterFunction filter = new FilterFunction()
-        {
-            @Override
-            public boolean filter(int position, Block... blocks)
-            {
-                long value = BIGINT.getLong(blocks[1], position);
-                return 10 <= value && value < 20;
-            }
+        MetadataManager metadata = createTestMetadataManager();
+        FunctionAndTypeManager functionAndTypeManager = metadata.getFunctionAndTypeManager();
+        RowExpression filter = call(
+                BETWEEN.name(),
+                functionAndTypeManager.resolveOperator(BETWEEN, fromTypes(BIGINT, BIGINT, BIGINT)),
+                BOOLEAN,
+                field(1, BIGINT),
+                constant(10L, BIGINT),
+                constant(19L, BIGINT));
 
-            @Override
-            public boolean filter(RecordCursor cursor)
-            {
-                long value = cursor.getLong(0);
-                return 10 <= value && value < 20;
-            }
+        RowExpression field0 = field(0, VARCHAR);
+        RowExpression add5 = call(
+                ADD.name(),
+                functionAndTypeManager.resolveOperator(ADD, fromTypes(BIGINT, BIGINT)),
+                BIGINT,
+                field(1, BIGINT),
+                constant(5L, BIGINT));
 
-            @Override
-            public Set<Integer> getInputChannels()
-            {
-                return singleton(1);
-            }
-        };
+        ExpressionCompiler compiler = new ExpressionCompiler(metadata, new PageFunctionCompiler(metadata, 0));
+        Supplier<PageProcessor> processor = compiler.compilePageProcessor(TEST_SESSION.getSqlFunctionProperties(), Optional.of(filter), ImmutableList.of(field0, add5));
+
         OperatorFactory operatorFactory = new FilterAndProjectOperator.FilterAndProjectOperatorFactory(
                 0,
                 new PlanNodeId("test"),
-                () -> new GenericPageProcessor(filter, ImmutableList.of(singleColumn(VARCHAR, 0), new Add5Projection(1))),
-                ImmutableList.<Type>of(VARCHAR, BIGINT));
-
-        Operator operator = operatorFactory.createOperator(driverContext);
+                processor,
+                ImmutableList.of(VARCHAR, BIGINT),
+                new DataSize(0, BYTE),
+                0);
 
         MaterializedResult expected = MaterializedResult.resultBuilder(driverContext.getSession(), VARCHAR, BIGINT)
-                .row("10", 15)
-                .row("11", 16)
-                .row("12", 17)
-                .row("13", 18)
-                .row("14", 19)
-                .row("15", 20)
-                .row("16", 21)
-                .row("17", 22)
-                .row("18", 23)
-                .row("19", 24)
+                .row("10", 15L)
+                .row("11", 16L)
+                .row("12", 17L)
+                .row("13", 18L)
+                .row("14", 19L)
+                .row("15", 20L)
+                .row("16", 21L)
+                .row("17", 22L)
+                .row("18", 23L)
+                .row("19", 24L)
                 .build();
 
-        assertOperatorEquals(operator, input, expected);
+        assertOperatorEquals(operatorFactory, driverContext, input, expected);
     }
 
-    private static class Add5Projection
-            implements ProjectionFunction
+    @Test
+    public void testMergeOutput()
     {
-        private final int channelIndex;
+        List<Page> input = rowPagesBuilder(VARCHAR, BIGINT)
+                .addSequencePage(100, 0, 0)
+                .addSequencePage(100, 0, 0)
+                .addSequencePage(100, 0, 0)
+                .addSequencePage(100, 0, 0)
+                .build();
+        MetadataManager metadata = createTestMetadataManager();
 
-        public Add5Projection(int channelIndex)
-        {
-            this.channelIndex = channelIndex;
-        }
+        RowExpression filter = call(
+                EQUAL.name(),
+                metadata.getFunctionAndTypeManager().resolveOperator(EQUAL, fromTypes(BIGINT, BIGINT)),
+                BOOLEAN,
+                field(1, BIGINT),
+                constant(10L, BIGINT));
 
-        @Override
-        public Type getType()
-        {
-            return BIGINT;
-        }
+        ExpressionCompiler compiler = new ExpressionCompiler(metadata, new PageFunctionCompiler(metadata, 0));
+        Supplier<PageProcessor> processor = compiler.compilePageProcessor(TEST_SESSION.getSqlFunctionProperties(), Optional.of(filter), ImmutableList.of(field(1, BIGINT)));
 
-        @Override
-        public void project(int position, Block[] blocks, BlockBuilder output)
-        {
-            if (blocks[channelIndex].isNull(position)) {
-                output.appendNull();
-            }
-            else {
-                BIGINT.writeLong(output, BIGINT.getLong(blocks[channelIndex], position) + 5);
-            }
-        }
+        OperatorFactory operatorFactory = new FilterAndProjectOperator.FilterAndProjectOperatorFactory(
+                0,
+                new PlanNodeId("test"),
+                processor,
+                ImmutableList.of(BIGINT),
+                new DataSize(64, KILOBYTE),
+                2);
 
-        @Override
-        public void project(RecordCursor cursor, BlockBuilder output)
-        {
-            if (cursor.isNull(channelIndex)) {
-                output.appendNull();
-            }
-            else {
-                BIGINT.writeLong(output, cursor.getLong(channelIndex) + 5);
-            }
-        }
+        List<Page> expected = rowPagesBuilder(BIGINT)
+                .row(10L)
+                .row(10L)
+                .row(10L)
+                .row(10L)
+                .build();
 
-        @Override
-        public Set<Integer> getInputChannels()
-        {
-            return ImmutableSet.of(channelIndex);
-        }
-
-        @Override
-        public boolean isDeterministic()
-        {
-            return true;
-        }
+        assertOperatorEquals(operatorFactory, ImmutableList.of(BIGINT), driverContext, input, expected);
     }
 }

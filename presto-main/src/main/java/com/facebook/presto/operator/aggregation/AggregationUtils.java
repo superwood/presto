@@ -13,22 +13,20 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.operator.aggregation.state.AccumulatorStateSerializer;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.operator.aggregation.state.CentralMomentsState;
 import com.facebook.presto.operator.aggregation.state.CorrelationState;
 import com.facebook.presto.operator.aggregation.state.CovarianceState;
 import com.facebook.presto.operator.aggregation.state.RegressionState;
 import com.facebook.presto.operator.aggregation.state.VarianceState;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
+import com.facebook.presto.spi.plan.AggregationNode;
 import com.google.common.base.CaseFormat;
 
-import javax.annotation.Nullable;
-
-import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Function;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -40,6 +38,38 @@ public final class AggregationUtils
     {
     }
 
+    public static boolean isDecomposable(AggregationNode aggregationNode, FunctionAndTypeManager functionAndTypeManager)
+    {
+        boolean hasOrderBy = aggregationNode.getAggregations().values().stream()
+                .map(AggregationNode.Aggregation::getOrderBy)
+                .anyMatch(Optional::isPresent);
+
+        boolean hasDistinct = aggregationNode.getAggregations().values().stream()
+                .anyMatch(AggregationNode.Aggregation::isDistinct);
+
+        boolean decomposableFunctions = aggregationNode.getAggregations().values().stream()
+                .map(AggregationNode.Aggregation::getFunctionHandle)
+                .map(functionAndTypeManager::getAggregateFunctionImplementation)
+                .allMatch(InternalAggregationFunction::isDecomposable);
+
+        return !hasOrderBy && !hasDistinct && decomposableFunctions;
+    }
+
+    public static boolean hasSingleNodeExecutionPreference(AggregationNode aggregationNode, FunctionAndTypeManager functionAndTypeManager)
+    {
+        // There are two kinds of aggregations the have single node execution preference:
+        //
+        // 1. aggregations with only empty grouping sets like
+        //
+        // SELECT count(*) FROM lineitem;
+        //
+        // there is no need for distributed aggregation. Single node FINAL aggregation will suffice,
+        // since all input have to be aggregated into one line output.
+        //
+        // 2. aggregations that must produce default output and are not decomposable, we can not distribute them.
+        return (aggregationNode.hasEmptyGroupingSet() && !aggregationNode.hasNonEmptyGroupingSet()) || (aggregationNode.hasDefaultOutput() && !isDecomposable(aggregationNode, functionAndTypeManager));
+    }
+
     public static void updateVarianceState(VarianceState state, double value)
     {
         state.setCount(state.getCount() + 1);
@@ -48,25 +78,90 @@ public final class AggregationUtils
         state.setM2(state.getM2() + delta * (value - state.getMean()));
     }
 
+    public static void updateCentralMomentsState(CentralMomentsState state, double value)
+    {
+        long n1 = state.getCount();
+        long n = n1 + 1;
+        double m1 = state.getM1();
+        double m2 = state.getM2();
+        double m3 = state.getM3();
+        double delta = value - m1;
+        double deltaN = delta / n;
+        double deltaN2 = deltaN * deltaN;
+        double dm2 = delta * deltaN * n1;
+        state.setCount(n);
+        state.setM1(m1 + deltaN);
+        state.setM2(m2 + dm2);
+        state.setM3(m3 + dm2 * deltaN * (n - 2) - 3 * deltaN * m2);
+        state.setM4(state.getM4() + dm2 * deltaN2 * (n * (double) n - 3 * n + 3) + 6 * deltaN2 * m2 - 4 * deltaN * m3);
+    }
+
     public static void updateCovarianceState(CovarianceState state, double x, double y)
     {
-        state.setCount(state.getCount() + 1);
-        state.setSumXY(state.getSumXY() + x * y);
-        state.setSumX(state.getSumX() + x);
-        state.setSumY(state.getSumY() + y);
+        long n = state.getCount() + 1;
+        state.setCount(n);
+        double oldMeanX = state.getMeanX();
+        state.setMeanX(oldMeanX + (x - oldMeanX) / n);
+        double oldMeanY = state.getMeanY();
+        double newMeanY = oldMeanY + (y - oldMeanY) / n;
+        state.setMeanY(newMeanY);
+        state.setC2(state.getC2() + (x - oldMeanX) * (y - newMeanY));
+    }
+
+    public static double getCovarianceSample(CovarianceState state)
+    {
+        return state.getC2() / (state.getCount() - 1);
+    }
+
+    public static double getCovariancePopulation(CovarianceState state)
+    {
+        return state.getC2() / state.getCount();
     }
 
     public static void updateCorrelationState(CorrelationState state, double x, double y)
     {
+        double oldMeanX = state.getMeanX();
+        double oldMeanY = state.getMeanY();
         updateCovarianceState(state, x, y);
-        state.setSumXSquare(state.getSumXSquare() + x * x);
-        state.setSumYSquare(state.getSumYSquare() + y * y);
+        state.setM2X(state.getM2X() + (x - oldMeanX) * (x - state.getMeanX()));
+        state.setM2Y(state.getM2Y() + (y - oldMeanY) * (y - state.getMeanY()));
+    }
+
+    public static double getCorrelation(CorrelationState state)
+    {
+        // This is defined as covariance(x, y) / (stdev(x) * stdev(y))
+        double covariance = state.getC2();
+        double stdevX = Math.sqrt(state.getM2X());
+        double stdevY = Math.sqrt(state.getM2Y());
+
+        // stdevX and stdevY deliberately not checked for zero because the result can be Infinity or NaN even
+        // if they are both not zero
+        return covariance / stdevX / stdevY;
     }
 
     public static void updateRegressionState(RegressionState state, double x, double y)
     {
+        double oldMeanX = state.getMeanX();
         updateCovarianceState(state, x, y);
-        state.setSumXSquare(state.getSumXSquare() + x * x);
+        state.setM2X(state.getM2X() + (x - oldMeanX) * (x - state.getMeanX()));
+    }
+
+    public static double getRegressionSlope(RegressionState state)
+    {
+        double dividend = state.getC2();
+        double divisor = state.getM2X();
+
+        // divisor deliberately not checked for zero because the result can be Infty or NaN even if it is not zero
+        return dividend / divisor;
+    }
+
+    public static double getRegressionIntercept(RegressionState state)
+    {
+        double slope = getRegressionSlope(state);
+        double meanX = state.getMeanX();
+        double meanY = state.getMeanY();
+
+        return meanY - slope * meanX;
     }
 
     public static void mergeVarianceState(VarianceState state, VarianceState otherState)
@@ -82,18 +177,58 @@ public final class AggregationUtils
         long newCount = count + state.getCount();
         double newMean = ((count * mean) + (state.getCount() * state.getMean())) / (double) newCount;
         double delta = mean - state.getMean();
-        double m2Delta = m2 + delta * delta * count * state.getCount() / (double) newCount;
-        state.setM2(state.getM2() + m2Delta);
+        state.setM2(state.getM2() + m2 + delta * delta * count * state.getCount() / (double) newCount);
         state.setCount(newCount);
         state.setMean(newMean);
     }
 
+    public static void mergeCentralMomentsState(CentralMomentsState state, CentralMomentsState otherState)
+    {
+        long na = state.getCount();
+        long nb = otherState.getCount();
+
+        checkArgument(nb >= 0, "count is negative");
+        if (nb == 0) {
+            return;
+        }
+
+        double m1a = state.getM1();
+        double m2a = state.getM2();
+        double m3a = state.getM3();
+        double m1b = otherState.getM1();
+        double m2b = otherState.getM2();
+        double m3b = otherState.getM3();
+        double n = na + nb; // Use double as type of n to avoid integer overflow for n*n and n*n*n
+        double delta = m1b - m1a;
+        double delta2 = delta * delta;
+        double delta3 = delta * delta2;
+        double delta4 = delta2 * delta2;
+
+        state.setCount((long) n);
+        state.setM1((na * m1a + nb * m1b) / n);
+        state.setM2(m2a + m2b + delta2 * na * nb / n);
+        state.setM3(m3a + m3b
+                + delta3 * na * nb * (na - nb) / (n * n)
+                + 3 * delta * (na * m2b - nb * m2a) / n);
+        state.setM4(state.getM4() + otherState.getM4()
+                + delta4 * na * nb * (na * na - na * nb + nb * nb) / (n * n * n)
+                + 6 * delta2 * (na * na * m2b + nb * nb * m2a) / (n * n)
+                + 4 * delta * (na * m3b - nb * m3a) / n);
+    }
+
     private static void updateCovarianceState(CovarianceState state, CovarianceState otherState)
     {
-        state.setSumX(state.getSumX() + otherState.getSumX());
-        state.setSumY(state.getSumY() + otherState.getSumY());
-        state.setSumXY(state.getSumXY() + otherState.getSumXY());
-        state.setCount(state.getCount() + otherState.getCount());
+        long na = state.getCount();
+        long nb = otherState.getCount();
+        long n = na + nb;
+        state.setCount(n);
+        double meanX = state.getMeanX();
+        double meanY = state.getMeanY();
+        double deltaX = otherState.getMeanX() - meanX;
+        double deltaY = otherState.getMeanY() - meanY;
+        state.setC2(state.getC2() + otherState.getC2() + deltaX * deltaY * na * nb / (double) n);
+        state.setMeanX(meanX + deltaX * nb / (double) n);
+        state.setMeanY(meanY + deltaY * nb / (double) n);
     }
 
     public static void mergeCovarianceState(CovarianceState state, CovarianceState otherState)
@@ -111,9 +246,11 @@ public final class AggregationUtils
             return;
         }
 
+        long na = state.getCount();
+        long nb = otherState.getCount();
+        state.setM2X(state.getM2X() + otherState.getM2X() + na * nb * Math.pow(state.getMeanX() - otherState.getMeanX(), 2) / (double) (na + nb));
+        state.setM2Y(state.getM2Y() + otherState.getM2Y() + na * nb * Math.pow(state.getMeanY() - otherState.getMeanY(), 2) / (double) (na + nb));
         updateCovarianceState(state, otherState);
-        state.setSumXSquare(state.getSumXSquare() + otherState.getSumXSquare());
-        state.setSumYSquare(state.getSumYSquare() + otherState.getSumYSquare());
     }
 
     public static void mergeRegressionState(RegressionState state, RegressionState otherState)
@@ -122,30 +259,31 @@ public final class AggregationUtils
             return;
         }
 
+        long na = state.getCount();
+        long nb = otherState.getCount();
+        state.setM2X(state.getM2X() + otherState.getM2X() + na * nb * Math.pow(state.getMeanX() - otherState.getMeanX(), 2) / (double) (na + nb));
         updateCovarianceState(state, otherState);
-        state.setSumXSquare(state.getSumXSquare() + otherState.getSumXSquare());
     }
 
-    public static Type getOutputType(@Nullable Method outputFunction, AccumulatorStateSerializer<?> serializer, TypeManager typeManager)
-    {
-        if (outputFunction == null) {
-            return serializer.getSerializedType();
-        }
-        else {
-            return typeManager.getType(TypeSignature.parseTypeSignature(outputFunction.getAnnotation(OutputFunction.class).value()));
-        }
-    }
-
-    public static String generateAggregationName(String baseName, Type outputType, List<Type> inputTypes)
+    public static String generateAggregationName(String baseName, TypeSignature outputType, List<TypeSignature> inputTypes)
     {
         StringBuilder sb = new StringBuilder();
-        sb.append(CaseFormat.LOWER_CAMEL.to(CaseFormat.UPPER_CAMEL, outputType.getTypeSignature().toString()));
-        for (Type inputType : inputTypes) {
-            sb.append(CaseFormat.LOWER_CAMEL.to(CaseFormat.UPPER_CAMEL, inputType.getTypeSignature().toString()));
+        sb.append(CaseFormat.LOWER_CAMEL.to(CaseFormat.UPPER_CAMEL, getAbbreviatedTypeName(outputType)));
+        for (TypeSignature inputType : inputTypes) {
+            sb.append(CaseFormat.LOWER_CAMEL.to(CaseFormat.UPPER_CAMEL, getAbbreviatedTypeName(inputType)));
         }
         sb.append(CaseFormat.LOWER_UNDERSCORE.to(CaseFormat.UPPER_CAMEL, baseName.toLowerCase(ENGLISH)));
 
         return sb.toString();
+    }
+
+    private static String getAbbreviatedTypeName(TypeSignature type)
+    {
+        String typeName = type.toString();
+        if (typeName.length() > 10) {
+            return typeName.substring(0, 10);
+        }
+        return typeName;
     }
 
     // used by aggregation compiler

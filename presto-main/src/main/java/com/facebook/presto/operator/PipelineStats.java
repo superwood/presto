@@ -13,13 +13,11 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.airlift.stats.Distribution.DistributionSnapshot;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.stats.Distribution.DistributionSnapshot;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
 import org.joda.time.DateTime;
 
 import javax.annotation.Nullable;
@@ -27,6 +25,7 @@ import javax.annotation.concurrent.Immutable;
 
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
@@ -34,6 +33,8 @@ import static java.util.Objects.requireNonNull;
 @Immutable
 public class PipelineStats
 {
+    private final int pipelineId;
+
     private final DateTime firstStartTime;
     private final DateTime lastStartTime;
     private final DateTime lastEndTime;
@@ -46,35 +47,42 @@ public class PipelineStats
     private final int queuedPartitionedDrivers;
     private final int runningDrivers;
     private final int runningPartitionedDrivers;
+    private final int blockedDrivers;
     private final int completedDrivers;
 
-    private final DataSize memoryReservation;
-    private final DataSize systemMemoryReservation;
+    private final long userMemoryReservationInBytes;
+    private final long revocableMemoryReservationInBytes;
+    private final long systemMemoryReservationInBytes;
 
     private final DistributionSnapshot queuedTime;
     private final DistributionSnapshot elapsedTime;
 
-    private final Duration totalScheduledTime;
-    private final Duration totalCpuTime;
-    private final Duration totalUserTime;
-    private final Duration totalBlockedTime;
+    private final long totalScheduledTimeInNanos;
+    private final long totalCpuTimeInNanos;
+    private final long totalBlockedTimeInNanos;
     private final boolean fullyBlocked;
     private final Set<BlockedReason> blockedReasons;
 
-    private final DataSize rawInputDataSize;
+    private final long totalAllocationInBytes;
+
+    private final long rawInputDataSizeInBytes;
     private final long rawInputPositions;
 
-    private final DataSize processedInputDataSize;
+    private final long processedInputDataSizeInBytes;
     private final long processedInputPositions;
 
-    private final DataSize outputDataSize;
+    private final long outputDataSizeInBytes;
     private final long outputPositions;
+
+    private final long physicalWrittenDataSizeInBytes;
 
     private final List<OperatorStats> operatorSummaries;
     private final List<DriverStats> drivers;
 
     @JsonCreator
     public PipelineStats(
+            @JsonProperty("pipelineId") int pipelineId,
+
             @JsonProperty("firstStartTime") DateTime firstStartTime,
             @JsonProperty("lastStartTime") DateTime lastStartTime,
             @JsonProperty("lastEndTime") DateTime lastEndTime,
@@ -87,33 +95,40 @@ public class PipelineStats
             @JsonProperty("queuedPartitionedDrivers") int queuedPartitionedDrivers,
             @JsonProperty("runningDrivers") int runningDrivers,
             @JsonProperty("runningPartitionedDrivers") int runningPartitionedDrivers,
+            @JsonProperty("blockedDrivers") int blockedDrivers,
             @JsonProperty("completedDrivers") int completedDrivers,
 
-            @JsonProperty("memoryReservation") DataSize memoryReservation,
-            @JsonProperty("systemMemoryReservation") DataSize systemMemoryReservation,
+            @JsonProperty("userMemoryReservationInBytes") long userMemoryReservationInBytes,
+            @JsonProperty("revocableMemoryReservationInBytes") long revocableMemoryReservationInBytes,
+            @JsonProperty("systemMemoryReservationInBytes") long systemMemoryReservationInBytes,
 
             @JsonProperty("queuedTime") DistributionSnapshot queuedTime,
             @JsonProperty("elapsedTime") DistributionSnapshot elapsedTime,
 
-            @JsonProperty("totalScheduledTime") Duration totalScheduledTime,
-            @JsonProperty("totalCpuTime") Duration totalCpuTime,
-            @JsonProperty("totalUserTime") Duration totalUserTime,
-            @JsonProperty("totalBlockedTime") Duration totalBlockedTime,
+            @JsonProperty("totalScheduledTimeInNanos") long totalScheduledTimeInNanos,
+            @JsonProperty("totalCpuTimeInNanos") long totalCpuTimeInNanos,
+            @JsonProperty("totalBlockedTimeInNanos") long totalBlockedTimeInNanos,
             @JsonProperty("fullyBlocked") boolean fullyBlocked,
             @JsonProperty("blockedReasons") Set<BlockedReason> blockedReasons,
 
-            @JsonProperty("rawInputDataSize") DataSize rawInputDataSize,
+            @JsonProperty("totalAllocationInBytes") long totalAllocationInBytes,
+
+            @JsonProperty("rawInputDataSizeInBytes") long rawInputDataSizeInBytes,
             @JsonProperty("rawInputPositions") long rawInputPositions,
 
-            @JsonProperty("processedInputDataSize") DataSize processedInputDataSize,
+            @JsonProperty("processedInputDataSizeInBytes") long processedInputDataSizeInBytes,
             @JsonProperty("processedInputPositions") long processedInputPositions,
 
-            @JsonProperty("outputDataSize") DataSize outputDataSize,
+            @JsonProperty("outputDataSizeInBytes") long outputDataSizeInBytes,
             @JsonProperty("outputPositions") long outputPositions,
+
+            @JsonProperty("physicalWrittenDataSizeInBytes") long physicalWrittenDataSizeInBytes,
 
             @JsonProperty("operatorSummaries") List<OperatorStats> operatorSummaries,
             @JsonProperty("drivers") List<DriverStats> drivers)
     {
+        this.pipelineId = pipelineId;
+
         this.firstStartTime = firstStartTime;
         this.lastStartTime = lastStartTime;
         this.lastEndTime = lastEndTime;
@@ -131,36 +146,48 @@ public class PipelineStats
         this.runningDrivers = runningDrivers;
         checkArgument(runningPartitionedDrivers >= 0, "runningPartitionedDrivers is negative");
         this.runningPartitionedDrivers = runningPartitionedDrivers;
+        checkArgument(blockedDrivers >= 0, "blockedDrivers is negative");
+        this.blockedDrivers = blockedDrivers;
         checkArgument(completedDrivers >= 0, "completedDrivers is negative");
         this.completedDrivers = completedDrivers;
 
-        this.memoryReservation = requireNonNull(memoryReservation, "memoryReservation is null");
-        this.systemMemoryReservation = requireNonNull(systemMemoryReservation, "systemMemoryReservation is null");
+        this.userMemoryReservationInBytes = userMemoryReservationInBytes;
+        this.revocableMemoryReservationInBytes = revocableMemoryReservationInBytes;
+        this.systemMemoryReservationInBytes = systemMemoryReservationInBytes;
 
         this.queuedTime = requireNonNull(queuedTime, "queuedTime is null");
         this.elapsedTime = requireNonNull(elapsedTime, "elapsedTime is null");
-        this.totalScheduledTime = requireNonNull(totalScheduledTime, "totalScheduledTime is null");
+        this.totalScheduledTimeInNanos = totalScheduledTimeInNanos;
 
-        this.totalCpuTime = requireNonNull(totalCpuTime, "totalCpuTime is null");
-        this.totalUserTime = requireNonNull(totalUserTime, "totalUserTime is null");
-        this.totalBlockedTime = requireNonNull(totalBlockedTime, "totalBlockedTime is null");
+        this.totalCpuTimeInNanos = totalCpuTimeInNanos;
+        this.totalBlockedTimeInNanos = totalBlockedTimeInNanos;
         this.fullyBlocked = fullyBlocked;
         this.blockedReasons = ImmutableSet.copyOf(requireNonNull(blockedReasons, "blockedReasons is null"));
 
-        this.rawInputDataSize = requireNonNull(rawInputDataSize, "rawInputDataSize is null");
+        this.totalAllocationInBytes = totalAllocationInBytes;
+
+        this.rawInputDataSizeInBytes = rawInputDataSizeInBytes;
         checkArgument(rawInputPositions >= 0, "rawInputPositions is negative");
         this.rawInputPositions = rawInputPositions;
 
-        this.processedInputDataSize = requireNonNull(processedInputDataSize, "processedInputDataSize is null");
+        this.processedInputDataSizeInBytes = processedInputDataSizeInBytes;
         checkArgument(processedInputPositions >= 0, "processedInputPositions is negative");
         this.processedInputPositions = processedInputPositions;
 
-        this.outputDataSize = requireNonNull(outputDataSize, "outputDataSize is null");
+        this.outputDataSizeInBytes = outputDataSizeInBytes;
         checkArgument(outputPositions >= 0, "outputPositions is negative");
         this.outputPositions = outputPositions;
 
+        this.physicalWrittenDataSizeInBytes = physicalWrittenDataSizeInBytes;
+
         this.operatorSummaries = ImmutableList.copyOf(requireNonNull(operatorSummaries, "operatorSummaries is null"));
         this.drivers = ImmutableList.copyOf(requireNonNull(drivers, "drivers is null"));
+    }
+
+    @JsonProperty
+    public int getPipelineId()
+    {
+        return pipelineId;
     }
 
     @Nullable
@@ -227,21 +254,33 @@ public class PipelineStats
     }
 
     @JsonProperty
+    public int getBlockedDrivers()
+    {
+        return blockedDrivers;
+    }
+
+    @JsonProperty
     public int getCompletedDrivers()
     {
         return completedDrivers;
     }
 
     @JsonProperty
-    public DataSize getMemoryReservation()
+    public long getUserMemoryReservationInBytes()
     {
-        return memoryReservation;
+        return userMemoryReservationInBytes;
     }
 
     @JsonProperty
-    public DataSize getSystemMemoryReservation()
+    public long getRevocableMemoryReservationInBytes()
     {
-        return systemMemoryReservation;
+        return revocableMemoryReservationInBytes;
+    }
+
+    @JsonProperty
+    public long getSystemMemoryReservationInBytes()
+    {
+        return systemMemoryReservationInBytes;
     }
 
     @JsonProperty
@@ -257,27 +296,21 @@ public class PipelineStats
     }
 
     @JsonProperty
-    public Duration getTotalScheduledTime()
+    public long getTotalScheduledTimeInNanos()
     {
-        return totalScheduledTime;
+        return totalScheduledTimeInNanos;
     }
 
     @JsonProperty
-    public Duration getTotalCpuTime()
+    public long getTotalCpuTimeInNanos()
     {
-        return totalCpuTime;
+        return totalCpuTimeInNanos;
     }
 
     @JsonProperty
-    public Duration getTotalUserTime()
+    public long getTotalBlockedTimeInNanos()
     {
-        return totalUserTime;
-    }
-
-    @JsonProperty
-    public Duration getTotalBlockedTime()
-    {
-        return totalBlockedTime;
+        return totalBlockedTimeInNanos;
     }
 
     @JsonProperty
@@ -293,9 +326,15 @@ public class PipelineStats
     }
 
     @JsonProperty
-    public DataSize getRawInputDataSize()
+    public long getTotalAllocationInBytes()
     {
-        return rawInputDataSize;
+        return totalAllocationInBytes;
+    }
+
+    @JsonProperty
+    public long getRawInputDataSizeInBytes()
+    {
+        return rawInputDataSizeInBytes;
     }
 
     @JsonProperty
@@ -305,9 +344,9 @@ public class PipelineStats
     }
 
     @JsonProperty
-    public DataSize getProcessedInputDataSize()
+    public long getProcessedInputDataSizeInBytes()
     {
-        return processedInputDataSize;
+        return processedInputDataSizeInBytes;
     }
 
     @JsonProperty
@@ -317,15 +356,21 @@ public class PipelineStats
     }
 
     @JsonProperty
-    public DataSize getOutputDataSize()
+    public long getOutputDataSizeInBytes()
     {
-        return outputDataSize;
+        return outputDataSizeInBytes;
     }
 
     @JsonProperty
     public long getOutputPositions()
     {
         return outputPositions;
+    }
+
+    @JsonProperty
+    public long getPhysicalWrittenDataSizeInBytes()
+    {
+        return physicalWrittenDataSizeInBytes;
     }
 
     @JsonProperty
@@ -343,6 +388,7 @@ public class PipelineStats
     public PipelineStats summarize()
     {
         return new PipelineStats(
+                pipelineId,
                 firstStartTime,
                 lastStartTime,
                 lastEndTime,
@@ -353,24 +399,29 @@ public class PipelineStats
                 queuedPartitionedDrivers,
                 runningDrivers,
                 runningPartitionedDrivers,
+                blockedDrivers,
                 completedDrivers,
-                memoryReservation,
-                systemMemoryReservation,
+                userMemoryReservationInBytes,
+                revocableMemoryReservationInBytes,
+                systemMemoryReservationInBytes,
                 queuedTime,
                 elapsedTime,
-                totalScheduledTime,
-                totalCpuTime,
-                totalUserTime,
-                totalBlockedTime,
+                totalScheduledTimeInNanos,
+                totalCpuTimeInNanos,
+                totalBlockedTimeInNanos,
                 fullyBlocked,
                 blockedReasons,
-                rawInputDataSize,
+                totalAllocationInBytes,
+                rawInputDataSizeInBytes,
                 rawInputPositions,
-                processedInputDataSize,
+                processedInputDataSizeInBytes,
                 processedInputPositions,
-                outputDataSize,
+                outputDataSizeInBytes,
                 outputPositions,
-                operatorSummaries,
-                ImmutableList.<DriverStats>of());
+                physicalWrittenDataSizeInBytes,
+                operatorSummaries.stream()
+                        .map(OperatorStats::summarize)
+                        .collect(Collectors.toList()),
+                ImmutableList.of());
     }
 }

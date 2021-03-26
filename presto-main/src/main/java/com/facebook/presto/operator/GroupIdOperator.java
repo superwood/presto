@@ -13,23 +13,19 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.google.common.collect.ImmutableList;
 
-import java.util.BitSet;
-import java.util.Collection;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.util.ImmutableCollectors.toImmutableSet;
-import static com.google.common.base.Preconditions.checkArgument;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
 
@@ -41,31 +37,21 @@ public class GroupIdOperator
     {
         private final int operatorId;
         private final PlanNodeId planNodeId;
-        private final List<Type> inputTypes;
         private final List<Type> outputTypes;
-        private final List<List<Integer>> groupingSetChannels;
+        private final List<Map<Integer, Integer>> groupingSetMappings;
 
         private boolean closed;
 
         public GroupIdOperatorFactory(
                 int operatorId,
                 PlanNodeId planNodeId,
-                List<? extends Type> inputTypes,
-                List<List<Integer>> groupingSetChannels)
+                List<? extends Type> outputTypes,
+                List<Map<Integer, Integer>> groupingSetMappings)
         {
             this.operatorId = operatorId;
             this.planNodeId = requireNonNull(planNodeId, "planNodeId is null");
-            this.groupingSetChannels = ImmutableList.copyOf(requireNonNull(groupingSetChannels));
-            this.inputTypes = ImmutableList.copyOf(requireNonNull(inputTypes));
-
-            // add the groupId channel to the output types
-            this.outputTypes = ImmutableList.<Type>builder().addAll(inputTypes).add(BIGINT).build();
-        }
-
-        @Override
-        public List<Type> getTypes()
-        {
-            return outputTypes;
+            this.outputTypes = ImmutableList.copyOf(requireNonNull(outputTypes));
+            this.groupingSetMappings = ImmutableList.copyOf(requireNonNull(groupingSetMappings));
         }
 
         @Override
@@ -74,43 +60,39 @@ public class GroupIdOperator
             checkState(!closed, "Factory is already closed");
             OperatorContext operatorContext = driverContext.addOperatorContext(operatorId, planNodeId, GroupIdOperator.class.getSimpleName());
 
-            Set<Integer> allGroupingColumns = groupingSetChannels.stream()
-                    .flatMap(Collection::stream)
-                    .collect(toImmutableSet());
+            // create an int array for fast lookup of input columns for every grouping set
+            int[][] groupingSetInputs = new int[groupingSetMappings.size()][outputTypes.size() - 1];
+            for (int i = 0; i < groupingSetMappings.size(); i++) {
+                // -1 means the output column is null
+                Arrays.fill(groupingSetInputs[i], -1);
 
-            // will have a 'true' for every channel that should be set to null for each grouping set
-            BitSet[] groupingSetNullChannels = new BitSet[groupingSetChannels.size()];
-            for (int i = 0; i < groupingSetChannels.size(); i++) {
-                groupingSetNullChannels[i] = new BitSet(inputTypes.size());
-                // first set all grouping columns to true
-                for (int groupingColumn : allGroupingColumns) {
-                    groupingSetNullChannels[i].set(groupingColumn, true);
-                }
-                // then set all the columns in this grouping set to false
-                for (int nonNullGroupingColumn : groupingSetChannels.get(i)) {
-                    groupingSetNullChannels[i].set(nonNullGroupingColumn, false);
+                // anything else is an input column to copy
+                for (int outputChannel : groupingSetMappings.get(i).keySet()) {
+                    groupingSetInputs[i][outputChannel] = groupingSetMappings.get(i).get(outputChannel);
                 }
             }
 
-            Block[] nullBlocks = new Block[inputTypes.size()];
-            for (int i = 0; i < nullBlocks.length; i++) {
-                nullBlocks[i] = inputTypes.get(i).createBlockBuilder(new BlockBuilderStatus(), 1)
+            // it's easier to create null blocks for every output column even though we only null out some grouping column outputs
+            Block[] nullBlocks = new Block[outputTypes.size()];
+            for (int i = 0; i < outputTypes.size(); i++) {
+                nullBlocks[i] = outputTypes.get(i).createBlockBuilder(null, 1)
                         .appendNull()
                         .build();
             }
 
-            Block[] groupIdBlocks = new Block[groupingSetNullChannels.length];
-            for (int i = 0; i < groupingSetNullChannels.length; i++) {
-                BlockBuilder builder = BIGINT.createBlockBuilder(new BlockBuilderStatus(), 1);
+            // create groupid blocks for every group
+            Block[] groupIdBlocks = new Block[groupingSetMappings.size()];
+            for (int i = 0; i < groupingSetMappings.size(); i++) {
+                BlockBuilder builder = BIGINT.createBlockBuilder(null, 1);
                 BIGINT.writeLong(builder, i);
                 groupIdBlocks[i] = builder.build();
             }
 
-            return new GroupIdOperator(operatorContext, outputTypes, groupingSetNullChannels, nullBlocks, groupIdBlocks);
+            return new GroupIdOperator(operatorContext, outputTypes, groupingSetInputs, nullBlocks, groupIdBlocks);
         }
 
         @Override
-        public void close()
+        public void noMoreOperators()
         {
             closed = true;
         }
@@ -118,46 +100,38 @@ public class GroupIdOperator
         @Override
         public OperatorFactory duplicate()
         {
-            return new GroupIdOperatorFactory(operatorId, planNodeId, inputTypes, groupingSetChannels);
+            return new GroupIdOperatorFactory(operatorId, planNodeId, outputTypes, groupingSetMappings);
         }
     }
 
     private final OperatorContext operatorContext;
     private final List<Type> types;
-    private final BitSet[] groupingSetNullChannels;
+    private final int[][] groupingSetInputs;
     private final Block[] nullBlocks;
     private final Block[] groupIdBlocks;
 
-    private Page currentPage = null;
-    private int currentGroupingSet = 0;
+    private Page currentPage;
+    private int currentGroupingSet;
     private boolean finishing;
 
     public GroupIdOperator(
             OperatorContext operatorContext,
             List<Type> types,
-            BitSet[] groupingSetNullChannels,
+            int[][] groupingSetInputs,
             Block[] nullBlocks,
             Block[] groupIdBlocks)
     {
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
-        this.types = requireNonNull(types, "inputTypes is null");
-        this.groupingSetNullChannels =  requireNonNull(groupingSetNullChannels, "groupingSetNullChannels is null");
-        this.nullBlocks = requireNonNull(nullBlocks);
-        checkArgument(nullBlocks.length == (types.size() - 1), "length of nullBlocks must be one plus length of types");
-        this.groupIdBlocks = requireNonNull(groupIdBlocks);
-        checkArgument(groupIdBlocks.length == groupingSetNullChannels.length, "groupIdBlocks and groupingSetNullChannels must have the same length");
+        this.types = ImmutableList.copyOf(requireNonNull(types, "types is null"));
+        this.groupingSetInputs = requireNonNull(groupingSetInputs, "groupingSetInputs is null");
+        this.nullBlocks = requireNonNull(nullBlocks, "nullBlocks is null");
+        this.groupIdBlocks = requireNonNull(groupIdBlocks, "groupIdBlocks is null");
     }
 
     @Override
     public OperatorContext getOperatorContext()
     {
         return operatorContext;
-    }
-
-    @Override
-    public List<Type> getTypes()
-    {
-        return types;
     }
 
     @Override
@@ -200,20 +174,19 @@ public class GroupIdOperator
     private Page generateNextPage()
     {
         // generate 'n' pages for every input page, where n is the number of grouping sets
-        Block[] inputBlocks = currentPage.getBlocks();
-        Block[] outputBlocks = new Block[currentPage.getChannelCount() + 1];
+        Block[] outputBlocks = new Block[types.size()];
 
-        for (int channel = 0; channel < currentPage.getChannelCount(); channel++) {
-            if (groupingSetNullChannels[currentGroupingSet].get(channel)) {
-                outputBlocks[channel] = new RunLengthEncodedBlock(nullBlocks[channel], currentPage.getPositionCount());
+        for (int i = 0; i < groupingSetInputs[currentGroupingSet].length; i++) {
+            if (groupingSetInputs[currentGroupingSet][i] == -1) {
+                outputBlocks[i] = new RunLengthEncodedBlock(nullBlocks[i], currentPage.getPositionCount());
             }
             else {
-                outputBlocks[channel] = inputBlocks[channel];
+                outputBlocks[i] = currentPage.getBlock(groupingSetInputs[currentGroupingSet][i]);
             }
         }
 
         outputBlocks[outputBlocks.length - 1] = new RunLengthEncodedBlock(groupIdBlocks[currentGroupingSet], currentPage.getPositionCount());
-        currentGroupingSet = (currentGroupingSet + 1) % groupingSetNullChannels.length;
+        currentGroupingSet = (currentGroupingSet + 1) % groupingSetInputs.length;
         Page outputPage = new Page(currentPage.getPositionCount(), outputBlocks);
 
         if (currentGroupingSet == 0) {

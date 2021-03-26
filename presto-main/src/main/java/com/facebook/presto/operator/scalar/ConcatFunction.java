@@ -13,30 +13,31 @@
  */
 package com.facebook.presto.operator.scalar;
 
+import com.facebook.presto.annotation.UsedByGeneratedCode;
 import com.facebook.presto.bytecode.BytecodeBlock;
 import com.facebook.presto.bytecode.ClassDefinition;
-import com.facebook.presto.bytecode.CompilerUtils;
 import com.facebook.presto.bytecode.DynamicClassLoader;
 import com.facebook.presto.bytecode.MethodDefinition;
 import com.facebook.presto.bytecode.Parameter;
 import com.facebook.presto.bytecode.Scope;
 import com.facebook.presto.bytecode.Variable;
 import com.facebook.presto.bytecode.expression.BytecodeExpression;
-import com.facebook.presto.metadata.FunctionRegistry;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.metadata.BoundVariables;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.SqlScalarFunction;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.spi.function.FunctionKind;
+import com.facebook.presto.spi.function.Signature;
+import com.facebook.presto.spi.function.SqlFunctionVisibility;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 
 import java.lang.invoke.MethodHandle;
-import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.IntStream;
 
 import static com.facebook.presto.bytecode.Access.FINAL;
@@ -44,31 +45,53 @@ import static com.facebook.presto.bytecode.Access.PRIVATE;
 import static com.facebook.presto.bytecode.Access.PUBLIC;
 import static com.facebook.presto.bytecode.Access.STATIC;
 import static com.facebook.presto.bytecode.Access.a;
-import static com.facebook.presto.bytecode.CompilerUtils.defineClass;
 import static com.facebook.presto.bytecode.Parameter.arg;
 import static com.facebook.presto.bytecode.ParameterizedType.type;
 import static com.facebook.presto.bytecode.expression.BytecodeExpressions.add;
 import static com.facebook.presto.bytecode.expression.BytecodeExpressions.constantInt;
 import static com.facebook.presto.bytecode.expression.BytecodeExpressions.invokeStatic;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
+import static com.facebook.presto.metadata.BuiltInTypeAndFunctionNamespaceManager.DEFAULT_NAMESPACE;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static com.facebook.presto.util.ImmutableCollectors.toImmutableList;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
+import static com.facebook.presto.util.CompilerUtils.defineClass;
+import static com.facebook.presto.util.CompilerUtils.makeClassName;
+import static com.facebook.presto.util.Failures.checkCondition;
 import static com.facebook.presto.util.Reflection.methodHandle;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.Math.addExact;
+import static java.util.Collections.nCopies;
 
 public final class ConcatFunction
         extends SqlScalarFunction
 {
-    public static final ConcatFunction CONCAT = new ConcatFunction();
+    // TODO design new variadic functions binding mechanism that will allow to produce VARCHAR(x) where x < MAX_LENGTH.
+    public static final ConcatFunction VARCHAR_CONCAT = new ConcatFunction(createUnboundedVarcharType().getTypeSignature(), "concatenates given strings");
 
-    public ConcatFunction()
+    public static final ConcatFunction VARBINARY_CONCAT = new ConcatFunction(VARBINARY.getTypeSignature(), "concatenates given varbinary values");
+
+    private final String description;
+
+    private ConcatFunction(TypeSignature type, String description)
     {
-        super("concat", ImmutableList.of(), StandardTypes.VARCHAR, ImmutableList.of(StandardTypes.VARCHAR), true);
+        super(new Signature(
+                QualifiedObjectName.valueOf(DEFAULT_NAMESPACE, "concat"),
+                FunctionKind.SCALAR,
+                ImmutableList.of(),
+                ImmutableList.of(),
+                type,
+                ImmutableList.of(type),
+                true));
+        this.description = description;
     }
 
     @Override
-    public boolean isHidden()
+    public SqlFunctionVisibility getVisibility()
     {
-        return false;
+        return SqlFunctionVisibility.PUBLIC;
     }
 
     @Override
@@ -80,28 +103,31 @@ public final class ConcatFunction
     @Override
     public String getDescription()
     {
-        return "concatenates given strings";
+        return description;
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(Map<String, Type> types, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public BuiltInScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, FunctionAndTypeManager functionAndTypeManager)
     {
         if (arity < 2) {
             throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "There must be two or more concatenation arguments");
         }
 
-        Class<?> clazz = generateConcat(arity);
-        MethodHandle methodHandle = methodHandle(clazz, "concat", Collections.nCopies(arity, Slice.class).toArray(new Class<?>[arity]));
-        List<Boolean> nullableParameters = ImmutableList.copyOf(Collections.nCopies(arity, false));
+        Class<?> clazz = generateConcat(getSignature().getReturnType(), arity);
+        MethodHandle methodHandle = methodHandle(clazz, "concat", nCopies(arity, Slice.class).toArray(new Class<?>[arity]));
 
-        return new ScalarFunctionImplementation(false, nullableParameters, methodHandle, isDeterministic());
+        return new BuiltInScalarFunctionImplementation(
+                false,
+                nCopies(arity, valueTypeArgumentProperty(RETURN_NULL_ON_NULL)),
+                methodHandle);
     }
 
-    private static Class<?> generateConcat(int arity)
+    private static Class<?> generateConcat(TypeSignature type, int arity)
     {
+        checkCondition(arity <= 254, NOT_SUPPORTED, "Too many arguments for string concatenation");
         ClassDefinition definition = new ClassDefinition(
                 a(PUBLIC, FINAL),
-                CompilerUtils.makeClassName("Concat" + arity + "ScalarFunction"),
+                makeClassName(type.getBase() + "_concat" + arity + "ScalarFunction"),
                 type(Object.class));
 
         // Generate constructor
@@ -145,6 +171,7 @@ public final class ConcatFunction
         return invokeStatic(ConcatFunction.class, "checkedAdd", int.class, x, y);
     }
 
+    @UsedByGeneratedCode
     public static int checkedAdd(int x, int y)
     {
         try {

@@ -14,66 +14,78 @@
 package com.facebook.presto.sql.planner;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.execution.scheduler.BucketNodeMap;
+import com.facebook.presto.execution.scheduler.FixedBucketNodeMap;
 import com.facebook.presto.execution.scheduler.NodeScheduler;
+import com.facebook.presto.execution.scheduler.group.DynamicBucketNodeMap;
+import com.facebook.presto.metadata.InternalNode;
+import com.facebook.presto.metadata.Split;
+import com.facebook.presto.operator.BucketPartitionFunction;
 import com.facebook.presto.operator.PartitionFunction;
 import com.facebook.presto.spi.BucketFunction;
+import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.Node;
+import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.connector.ConnectorBucketNodeMap;
 import com.facebook.presto.spi.connector.ConnectorNodePartitioningProvider;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.connector.ConnectorPartitionHandle;
+import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
+import com.facebook.presto.split.EmptySplit;
 import com.google.common.collect.BiMap;
 import com.google.common.collect.HashBiMap;
+import com.google.common.collect.ImmutableList;
 
 import javax.inject.Inject;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.function.ToIntFunction;
+import java.util.stream.IntStream;
 
+import static com.facebook.presto.SystemSessionProperties.getMaxTasksPerStage;
+import static com.facebook.presto.spi.StandardErrorCode.NODE_SELECTION_NOT_SUPPORTED;
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.lang.String.format;
+import static java.util.Comparator.comparing;
 import static java.util.Objects.requireNonNull;
 
 public class NodePartitioningManager
 {
     private final NodeScheduler nodeScheduler;
-    private final ConcurrentMap<String, ConnectorNodePartitioningProvider> partitioningProviders = new ConcurrentHashMap<>();
+    private final PartitioningProviderManager partitioningProviderManager;
 
     @Inject
-    public NodePartitioningManager(NodeScheduler nodeScheduler)
+    public NodePartitioningManager(NodeScheduler nodeScheduler, PartitioningProviderManager partitioningProviderManager)
     {
         this.nodeScheduler = requireNonNull(nodeScheduler, "nodeScheduler is null");
-    }
-
-    public void addPartitioningProvider(String connectorId, ConnectorNodePartitioningProvider partitioningProvider)
-    {
-        checkArgument(partitioningProviders.putIfAbsent(connectorId, partitioningProvider) == null, "NodePartitioningProvider for connector '%s' is already registered", connectorId);
+        this.partitioningProviderManager = requireNonNull(partitioningProviderManager, "partitioningProviderManager is null");
     }
 
     public PartitionFunction getPartitionFunction(
             Session session,
-            PartitionFunctionBinding functionBinding,
+            PartitioningScheme partitioningScheme,
             List<Type> partitionChannelTypes)
     {
-        Optional<int[]> bucketToPartition = functionBinding.getBucketToPartition();
+        Optional<int[]> bucketToPartition = partitioningScheme.getBucketToPartition();
         checkArgument(bucketToPartition.isPresent(), "Bucket to partition must be set before a partition function can be created");
 
-        PartitioningHandle partitioningHandle = functionBinding.getPartitioningHandle();
+        PartitioningHandle partitioningHandle = partitioningScheme.getPartitioning().getHandle();
         BucketFunction bucketFunction;
         if (partitioningHandle.getConnectorHandle() instanceof SystemPartitioningHandle) {
-            checkArgument(functionBinding.getBucketToPartition().isPresent(), "Bucket to partition must be set before a partition function can be created");
+            checkArgument(partitioningScheme.getBucketToPartition().isPresent(), "Bucket to partition must be set before a partition function can be created");
 
             return ((SystemPartitioningHandle) partitioningHandle.getConnectorHandle()).getPartitionFunction(
                     partitionChannelTypes,
-                    functionBinding.getHashColumn().isPresent(),
-                    functionBinding.getBucketToPartition().get());
+                    partitioningScheme.getHashColumn().isPresent(),
+                    partitioningScheme.getBucketToPartition().get());
         }
         else {
-            ConnectorNodePartitioningProvider partitioningProvider = partitioningProviders.get(partitioningHandle.getConnectorId().get());
-            checkArgument(partitioningProvider != null, "No partitioning provider for connector %s", partitioningHandle.getConnectorId().get());
+            ConnectorNodePartitioningProvider partitioningProvider = partitioningProviderManager.getPartitioningProvider(partitioningHandle.getConnectorId().get());
 
             bucketFunction = partitioningProvider.getBucketFunction(
                     partitioningHandle.getTransactionHandle().orElse(null),
@@ -84,7 +96,18 @@ public class NodePartitioningManager
 
             checkArgument(bucketFunction != null, "No function %s", partitioningHandle);
         }
-        return new PartitionFunction(bucketFunction, functionBinding.getBucketToPartition().get());
+        return new BucketPartitionFunction(bucketFunction, partitioningScheme.getBucketToPartition().get());
+    }
+
+    public List<ConnectorPartitionHandle> listPartitionHandles(
+            Session session,
+            PartitioningHandle partitioningHandle)
+    {
+        ConnectorNodePartitioningProvider partitioningProvider = partitioningProviderManager.getPartitioningProvider(partitioningHandle.getConnectorId().get());
+        return partitioningProvider.listPartitionHandles(
+                partitioningHandle.getTransactionHandle().orElse(null),
+                session.toConnectorSession(),
+                partitioningHandle.getConnectorHandle());
     }
 
     public NodePartitionMap getNodePartitioningMap(Session session, PartitioningHandle partitioningHandle)
@@ -96,35 +119,111 @@ public class NodePartitioningManager
             return ((SystemPartitioningHandle) partitioningHandle.getConnectorHandle()).getNodePartitionMap(session, nodeScheduler);
         }
 
-        ConnectorNodePartitioningProvider partitioningProvider = partitioningProviders.get(partitioningHandle.getConnectorId().get());
-        checkArgument(partitioningProvider != null, "No partitioning provider for connector %s", partitioningHandle.getConnectorId().get());
-
-        Map<Integer, Node> bucketToNode = partitioningProvider.getBucketToNode(
-                partitioningHandle.getTransactionHandle().orElse(null),
-                session.toConnectorSession(),
-                partitioningHandle.getConnectorHandle());
-        checkArgument(bucketToNode != null, "No partition map %s", partitioningHandle);
-        checkArgument(!bucketToNode.isEmpty(), "Partition map %s is empty", partitioningHandle);
-
-        int bucketCount = bucketToNode.keySet().stream()
-                .mapToInt(Integer::intValue)
-                .max()
-                .getAsInt() + 1;
-
+        ConnectorId connectorId = partitioningHandle.getConnectorId()
+                .orElseThrow(() -> new IllegalArgumentException("No connector ID for partitioning handle: " + partitioningHandle));
+        ConnectorBucketNodeMap connectorBucketNodeMap = getConnectorBucketNodeMap(session, partitioningHandle);
         // safety check for crazy partitioning
-        checkArgument(bucketCount < 1_000_000, "Too many buckets in partitioning: %s", bucketCount);
+        checkArgument(connectorBucketNodeMap.getBucketCount() < 1_000_000, "Too many buckets in partitioning: %s", connectorBucketNodeMap.getBucketCount());
 
-        int[] bucketToPartition = new int[bucketCount];
-        BiMap<Node, Integer> nodeToPartition = HashBiMap.create();
+        List<InternalNode> bucketToNode;
+        NodeSelectionStrategy nodeSelectionStrategy = connectorBucketNodeMap.getNodeSelectionStrategy();
+        boolean cacheable;
+        switch (nodeSelectionStrategy) {
+            case HARD_AFFINITY:
+                bucketToNode = getFixedMapping(connectorBucketNodeMap);
+                cacheable = false;
+                break;
+            case SOFT_AFFINITY:
+                bucketToNode = getFixedMapping(connectorBucketNodeMap);
+                cacheable = true;
+                break;
+            case NO_PREFERENCE:
+                bucketToNode = createArbitraryBucketToNode(
+                        nodeScheduler.createNodeSelector(session, connectorId).selectRandomNodes(getMaxTasksPerStage(session)),
+                        connectorBucketNodeMap.getBucketCount());
+                cacheable = false;
+                break;
+            default:
+                throw new PrestoException(NODE_SELECTION_NOT_SUPPORTED, format("Unsupported node selection strategy %s", nodeSelectionStrategy));
+        }
+
+        int[] bucketToPartition = new int[connectorBucketNodeMap.getBucketCount()];
+        BiMap<InternalNode, Integer> nodeToPartition = HashBiMap.create();
         int nextPartitionId = 0;
-        for (Entry<Integer, Node> entry : bucketToNode.entrySet()) {
-            Integer partitionId = nodeToPartition.get(entry.getValue());
+        for (int bucket = 0; bucket < bucketToNode.size(); bucket++) {
+            InternalNode node = bucketToNode.get(bucket);
+            Integer partitionId = nodeToPartition.get(node);
             if (partitionId == null) {
                 partitionId = nextPartitionId++;
-                nodeToPartition.put(entry.getValue(), partitionId);
+                nodeToPartition.put(node, partitionId);
             }
-            bucketToPartition[entry.getKey()] = partitionId;
+            bucketToPartition[bucket] = partitionId;
         }
+
+        List<InternalNode> partitionToNode = IntStream.range(0, nodeToPartition.size())
+                .mapToObj(partitionId -> nodeToPartition.inverse().get(partitionId))
+                .collect(toImmutableList());
+
+        return new NodePartitionMap(partitionToNode, bucketToPartition, getSplitToBucket(session, partitioningHandle), cacheable);
+    }
+
+    public BucketNodeMap getBucketNodeMap(Session session, PartitioningHandle partitioningHandle, boolean preferDynamic)
+    {
+        ConnectorBucketNodeMap connectorBucketNodeMap = getConnectorBucketNodeMap(session, partitioningHandle);
+
+        NodeSelectionStrategy nodeSelectionStrategy = connectorBucketNodeMap.getNodeSelectionStrategy();
+        switch (nodeSelectionStrategy) {
+            case HARD_AFFINITY:
+                return new FixedBucketNodeMap(getSplitToBucket(session, partitioningHandle), getFixedMapping(connectorBucketNodeMap), false);
+            case SOFT_AFFINITY:
+                if (preferDynamic) {
+                    return new DynamicBucketNodeMap(getSplitToBucket(session, partitioningHandle), connectorBucketNodeMap.getBucketCount(), getFixedMapping(connectorBucketNodeMap));
+                }
+                return new FixedBucketNodeMap(getSplitToBucket(session, partitioningHandle), getFixedMapping(connectorBucketNodeMap), true);
+            case NO_PREFERENCE:
+                if (preferDynamic) {
+                    return new DynamicBucketNodeMap(getSplitToBucket(session, partitioningHandle), connectorBucketNodeMap.getBucketCount());
+                }
+                return new FixedBucketNodeMap(
+                        getSplitToBucket(session, partitioningHandle),
+                        createArbitraryBucketToNode(
+                                nodeScheduler.createNodeSelector(session, partitioningHandle.getConnectorId().get()).selectRandomNodes(getMaxTasksPerStage(session)),
+                                connectorBucketNodeMap.getBucketCount()),
+                        false);
+            default:
+                throw new PrestoException(NODE_SELECTION_NOT_SUPPORTED, format("Unsupported node selection strategy %s", nodeSelectionStrategy));
+        }
+    }
+
+    private static List<InternalNode> getFixedMapping(ConnectorBucketNodeMap connectorBucketNodeMap)
+    {
+        return connectorBucketNodeMap.getFixedMapping().stream()
+                .map(InternalNode.class::cast)
+                .collect(toImmutableList());
+    }
+
+    private ConnectorBucketNodeMap getConnectorBucketNodeMap(Session session, PartitioningHandle partitioningHandle)
+    {
+        checkArgument(!(partitioningHandle.getConnectorHandle() instanceof SystemPartitioningHandle));
+        ConnectorId connectorId = partitioningHandle.getConnectorId()
+                .orElseThrow(() -> new IllegalArgumentException("No connector ID for partitioning handle: " + partitioningHandle));
+        List<Node> sortedNodes = sortedNodes(session, connectorId);
+
+        ConnectorNodePartitioningProvider partitioningProvider = partitioningProviderManager.getPartitioningProvider(partitioningHandle.getConnectorId().get());
+
+        ConnectorBucketNodeMap connectorBucketNodeMap = partitioningProvider.getBucketNodeMap(
+                partitioningHandle.getTransactionHandle().orElse(null),
+                session.toConnectorSession(partitioningHandle.getConnectorId().get()),
+                partitioningHandle.getConnectorHandle(),
+                sortedNodes);
+
+        checkArgument(connectorBucketNodeMap != null, "No partition map %s", partitioningHandle);
+        return connectorBucketNodeMap;
+    }
+
+    private ToIntFunction<Split> getSplitToBucket(Session session, PartitioningHandle partitioningHandle)
+    {
+        ConnectorNodePartitioningProvider partitioningProvider = partitioningProviderManager.getPartitioningProvider(partitioningHandle.getConnectorId().get());
 
         ToIntFunction<ConnectorSplit> splitBucketFunction = partitioningProvider.getSplitBucketFunction(
                 partitioningHandle.getTransactionHandle().orElse(null),
@@ -132,6 +231,36 @@ public class NodePartitioningManager
                 partitioningHandle.getConnectorHandle());
         checkArgument(splitBucketFunction != null, "No partitioning %s", partitioningHandle);
 
-        return new NodePartitionMap(nodeToPartition.inverse(), bucketToPartition, split -> splitBucketFunction.applyAsInt(split.getConnectorSplit()));
+        return split -> {
+            int bucket;
+            if (split.getConnectorSplit() instanceof EmptySplit) {
+                bucket = split.getLifespan().isTaskWide() ? 0 : split.getLifespan().getId();
+            }
+            else {
+                bucket = splitBucketFunction.applyAsInt(split.getConnectorSplit());
+            }
+            if (!split.getLifespan().isTaskWide()) {
+                checkArgument(split.getLifespan().getId() == bucket);
+            }
+            return bucket;
+        };
+    }
+
+    private static List<InternalNode> createArbitraryBucketToNode(List<InternalNode> nodes, int bucketCount)
+    {
+        List<InternalNode> shuffledNodes = new ArrayList<>(nodes);
+        Collections.shuffle(shuffledNodes);
+
+        ImmutableList.Builder<InternalNode> distribution = ImmutableList.builderWithExpectedSize(bucketCount);
+        for (int i = 0; i < bucketCount; i++) {
+            distribution.add(shuffledNodes.get(i % shuffledNodes.size()));
+        }
+        return distribution.build();
+    }
+
+    public List<Node> sortedNodes(Session session, ConnectorId connectorId)
+    {
+        List<InternalNode> nodes = nodeScheduler.createNodeSelector(session, connectorId).allNodes();
+        return nodes.stream().sorted(comparing(InternalNode::getNodeIdentifier)).collect(toImmutableList());
     }
 }

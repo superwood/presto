@@ -13,14 +13,20 @@
  */
 package com.facebook.presto.spi.predicate;
 
+import com.facebook.airlift.json.ObjectMapperProvider;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.TestingBlockEncodingSerde;
+import com.facebook.presto.common.block.TestingBlockJsonSerde;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.NullableValue;
+import com.facebook.presto.common.predicate.Range;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.predicate.ValueSet;
+import com.facebook.presto.common.type.TestingTypeDeserializer;
+import com.facebook.presto.common.type.TestingTypeManager;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.TestingColumnHandle;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.TestingBlockEncodingSerde;
-import com.facebook.presto.spi.block.TestingBlockJsonSerde;
-import com.facebook.presto.spi.type.TestingTypeDeserializer;
-import com.facebook.presto.spi.type.TestingTypeManager;
-import com.facebook.presto.spi.type.Type;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationContext;
@@ -28,17 +34,16 @@ import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.json.ObjectMapperProvider;
 import org.testng.annotations.Test;
 
 import java.io.IOException;
 import java.util.Map;
 
-import static com.facebook.presto.spi.predicate.TupleDomain.columnWiseUnion;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.predicate.TupleDomain.columnWiseUnion;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static io.airlift.slice.Slices.utf8Slice;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
@@ -55,7 +60,6 @@ public class TestTupleDomain
 
     @Test
     public void testNone()
-            throws Exception
     {
         assertTrue(TupleDomain.none().isNone());
         assertEquals(TupleDomain.<ColumnHandle>none(),
@@ -69,7 +73,6 @@ public class TestTupleDomain
 
     @Test
     public void testAll()
-            throws Exception
     {
         assertTrue(TupleDomain.all().isAll());
         assertEquals(TupleDomain.<ColumnHandle>all(),
@@ -81,7 +84,6 @@ public class TestTupleDomain
 
     @Test
     public void testIntersection()
-            throws Exception
     {
         TupleDomain<ColumnHandle> tupleDomain1 = TupleDomain.withColumnDomains(
                 ImmutableMap.<ColumnHandle, Domain>builder()
@@ -112,7 +114,6 @@ public class TestTupleDomain
 
     @Test
     public void testNoneIntersection()
-            throws Exception
     {
         assertEquals(TupleDomain.none().intersect(TupleDomain.all()), TupleDomain.none());
         assertEquals(TupleDomain.all().intersect(TupleDomain.none()), TupleDomain.none());
@@ -125,7 +126,6 @@ public class TestTupleDomain
 
     @Test
     public void testMismatchedColumnIntersection()
-            throws Exception
     {
         TupleDomain<ColumnHandle> tupleDomain1 = TupleDomain.withColumnDomains(
                 ImmutableMap.of(
@@ -147,7 +147,6 @@ public class TestTupleDomain
 
     @Test
     public void testColumnWiseUnion()
-            throws Exception
     {
         TupleDomain<ColumnHandle> tupleDomain1 = TupleDomain.withColumnDomains(
                 ImmutableMap.<ColumnHandle, Domain>builder()
@@ -181,7 +180,6 @@ public class TestTupleDomain
 
     @Test
     public void testNoneColumnWiseUnion()
-            throws Exception
     {
         assertEquals(columnWiseUnion(TupleDomain.none(), TupleDomain.all()), TupleDomain.all());
         assertEquals(columnWiseUnion(TupleDomain.all(), TupleDomain.none()), TupleDomain.all());
@@ -195,7 +193,6 @@ public class TestTupleDomain
 
     @Test
     public void testMismatchedColumnWiseUnion()
-            throws Exception
     {
         TupleDomain<ColumnHandle> tupleDomain1 = TupleDomain.withColumnDomains(
                 ImmutableMap.of(
@@ -214,18 +211,17 @@ public class TestTupleDomain
 
     @Test
     public void testOverlaps()
-            throws Exception
     {
         assertTrue(overlaps(
-                ImmutableMap.<ColumnHandle, Domain>of(),
-                ImmutableMap.<ColumnHandle, Domain>of()));
+                ImmutableMap.of(),
+                ImmutableMap.of()));
 
         assertTrue(overlaps(
-                ImmutableMap.<ColumnHandle, Domain>of(),
+                ImmutableMap.of(),
                 ImmutableMap.of(A, Domain.singleValue(BIGINT, 0L))));
 
         assertFalse(overlaps(
-                ImmutableMap.<ColumnHandle, Domain>of(),
+                ImmutableMap.of(),
                 ImmutableMap.of(A, Domain.none(BIGINT))));
 
         assertFalse(overlaps(
@@ -267,27 +263,26 @@ public class TestTupleDomain
 
     @Test
     public void testContains()
-            throws Exception
     {
         assertTrue(contains(
-                ImmutableMap.<ColumnHandle, Domain>of(),
-                ImmutableMap.<ColumnHandle, Domain>of()));
+                ImmutableMap.of(),
+                ImmutableMap.of()));
 
         assertTrue(contains(
-                ImmutableMap.<ColumnHandle, Domain>of(),
+                ImmutableMap.of(),
                 ImmutableMap.of(A, Domain.none(BIGINT))));
 
         assertTrue(contains(
-                ImmutableMap.<ColumnHandle, Domain>of(),
+                ImmutableMap.of(),
                 ImmutableMap.of(A, Domain.all(BIGINT))));
 
         assertTrue(contains(
-                ImmutableMap.<ColumnHandle, Domain>of(),
+                ImmutableMap.of(),
                 ImmutableMap.of(A, Domain.singleValue(DOUBLE, 0.0))));
 
         assertFalse(contains(
                 ImmutableMap.of(A, Domain.none(BIGINT)),
-                ImmutableMap.<ColumnHandle, Domain>of()));
+                ImmutableMap.of()));
 
         assertTrue(contains(
                 ImmutableMap.of(A, Domain.none(BIGINT)),
@@ -303,7 +298,7 @@ public class TestTupleDomain
 
         assertTrue(contains(
                 ImmutableMap.of(A, Domain.all(BIGINT)),
-                ImmutableMap.<ColumnHandle, Domain>of()));
+                ImmutableMap.of()));
 
         assertTrue(contains(
                 ImmutableMap.of(A, Domain.all(BIGINT)),
@@ -319,7 +314,7 @@ public class TestTupleDomain
 
         assertFalse(contains(
                 ImmutableMap.of(A, Domain.singleValue(BIGINT, 0L)),
-                ImmutableMap.<ColumnHandle, Domain>of()));
+                ImmutableMap.of()));
 
         assertTrue(contains(
                 ImmutableMap.of(A, Domain.singleValue(BIGINT, 0L)),
@@ -410,22 +405,21 @@ public class TestTupleDomain
 
     @Test
     public void testEquals()
-            throws Exception
     {
         assertTrue(equals(
-                ImmutableMap.<ColumnHandle, Domain>of(),
-                ImmutableMap.<ColumnHandle, Domain>of()));
+                ImmutableMap.of(),
+                ImmutableMap.of()));
 
         assertTrue(equals(
-                ImmutableMap.<ColumnHandle, Domain>of(),
+                ImmutableMap.of(),
                 ImmutableMap.of(A, Domain.all(BIGINT))));
 
         assertFalse(equals(
-                ImmutableMap.<ColumnHandle, Domain>of(),
+                ImmutableMap.of(),
                 ImmutableMap.of(A, Domain.none(BIGINT))));
 
         assertFalse(equals(
-                ImmutableMap.<ColumnHandle, Domain>of(),
+                ImmutableMap.of(),
                 ImmutableMap.of(A, Domain.singleValue(BIGINT, 0L))));
 
         assertTrue(equals(
@@ -524,7 +518,6 @@ public class TestTupleDomain
 
     @Test
     public void testIsNone()
-            throws Exception
     {
         assertFalse(TupleDomain.withColumnDomains(ImmutableMap.<ColumnHandle, Domain>of()).isNone());
         assertFalse(TupleDomain.withColumnDomains(ImmutableMap.of(A, Domain.singleValue(BIGINT, 0L))).isNone());
@@ -535,7 +528,6 @@ public class TestTupleDomain
 
     @Test
     public void testIsAll()
-            throws Exception
     {
         assertTrue(TupleDomain.withColumnDomains(ImmutableMap.<ColumnHandle, Domain>of()).isAll());
         assertFalse(TupleDomain.withColumnDomains(ImmutableMap.of(A, Domain.singleValue(BIGINT, 0L))).isAll());
@@ -545,7 +537,6 @@ public class TestTupleDomain
 
     @Test
     public void testExtractFixedValues()
-            throws Exception
     {
         assertEquals(
                 TupleDomain.extractFixedValues(TupleDomain.withColumnDomains(
@@ -562,21 +553,18 @@ public class TestTupleDomain
 
     @Test
     public void testExtractFixedValuesFromNone()
-            throws Exception
     {
         assertFalse(TupleDomain.extractFixedValues(TupleDomain.none()).isPresent());
     }
 
     @Test
     public void testExtractFixedValuesFromAll()
-            throws Exception
     {
         assertEquals(TupleDomain.extractFixedValues(TupleDomain.all()).get(), ImmutableMap.of());
     }
 
     @Test
     public void testSingleValuesMapToDomain()
-            throws Exception
     {
         assertEquals(
                 TupleDomain.fromFixedValues(
@@ -596,7 +584,6 @@ public class TestTupleDomain
 
     @Test
     public void testEmptySingleValuesMapToDomain()
-            throws Exception
     {
         assertEquals(TupleDomain.fromFixedValues(ImmutableMap.of()), TupleDomain.all());
     }
@@ -606,7 +593,7 @@ public class TestTupleDomain
             throws Exception
     {
         TestingTypeManager typeManager = new TestingTypeManager();
-        TestingBlockEncodingSerde blockEncodingSerde = new TestingBlockEncodingSerde(typeManager);
+        TestingBlockEncodingSerde blockEncodingSerde = new TestingBlockEncodingSerde();
 
         ObjectMapper mapper = new ObjectMapperProvider().get()
                 .registerModule(new SimpleModule()
@@ -635,7 +622,6 @@ public class TestTupleDomain
 
     @Test
     public void testTransform()
-            throws Exception
     {
         Map<Integer, Domain> domains = ImmutableMap.<Integer, Domain>builder()
                 .put(1, Domain.singleValue(BIGINT, 1L))
@@ -657,7 +643,6 @@ public class TestTupleDomain
 
     @Test(expectedExceptions = IllegalArgumentException.class)
     public void testTransformFailsWithNonUniqueMapping()
-            throws Exception
     {
         Map<Integer, Domain> domains = ImmutableMap.<Integer, Domain>builder()
                 .put(1, Domain.singleValue(BIGINT, 1L))

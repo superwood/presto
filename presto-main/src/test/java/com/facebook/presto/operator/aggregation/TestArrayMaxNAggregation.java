@@ -13,12 +13,11 @@
  */
 package com.facebook.presto.operator.aggregation;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.type.ArrayType;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import org.testng.annotations.Test;
@@ -29,17 +28,17 @@ import java.util.PriorityQueue;
 import java.util.stream.LongStream;
 
 import static com.facebook.presto.block.BlockAssertions.createLongRepeatBlock;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static org.testng.Assert.assertEquals;
 
 public class TestArrayMaxNAggregation
         extends AbstractTestAggregationFunction
 {
-    public Block createLongArraysBlock(Long[] values)
+    public static Block createLongArraysBlock(Long[] values)
     {
         ArrayType arrayType = new ArrayType(BIGINT);
-        BlockBuilder blockBuilder = arrayType.createBlockBuilder(new BlockBuilderStatus(), values.length);
+        BlockBuilder blockBuilder = arrayType.createBlockBuilder(null, values.length);
         for (Long value : values) {
             if (value == null) {
                 blockBuilder.appendNull();
@@ -53,7 +52,7 @@ public class TestArrayMaxNAggregation
         return blockBuilder.build();
     }
 
-    public Block createLongArraySequenceBlock(int start, int length)
+    public static Block createLongArraySequenceBlock(int start, int length)
     {
         return createLongArraysBlock(LongStream.range(start, length).boxed().toArray(Long[]::new));
     }
@@ -94,6 +93,7 @@ public class TestArrayMaxNAggregation
         testCustomAggregation(new Long[] {1L, 2L, null, 3L}, 5);
         testInvalidAggregation(new Long[] {1L, 2L, 3L}, 0);
         testInvalidAggregation(new Long[] {1L, 2L, 3L}, -1);
+        testInvalidAggregation(new Long[] {1L, 2L, 3L}, 10001);
     }
 
     private void testInvalidAggregation(Long[] x, int n)
@@ -108,7 +108,7 @@ public class TestArrayMaxNAggregation
 
     private void testCustomAggregation(Long[] values, int n)
     {
-        PriorityQueue<Long> heap = new PriorityQueue<Long>(n);
+        PriorityQueue<Long> heap = new PriorityQueue<>(n);
         Arrays.stream(values).filter(x -> x != null).forEach(heap::add);
         ImmutableList.Builder<List<Long>> expected = new ImmutableList.Builder<>();
         for (int i = heap.size() - 1; i >= 0; i--) {

@@ -13,20 +13,23 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
-import com.facebook.presto.spi.Connector;
-import com.facebook.presto.spi.ConnectorFactory;
+import com.facebook.airlift.bootstrap.Bootstrap;
 import com.facebook.presto.spi.ConnectorHandleResolver;
 import com.facebook.presto.spi.classloader.ThreadContextClassLoader;
-import com.google.common.base.Throwables;
-import com.google.common.collect.ImmutableMap;
+import com.facebook.presto.spi.connector.Connector;
+import com.facebook.presto.spi.connector.ConnectorContext;
+import com.facebook.presto.spi.connector.ConnectorFactory;
+import com.facebook.presto.spi.function.FunctionMetadataManager;
+import com.facebook.presto.spi.function.StandardFunctionResolution;
+import com.facebook.presto.spi.relation.RowExpressionService;
 import com.google.inject.Injector;
 import com.google.inject.Module;
-import io.airlift.bootstrap.Bootstrap;
 
 import java.util.Map;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static com.google.common.base.Throwables.throwIfUnchecked;
 import static java.util.Objects.requireNonNull;
 
 public class JdbcConnectorFactory
@@ -34,15 +37,13 @@ public class JdbcConnectorFactory
 {
     private final String name;
     private final Module module;
-    private final Map<String, String> optionalConfig;
     private final ClassLoader classLoader;
 
-    public JdbcConnectorFactory(String name, Module module, Map<String, String> optionalConfig, ClassLoader classLoader)
+    public JdbcConnectorFactory(String name, Module module, ClassLoader classLoader)
     {
         checkArgument(!isNullOrEmpty(name), "name is null or empty");
         this.name = name;
         this.module = requireNonNull(module, "module is null");
-        this.optionalConfig = ImmutableMap.copyOf(requireNonNull(optionalConfig, "optionalConfig is null"));
         this.classLoader = requireNonNull(classLoader, "classLoader is null");
     }
 
@@ -59,25 +60,30 @@ public class JdbcConnectorFactory
     }
 
     @Override
-    public Connector create(String connectorId, Map<String, String> requiredConfig)
+    public Connector create(String catalogName, Map<String, String> requiredConfig, ConnectorContext context)
     {
         requireNonNull(requiredConfig, "requiredConfig is null");
-        requireNonNull(optionalConfig, "optionalConfig is null");
 
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            Bootstrap app = new Bootstrap(new JdbcModule(connectorId), module);
+            Bootstrap app = new Bootstrap(
+                    binder -> {
+                        binder.bind(FunctionMetadataManager.class).toInstance(context.getFunctionMetadataManager());
+                        binder.bind(StandardFunctionResolution.class).toInstance(context.getStandardFunctionResolution());
+                        binder.bind(RowExpressionService.class).toInstance(context.getRowExpressionService());
+                    },
+                    new JdbcModule(catalogName),
+                    module);
 
             Injector injector = app
-                    .strictConfig()
                     .doNotInitializeLogging()
                     .setRequiredConfigurationProperties(requiredConfig)
-                    .setOptionalConfigurationProperties(optionalConfig)
                     .initialize();
 
             return injector.getInstance(JdbcConnector.class);
         }
         catch (Exception e) {
-            throw Throwables.propagate(e);
+            throwIfUnchecked(e);
+            throw new RuntimeException(e);
         }
     }
 }

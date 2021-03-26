@@ -15,6 +15,10 @@ package com.facebook.presto.kafka;
 
 import com.facebook.presto.spi.ErrorCode;
 import com.facebook.presto.spi.ErrorCodeSupplier;
+import com.facebook.presto.spi.ErrorType;
+
+import static com.facebook.presto.spi.ErrorType.EXTERNAL;
+import static com.facebook.presto.spi.ErrorType.INTERNAL_ERROR;
 
 /**
  * Kafka connector specific error codes.
@@ -22,15 +26,16 @@ import com.facebook.presto.spi.ErrorCodeSupplier;
 public enum KafkaErrorCode
         implements ErrorCodeSupplier
 {
-    // Connectors can use error codes starting at EXTERNAL
-    // NOTE: 0x0200_0000 is reserved for DecoderErrorCode
-    KAFKA_SPLIT_ERROR(0x0200_0001);
+    KAFKA_SPLIT_ERROR(0, EXTERNAL),
+    KAFKA_CONSUMER_ERROR(1, EXTERNAL),
+    KAFKA_SCHEMA_ERROR(2, EXTERNAL),
+    KAFKA_PRODUCER_ERROR(3, INTERNAL_ERROR);
 
     private final ErrorCode errorCode;
 
-    KafkaErrorCode(int code)
+    KafkaErrorCode(int code, ErrorType type)
     {
-        errorCode = new ErrorCode(code, name());
+        errorCode = new ErrorCode(code + 0x0102_0000, name(), type);
     }
 
     @Override

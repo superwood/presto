@@ -13,10 +13,27 @@
  */
 package com.facebook.presto.operator.aggregation;
 
+import com.facebook.presto.Session;
+import com.facebook.presto.common.block.SortOrder;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.operator.PagesIndex;
+import com.facebook.presto.sql.gen.JoinCompiler;
+
 import java.util.List;
 import java.util.Optional;
 
 public interface AccumulatorFactoryBinder
 {
-    AccumulatorFactory bind(List<Integer> argumentChannels, Optional<Integer> maskChannel, Optional<Integer> sampleWeightChannel, double confidence);
+    AccumulatorFactory bind(
+            List<Integer> argumentChannels,
+            Optional<Integer> maskChannel,
+            List<Type> sourceTypes,
+            List<Integer> orderByChannels,
+            List<SortOrder> orderings,
+            PagesIndex.Factory pagesIndexFactory,
+            boolean distinct,
+            JoinCompiler joinCompiler,
+            List<LambdaProvider> lambdaProviders,
+            boolean spillEnabled,
+            Session session);
 }

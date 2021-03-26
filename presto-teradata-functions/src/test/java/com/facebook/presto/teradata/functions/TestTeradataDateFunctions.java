@@ -14,33 +14,40 @@
 package com.facebook.presto.teradata.functions;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.operator.scalar.FunctionAssertions;
-import com.facebook.presto.spi.type.DateType;
-import com.facebook.presto.spi.type.SqlDate;
-import com.facebook.presto.spi.type.SqlTimestamp;
-import com.facebook.presto.spi.type.TimeZoneKey;
-import com.facebook.presto.spi.type.TimestampType;
-import org.joda.time.DateTime;
-import org.joda.time.DateTimeZone;
+import com.facebook.presto.common.type.DateType;
+import com.facebook.presto.common.type.SqlDate;
+import com.facebook.presto.common.type.TimestampType;
+import com.facebook.presto.operator.scalar.AbstractTestFunctions;
+import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.spi.type.TimeZoneKey.getTimeZoneKey;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.metadata.FunctionExtractor.extractFunctions;
+import static com.facebook.presto.testing.DateTimeTestingUtils.sqlTimestampOf;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
-import static com.facebook.presto.type.TimestampOperators.castToDate;
-import static com.facebook.presto.util.DateTimeZoneIndex.getDateTimeZone;
+import static java.lang.Math.toIntExact;
 
 public class TestTeradataDateFunctions
+        extends AbstractTestFunctions
 {
-    private static final TimeZoneKey TIME_ZONE_KEY = getTimeZoneKey("Asia/Kathmandu");
-    private static final DateTimeZone DATE_TIME_ZONE = getDateTimeZone(TIME_ZONE_KEY);
     private static final Session SESSION = testSessionBuilder()
             .setCatalog("catalog")
             .setSchema("schema")
-            .setTimeZoneKey(TIME_ZONE_KEY)
             .build();
-    private static final FunctionAssertions FUNCTION_ASSERTIONS = new FunctionAssertions(SESSION)
-            .addScalarFunctions(TeradataDateFunctions.class);
+
+    protected TestTeradataDateFunctions()
+    {
+        super(SESSION);
+    }
+
+    @BeforeClass
+    public void setUp()
+    {
+        functionAssertions.addFunctions(extractFunctions(new TeradataFunctionsPlugin().getFunctions()));
+    }
 
     @Test
     public void testMinimalToDate()
@@ -86,16 +93,20 @@ public class TestTeradataDateFunctions
         assertVarchar("to_char(TIMESTAMP '1988-04-08','yy')", "88");
         assertTimestamp("to_timestamp('88/04/08','yy/mm/dd')", 2088, 4, 8, 0, 0, 0);
         assertDate("to_date('88/04/08','yy/mm/dd')", 2088, 4, 8);
+
+        assertTimestamp("to_timestamp('00/04/08','yy/mm/dd')", 2000, 4, 8, 0, 0, 0);
+        assertTimestamp("to_timestamp('50/04/08','yy/mm/dd')", 2050, 4, 8, 0, 0, 0);
+        assertTimestamp("to_timestamp('99/04/08','yy/mm/dd')", 2099, 4, 8, 0, 0, 0);
     }
 
     // TODO: implement this feature SWARM-355
     @Test(enabled = false)
     public void testDefaultValues()
     {
-        DateTime current = new DateTime();
-        assertDate("to_date('1988','yyyy')", 1988, current.getMonthOfYear(), 1);
+        LocalDateTime current = LocalDateTime.now();
+        assertDate("to_date('1988','yyyy')", 1988, current.getMonthValue(), 1);
         assertDate("to_date('04','mm')", current.getYear(), 4, 1);
-        assertDate("to_date('8','dd')", current.getYear(), current.getMonthOfYear(), 8);
+        assertDate("to_date('8','dd')", current.getYear(), current.getMonthValue(), 8);
     }
 
     // TODO: implement this feature SWARM-354
@@ -119,35 +130,25 @@ public class TestTeradataDateFunctions
         assertDate("to_date('1988-04-08 TEXT','yyyy-mm-dd \"TEXT\"')", 1988, 4, 8);
     }
 
-    private static SqlDate sqlDate(DateTime from)
-    {
-        int days = (int) castToDate(SESSION.toConnectorSession(), from.getMillis());
-        return new SqlDate(days);
-    }
-
-    private SqlTimestamp toTimestamp(DateTime dateTime)
-    {
-        return new SqlTimestamp(dateTime.getMillis(), SESSION.getTimeZoneKey());
-    }
-
+    @SuppressWarnings("SameParameterValue")
     private void assertTimestamp(String projection, int year, int month, int day, int hour, int minutes, int seconds)
     {
-        FUNCTION_ASSERTIONS.assertFunction(
+        assertFunction(
                 projection,
                 TimestampType.TIMESTAMP,
-                toTimestamp(new DateTime(year, month, day, hour, minutes, seconds, DATE_TIME_ZONE)));
+                sqlTimestampOf(year, month, day, hour, minutes, seconds, 0, SESSION));
     }
 
     private void assertDate(String projection, int year, int month, int day)
     {
-        FUNCTION_ASSERTIONS.assertFunction(
+        assertFunction(
                 projection,
                 DateType.DATE,
-                sqlDate(new DateTime(year, month, day, 0, 0, DATE_TIME_ZONE)));
+                new SqlDate(toIntExact(LocalDate.of(year, month, day).toEpochDay())));
     }
 
     private void assertVarchar(String projection, String expected)
     {
-        FUNCTION_ASSERTIONS.assertFunction(projection, VARCHAR, expected);
+        assertFunction(projection, VARCHAR, expected);
     }
 }

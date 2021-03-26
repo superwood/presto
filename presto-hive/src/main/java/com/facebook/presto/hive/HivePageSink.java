@@ -13,650 +13,538 @@
  */
 package com.facebook.presto.hive;
 
-import com.facebook.presto.hive.HiveWriteUtils.FieldSetter;
-import com.facebook.presto.hive.metastore.HiveMetastore;
+import com.facebook.airlift.concurrent.MoreFutures;
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.airlift.log.Logger;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.IntArrayBlockBuilder;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.hive.filesystem.ExtendedFileSystem;
 import com.facebook.presto.spi.ConnectorPageSink;
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PageIndexer;
 import com.facebook.presto.spi.PageIndexerFactory;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Splitter;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Sets;
 import com.google.common.primitives.Ints;
-import io.airlift.json.JsonCodec;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.ListeningExecutorService;
+import com.google.common.util.concurrent.SettableFuture;
 import io.airlift.slice.Slice;
-import org.apache.hadoop.conf.Configuration;
+import it.unimi.dsi.fastutil.objects.Object2IntMap;
+import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.common.FileUtils;
-import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.metastore.MetaStoreUtils;
-import org.apache.hadoop.hive.metastore.api.Partition;
-import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
-import org.apache.hadoop.hive.metastore.api.Table;
-import org.apache.hadoop.hive.ql.exec.FileSinkOperator.RecordWriter;
-import org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat;
-import org.apache.hadoop.hive.serde2.SerDeException;
-import org.apache.hadoop.hive.serde2.Serializer;
-import org.apache.hadoop.hive.serde2.columnar.OptimizedLazyBinaryColumnarSerde;
-import org.apache.hadoop.hive.serde2.objectinspector.SettableStructObjectInspector;
-import org.apache.hadoop.hive.serde2.objectinspector.StructField;
-import org.apache.hadoop.io.compress.CompressionCodec;
-import org.apache.hadoop.io.compress.DefaultCodec;
-import org.apache.hadoop.mapred.JobConf;
-import org.apache.hive.common.util.ReflectionUtil;
 
 import java.io.IOException;
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Properties;
-import java.util.Set;
+import java.util.OptionalInt;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
 
-import static com.facebook.presto.hive.HiveColumnHandle.SAMPLE_WEIGHT_COLUMN_NAME;
-import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_METADATA;
-import static com.facebook.presto.hive.HiveErrorCode.HIVE_PARTITION_READ_ONLY;
-import static com.facebook.presto.hive.HiveErrorCode.HIVE_PARTITION_SCHEMA_MISMATCH;
-import static com.facebook.presto.hive.HiveErrorCode.HIVE_PATH_ALREADY_EXISTS;
+import static com.facebook.airlift.concurrent.MoreFutures.addSuccessCallback;
+import static com.facebook.airlift.concurrent.MoreFutures.toListenableFuture;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.hive.HiveBucketFunction.createHiveCompatibleBucketFunction;
+import static com.facebook.presto.hive.HiveBucketFunction.createPrestoNativeBucketFunction;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_TOO_MANY_OPEN_PARTITIONS;
-import static com.facebook.presto.hive.HiveErrorCode.HIVE_UNSUPPORTED_FORMAT;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_WRITER_CLOSE_ERROR;
-import static com.facebook.presto.hive.HiveErrorCode.HIVE_WRITER_DATA_ERROR;
-import static com.facebook.presto.hive.HivePartitionKey.HIVE_DEFAULT_DYNAMIC_PARTITION;
-import static com.facebook.presto.hive.HiveType.toHiveTypes;
-import static com.facebook.presto.hive.HiveWriteUtils.createFieldSetter;
-import static com.facebook.presto.hive.HiveWriteUtils.getField;
-import static com.facebook.presto.hive.HiveWriteUtils.getRowColumnInspectors;
-import static com.facebook.presto.spi.StandardErrorCode.NOT_FOUND;
-import static com.google.common.base.MoreObjects.toStringHelper;
+import static com.facebook.presto.hive.HiveSessionProperties.isFileRenamingEnabled;
+import static com.facebook.presto.hive.PartitionUpdate.FileWriteInfo;
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Verify.verify;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.slice.Slices.wrappedBuffer;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
-import static java.util.UUID.randomUUID;
-import static java.util.function.Function.identity;
-import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
-import static java.util.stream.Collectors.toMap;
-import static org.apache.hadoop.hive.conf.HiveConf.ConfVars.COMPRESSRESULT;
-import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_COLUMNS;
-import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_COLUMN_TYPES;
-import static org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory.getStandardStructObjectInspector;
 
 public class HivePageSink
         implements ConnectorPageSink
 {
+    private static final Logger log = Logger.get(HivePageSink.class);
+
+    private static final int MAX_PAGE_POSITIONS = 4096;
+
+    private final HiveWriterFactory writerFactory;
+
     private final String schemaName;
     private final String tableName;
 
     private final int[] dataColumnInputIndex; // ordinal of columns (not counting sample weight column)
-    private final List<DataColumn> dataColumns;
-
     private final int[] partitionColumnsInputIndex; // ordinal of columns (not counting sample weight column)
-    private final List<String> partitionColumnNames;
-    private final List<Type> partitionColumnTypes;
 
-    private final HiveStorageFormat tableStorageFormat;
-    private final LocationHandle locationHandle;
-    private final LocationService locationService;
-    private final String filePrefix;
+    private final int[] bucketColumns;
+    private final HiveBucketFunction bucketFunction;
 
-    private final HiveMetastore metastore;
-    private final PageIndexer pageIndexer;
-    private final TypeManager typeManager;
+    private final HiveWriterPagePartitioner pagePartitioner;
     private final HdfsEnvironment hdfsEnvironment;
-    private final JobConf conf;
 
-    private final int maxOpenPartitions;
+    private final int maxOpenWriters;
+    private final ListeningExecutorService writeVerificationExecutor;
+
     private final JsonCodec<PartitionUpdate> partitionUpdateCodec;
 
-    private final List<Object> partitionRow;
+    private final List<HiveWriter> writers = new ArrayList<>();
 
-    private final Table table;
-    private final boolean immutablePartitions;
-    private final boolean compress;
+    private final ConnectorSession session;
+    private final HiveMetadataUpdater hiveMetadataUpdater;
+    private final boolean fileRenamingEnabled;
 
-    private HiveRecordWriter[] writers = new HiveRecordWriter[0];
+    private long writtenBytes;
+    private long systemMemoryUsage;
+    private long validationCpuNanos;
+
+    private boolean waitForFileRenaming;
 
     public HivePageSink(
+            HiveWriterFactory writerFactory,
+            List<HiveColumnHandle> inputColumns,
+            Optional<HiveBucketProperty> bucketProperty,
             String schemaName,
             String tableName,
-            boolean isCreateTable,
-            List<HiveColumnHandle> inputColumns,
-            HiveStorageFormat tableStorageFormat,
-            LocationHandle locationHandle,
-            LocationService locationService,
-            String filePrefix,
-            HiveMetastore metastore,
             PageIndexerFactory pageIndexerFactory,
             TypeManager typeManager,
             HdfsEnvironment hdfsEnvironment,
-            int maxOpenPartitions,
-            boolean immutablePartitions,
-            boolean compress,
-            JsonCodec<PartitionUpdate> partitionUpdateCodec)
+            int maxOpenWriters,
+            ListeningExecutorService writeVerificationExecutor,
+            JsonCodec<PartitionUpdate> partitionUpdateCodec,
+            ConnectorSession session,
+            HiveMetadataUpdater hiveMetadataUpdater)
     {
-        this.schemaName = requireNonNull(schemaName, "schemaName is null");
-        this.tableName = requireNonNull(tableName, "tableName is null");
+        this.writerFactory = requireNonNull(writerFactory, "writerFactory is null");
 
         requireNonNull(inputColumns, "inputColumns is null");
 
-        this.tableStorageFormat = requireNonNull(tableStorageFormat, "tableStorageFormat is null");
-        this.locationHandle = requireNonNull(locationHandle, "locationHandle is null");
-        this.locationService = requireNonNull(locationService, "locationService is null");
-        this.filePrefix = requireNonNull(filePrefix, "filePrefix is null");
-
-        this.metastore = requireNonNull(metastore, "metastore is null");
+        this.schemaName = requireNonNull(schemaName, "schemaName is null");
+        this.tableName = requireNonNull(tableName, "tableName is null");
 
         requireNonNull(pageIndexerFactory, "pageIndexerFactory is null");
 
-        this.typeManager = requireNonNull(typeManager, "typeManager is null");
-
         this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
-        this.maxOpenPartitions = maxOpenPartitions;
-        this.immutablePartitions = immutablePartitions;
-        this.compress = compress;
+        this.maxOpenWriters = maxOpenWriters;
+        this.writeVerificationExecutor = requireNonNull(writeVerificationExecutor, "writeVerificationExecutor is null");
         this.partitionUpdateCodec = requireNonNull(partitionUpdateCodec, "partitionUpdateCodec is null");
 
-        // divide input columns into partition and data columns
-        ImmutableList.Builder<String> partitionColumnNames = ImmutableList.builder();
-        ImmutableList.Builder<Type> partitionColumnTypes = ImmutableList.builder();
-        ImmutableList.Builder<DataColumn> dataColumns = ImmutableList.builder();
-        for (HiveColumnHandle column : inputColumns) {
-            if (column.isPartitionKey()) {
-                partitionColumnNames.add(column.getName());
-                partitionColumnTypes.add(typeManager.getType(column.getTypeSignature()));
-            }
-            else {
-                dataColumns.add(new DataColumn(column.getName(), typeManager.getType(column.getTypeSignature()), column.getHiveType()));
-            }
-        }
-        this.partitionColumnNames = partitionColumnNames.build();
-        this.partitionColumnTypes = partitionColumnTypes.build();
-        this.dataColumns = dataColumns.build();
+        requireNonNull(bucketProperty, "bucketProperty is null");
+        this.pagePartitioner = new HiveWriterPagePartitioner(
+                inputColumns,
+                bucketProperty.isPresent(),
+                pageIndexerFactory,
+                typeManager);
 
         // determine the input index of the partition columns and data columns
+        // and determine the input index and type of bucketing columns
         ImmutableList.Builder<Integer> partitionColumns = ImmutableList.builder();
         ImmutableList.Builder<Integer> dataColumnsInputIndex = ImmutableList.builder();
+        Object2IntMap<String> dataColumnNameToIdMap = new Object2IntOpenHashMap<>();
+        Map<String, HiveType> dataColumnNameToHiveTypeMap = new HashMap<>();
         // sample weight column is passed separately, so index must be calculated without this column
-        List<HiveColumnHandle> inputColumnsWithoutSample = inputColumns.stream()
-                .filter(column -> !column.getName().equals(SAMPLE_WEIGHT_COLUMN_NAME))
-                .collect(toList());
-        for (int inputIndex = 0; inputIndex < inputColumnsWithoutSample.size(); inputIndex++) {
-            HiveColumnHandle column = inputColumnsWithoutSample.get(inputIndex);
+        for (int inputIndex = 0; inputIndex < inputColumns.size(); inputIndex++) {
+            HiveColumnHandle column = inputColumns.get(inputIndex);
             if (column.isPartitionKey()) {
                 partitionColumns.add(inputIndex);
             }
             else {
                 dataColumnsInputIndex.add(inputIndex);
+                dataColumnNameToIdMap.put(column.getName(), inputIndex);
+                dataColumnNameToHiveTypeMap.put(column.getName(), column.getHiveType());
             }
         }
         this.partitionColumnsInputIndex = Ints.toArray(partitionColumns.build());
         this.dataColumnInputIndex = Ints.toArray(dataColumnsInputIndex.build());
 
-        this.pageIndexer = pageIndexerFactory.createPageIndexer(this.partitionColumnTypes);
-
-        // preallocate temp space for partition and data
-        this.partitionRow = Arrays.asList(new Object[this.partitionColumnNames.size()]);
-
-        if (isCreateTable) {
-            this.table = null;
-            Optional<Path> writePath = locationService.writePathRoot(locationHandle);
-            checkArgument(writePath.isPresent(), "CREATE TABLE must have a write path");
-            conf = new JobConf(hdfsEnvironment.getConfiguration(writePath.get()));
+        if (bucketProperty.isPresent()) {
+            int bucketCount = bucketProperty.get().getBucketCount();
+            bucketColumns = bucketProperty.get().getBucketedBy().stream()
+                    .mapToInt(dataColumnNameToIdMap::get)
+                    .toArray();
+            BucketFunctionType bucketFunctionType = bucketProperty.get().getBucketFunctionType();
+            switch (bucketFunctionType) {
+                case HIVE_COMPATIBLE:
+                    List<HiveType> bucketColumnHiveTypes = bucketProperty.get().getBucketedBy().stream()
+                            .map(dataColumnNameToHiveTypeMap::get)
+                            .collect(toImmutableList());
+                    bucketFunction = createHiveCompatibleBucketFunction(bucketCount, bucketColumnHiveTypes);
+                    break;
+                case PRESTO_NATIVE:
+                    bucketFunction = createPrestoNativeBucketFunction(bucketCount, bucketProperty.get().getTypes().get());
+                    break;
+                default:
+                    throw new IllegalArgumentException("Unsupported bucket function type " + bucketFunctionType);
+            }
         }
         else {
-            Optional<Table> table = metastore.getTable(schemaName, tableName);
-            if (!table.isPresent()) {
-                throw new PrestoException(HIVE_INVALID_METADATA, format("Table %s.%s was dropped during insert", schemaName, tableName));
-            }
-            this.table = table.get();
-            Path hdfsEnvironmentPath = locationService.writePathRoot(locationHandle).orElseGet(() -> locationService.targetPathRoot(locationHandle));
-            conf = new JobConf(hdfsEnvironment.getConfiguration(hdfsEnvironmentPath));
+            bucketColumns = null;
+            bucketFunction = null;
         }
+
+        this.session = requireNonNull(session, "session is null");
+        this.hiveMetadataUpdater = requireNonNull(hiveMetadataUpdater, "hiveMetadataUpdater is null");
+        this.fileRenamingEnabled = isFileRenamingEnabled(session);
     }
 
     @Override
-    public Collection<Slice> finish()
+    public long getCompletedBytes()
+    {
+        return writtenBytes;
+    }
+
+    @Override
+    public long getSystemMemoryUsage()
+    {
+        return systemMemoryUsage;
+    }
+
+    @Override
+    public long getValidationCpuNanos()
+    {
+        return validationCpuNanos;
+    }
+
+    @Override
+    public CompletableFuture<Collection<Slice>> finish()
+    {
+        // Must be wrapped in doAs entirely
+        // Implicit FileSystem initializations are possible in HiveRecordWriter#commit -> RecordWriter#close
+        ListenableFuture<Collection<Slice>> result = hdfsEnvironment.doAs(session.getUser(), this::doFinish);
+        return MoreFutures.toCompletableFuture(result);
+    }
+
+    private ListenableFuture<Collection<Slice>> doFinish()
     {
         ImmutableList.Builder<Slice> partitionUpdates = ImmutableList.builder();
-        for (HiveRecordWriter writer : writers) {
-            if (writer != null) {
-                writer.commit();
-                PartitionUpdate partitionUpdate = writer.getPartitionUpdate();
-                partitionUpdates.add(wrappedBuffer(partitionUpdateCodec.toJsonBytes(partitionUpdate)));
-            }
+        List<Callable<Object>> verificationTasks = new ArrayList<>();
+        for (HiveWriter writer : writers) {
+            writer.commit();
+            PartitionUpdate partitionUpdate = writer.getPartitionUpdate();
+            partitionUpdates.add(wrappedBuffer(partitionUpdateCodec.toJsonBytes(partitionUpdate)));
+            writer.getVerificationTask()
+                    .map(Executors::callable)
+                    .ifPresent(verificationTasks::add);
         }
-        return partitionUpdates.build();
+        List<Slice> result = partitionUpdates.build();
+
+        writtenBytes = writers.stream()
+                .mapToLong(HiveWriter::getWrittenBytes)
+                .sum();
+        validationCpuNanos = writers.stream()
+                .mapToLong(HiveWriter::getValidationCpuNanos)
+                .sum();
+
+        if (waitForFileRenaming && verificationTasks.isEmpty()) {
+            // Use CopyOnWriteArrayList to prevent race condition when callbacks try to add partitionUpdates to this list
+            List<Slice> partitionUpdatesWithRenamedFileNames = new CopyOnWriteArrayList<>();
+            List<ListenableFuture<?>> futures = new ArrayList<>();
+            for (int i = 0; i < writers.size(); i++) {
+                int writerIndex = i;
+                ListenableFuture<?> fileNameFuture = toListenableFuture(hiveMetadataUpdater.getMetadataResult(writerIndex));
+                SettableFuture renamingFuture = SettableFuture.create();
+                futures.add(renamingFuture);
+                addSuccessCallback(fileNameFuture, obj -> renameFiles((String) obj, writerIndex, renamingFuture, partitionUpdatesWithRenamedFileNames));
+            }
+            return Futures.transform(Futures.allAsList(futures), input -> partitionUpdatesWithRenamedFileNames, directExecutor());
+        }
+
+        if (verificationTasks.isEmpty()) {
+            return Futures.immediateFuture(result);
+        }
+
+        try {
+            List<ListenableFuture<?>> futures = writeVerificationExecutor.invokeAll(verificationTasks).stream()
+                    .map(future -> (ListenableFuture<?>) future)
+                    .collect(toList());
+            return Futures.transform(Futures.allAsList(futures), input -> result, directExecutor());
+        }
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+        }
     }
 
     @Override
     public void abort()
     {
-        for (HiveRecordWriter writer : writers) {
+        // Must be wrapped in doAs entirely
+        // Implicit FileSystem initializations are possible in HiveRecordWriter#rollback -> RecordWriter#close
+        hdfsEnvironment.doAs(session.getUser(), this::doAbort);
+    }
+
+    private void doAbort()
+    {
+        Optional<Exception> rollbackException = Optional.empty();
+        for (HiveWriter writer : writers) {
+            // writers can contain nulls if an exception is thrown when doAppend expends the writer list
             if (writer != null) {
-                writer.rollback();
+                try {
+                    writer.rollback();
+                }
+                catch (Exception e) {
+                    log.warn("exception '%s' while rollback on %s", e, writer);
+                    rollbackException = Optional.of(e);
+                }
             }
+        }
+        if (rollbackException.isPresent()) {
+            throw new PrestoException(HIVE_WRITER_CLOSE_ERROR, "Error rolling back write to Hive", rollbackException.get());
         }
     }
 
     @Override
-    public CompletableFuture<?> appendPage(Page page, Block sampleWeightBlock)
+    public CompletableFuture<?> appendPage(Page page)
     {
-        if (page.getPositionCount() == 0) {
-            return NOT_BLOCKED;
+        if (page.getPositionCount() > 0) {
+            // Must be wrapped in doAs entirely
+            // Implicit FileSystem initializations are possible in HiveRecordWriter#addRow or #createWriter
+            hdfsEnvironment.doAs(session.getUser(), () -> doAppend(page));
         }
 
-        Block[] dataBlocks = getDataBlocks(page, sampleWeightBlock);
-        Block[] partitionBlocks = getPartitionBlocks(page);
-
-        int[] indexes = pageIndexer.indexPage(new Page(page.getPositionCount(), partitionBlocks));
-        if (pageIndexer.getMaxIndex() >= maxOpenPartitions) {
-            throw new PrestoException(HIVE_TOO_MANY_OPEN_PARTITIONS, "Too many open partitions");
-        }
-        if (pageIndexer.getMaxIndex() >= writers.length) {
-            writers = Arrays.copyOf(writers, pageIndexer.getMaxIndex() + 1);
-        }
-
-        for (int position = 0; position < page.getPositionCount(); position++) {
-            int writerIndex = indexes[position];
-            HiveRecordWriter writer = writers[writerIndex];
-            if (writer == null) {
-                for (int field = 0; field < partitionBlocks.length; field++) {
-                    Object value = getField(partitionColumnTypes.get(field), partitionBlocks[field], position);
-                    partitionRow.set(field, value);
-                }
-                writer = createWriter(partitionRow);
-                writers[writerIndex] = writer;
-            }
-
-            writer.addRow(dataBlocks, position);
-        }
         return NOT_BLOCKED;
     }
 
-    private HiveRecordWriter createWriter(List<Object> partitionRow)
+    private void doAppend(Page page)
     {
-        checkArgument(partitionRow.size() == partitionColumnNames.size(), "size of partitionRow is different from partitionColumnNames");
-
-        List<String> partitionValues = partitionRow.stream()
-                .map(value -> (value == null) ? HIVE_DEFAULT_DYNAMIC_PARTITION : value.toString())
-                .collect(toList());
-
-        Optional<String> partitionName;
-        if (!partitionColumnNames.isEmpty()) {
-            partitionName = Optional.of(FileUtils.makePartName(partitionColumnNames, partitionValues));
-        }
-        else {
-            partitionName = Optional.empty();
+        while (page.getPositionCount() > MAX_PAGE_POSITIONS) {
+            Page chunk = page.getRegion(0, MAX_PAGE_POSITIONS);
+            page = page.getRegion(MAX_PAGE_POSITIONS, page.getPositionCount() - MAX_PAGE_POSITIONS);
+            writePage(chunk);
         }
 
-        // attempt to get the existing partition (if this is an existing partitioned table)
-        Optional<Partition> partition = Optional.empty();
-        if (!partitionRow.isEmpty() && table != null) {
-            partition = metastore.getPartition(schemaName, tableName, partitionName.get());
+        writePage(page);
+    }
+
+    private void writePage(Page page)
+    {
+        int[] writerIndexes = getWriterIndexes(page);
+
+        // position count for each writer
+        int[] sizes = new int[writers.size()];
+        for (int index : writerIndexes) {
+            sizes[index]++;
         }
 
-        boolean isNew;
-        Properties schema;
-        Path target;
-        Path write;
-        String outputFormat;
-        String serDe;
-        if (!partition.isPresent()) {
-            if (table == null) {
-                // Write to: a new partition in a new partitioned table,
-                //           or a new unpartitioned table.
-                isNew = true;
-                schema = new Properties();
-                schema.setProperty(META_TABLE_COLUMNS, dataColumns.stream()
-                        .map(DataColumn::getName)
-                        .collect(joining(",")));
-                schema.setProperty(META_TABLE_COLUMN_TYPES, dataColumns.stream()
-                        .map(DataColumn::getHiveType)
-                        .map(HiveType::getHiveTypeName)
-                        .collect(joining(":")));
-                target = locationService.targetPath(locationHandle, partitionName);
-                write = locationService.writePath(locationHandle, partitionName).get();
+        // record which positions are used by which writer
+        int[][] writerPositions = new int[writers.size()][];
+        int[] counts = new int[writers.size()];
 
-                if (partitionName.isPresent() && !target.equals(write)) {
-                    // When target path is different from write path,
-                    // verify that the target directory for the partition does not already exist
-                    if (HiveWriteUtils.pathExists(hdfsEnvironment, target)) {
-                        throw new PrestoException(HIVE_PATH_ALREADY_EXISTS, format("Target directory for new partition '%s' of table '%s.%s' already exists: %s",
-                                partitionName,
-                                schemaName,
-                                tableName,
-                                target));
-                    }
-                }
-                outputFormat = tableStorageFormat.getOutputFormat();
-                serDe = tableStorageFormat.getSerDe();
+        for (int position = 0; position < page.getPositionCount(); position++) {
+            int index = writerIndexes[position];
+
+            int count = counts[index];
+            if (count == 0) {
+                writerPositions[index] = new int[sizes[index]];
             }
-            else {
-                // Write to: a new partition in an existing partitioned table,
-                //           or an existing unpartitioned table
-                if (partitionName.isPresent()) {
-                    isNew = true;
-                }
-                else {
-                    if (immutablePartitions) {
-                        throw new PrestoException(HIVE_PARTITION_READ_ONLY, "Unpartitioned Hive tables are immutable");
-                    }
-                    isNew = false;
-                }
-                schema = MetaStoreUtils.getSchema(
-                        table.getSd(),
-                        table.getSd(),
-                        table.getParameters(),
-                        schemaName,
-                        tableName,
-                        table.getPartitionKeys());
-                target = locationService.targetPath(locationHandle, partitionName);
-                write = locationService.writePath(locationHandle, partitionName).orElse(target);
-                outputFormat = tableStorageFormat.getOutputFormat();
-                serDe = tableStorageFormat.getSerDe();
-            }
+            writerPositions[index][count] = position;
+            counts[index] = count + 1;
         }
-        else {
-            // Write to: an existing partition in an existing partitioned table,
-            if (immutablePartitions) {
-                throw new PrestoException(HIVE_PARTITION_READ_ONLY, "Hive partitions are immutable");
+
+        // invoke the writers
+        Page dataPage = getDataPage(page);
+        for (int index = 0; index < writerPositions.length; index++) {
+            int[] positions = writerPositions[index];
+            if (positions == null) {
+                continue;
             }
-            isNew = false;
 
-            // Append to an existing partition
-            HiveWriteUtils.checkPartitionIsWritable(partitionName.get(), partition.get());
+            // If write is partitioned across multiple writers, filter page using dictionary blocks
+            Page pageForWriter = dataPage;
+            if (positions.length != dataPage.getPositionCount()) {
+                verify(positions.length == counts[index]);
+                pageForWriter = pageForWriter.getPositions(positions, 0, positions.length);
+            }
 
-            StorageDescriptor storageDescriptor = partition.get().getSd();
-            outputFormat = storageDescriptor.getOutputFormat();
-            serDe = storageDescriptor.getSerdeInfo().getSerializationLib();
-            schema = MetaStoreUtils.getSchema(partition.get(), table);
+            HiveWriter writer = writers.get(index);
 
-            target = locationService.targetPath(locationHandle, partition.get(), partitionName.get());
-            write = locationService.writePath(locationHandle, partitionName).orElse(target);
+            long currentWritten = writer.getWrittenBytes();
+            long currentMemory = writer.getSystemMemoryUsage();
+
+            writer.append(pageForWriter);
+
+            writtenBytes += (writer.getWrittenBytes() - currentWritten);
+            systemMemoryUsage += (writer.getSystemMemoryUsage() - currentMemory);
         }
-        return new HiveRecordWriter(
+    }
+
+    private void sendMetadataUpdateRequest(Optional<String> partitionName, int writerIndex, boolean writeTempData)
+    {
+        // Bucketed tables already have unique bucket number as part of fileName. So no need to rename.
+        if (writeTempData || !fileRenamingEnabled || bucketFunction != null) {
+            return;
+        }
+        hiveMetadataUpdater.addMetadataUpdateRequest(schemaName, tableName, partitionName, writerIndex);
+        waitForFileRenaming = true;
+    }
+
+    private void renameFiles(String fileName, int writerIndex, SettableFuture<?> renamingFuture, List<Slice> partitionUpdatesWithRenamedFileNames)
+    {
+        HdfsContext context = new HdfsContext(
+                session,
                 schemaName,
                 tableName,
-                partitionName.orElse(""),
-                compress,
-                isNew,
-                dataColumns,
-                outputFormat,
-                serDe,
-                schema,
-                generateRandomFileName(outputFormat),
-                write.toString(),
-                target.toString(),
-                typeManager,
-                conf);
-    }
+                writerFactory.getLocationHandle().getTargetPath().toString(),
+                writerFactory.isCreateTable());
+        HiveWriter writer = writers.get(writerIndex);
+        PartitionUpdate partitionUpdate = writer.getPartitionUpdate();
 
-    private String generateRandomFileName(String outputFormat)
-    {
-        // text format files must have the correct extension when compressed
-        String extension = "";
-        if (HiveConf.getBoolVar(conf, COMPRESSRESULT) && HiveIgnoreKeyTextOutputFormat.class.getName().equals(outputFormat)) {
-            extension = new DefaultCodec().getDefaultExtension();
+        // Check that only one file is written by a writer
+        checkArgument(partitionUpdate.getFileWriteInfos().size() == 1, "HiveWriter wrote data to more than one file");
 
-            String compressionCodecClass = conf.get("mapred.output.compression.codec");
-            if (compressionCodecClass != null) {
-                try {
-                    Class<? extends CompressionCodec> codecClass = conf.getClassByName(compressionCodecClass).asSubclass(CompressionCodec.class);
-                    extension = ReflectionUtil.newInstance(codecClass, conf).getDefaultExtension();
-                }
-                catch (ClassNotFoundException e) {
-                    throw new PrestoException(HIVE_UNSUPPORTED_FORMAT, "Compression codec not found: " + compressionCodecClass, e);
-                }
-                catch (RuntimeException e) {
-                    throw new PrestoException(HIVE_UNSUPPORTED_FORMAT, "Failed to load compression codec: " + compressionCodecClass, e);
-                }
-            }
+        FileWriteInfo fileWriteInfo = partitionUpdate.getFileWriteInfos().get(0);
+        Path fromPath = new Path(partitionUpdate.getWritePath(), fileWriteInfo.getWriteFileName());
+        Path toPath = new Path(partitionUpdate.getWritePath(), fileName);
+        try {
+            ExtendedFileSystem fileSystem = hdfsEnvironment.getFileSystem(context, fromPath);
+            ListenableFuture<Void> asyncFuture = fileSystem.renameFileAsync(fromPath, toPath);
+            addSuccessCallback(asyncFuture, () -> updateFileInfo(partitionUpdatesWithRenamedFileNames, renamingFuture, partitionUpdate, fileName, fileWriteInfo, writerIndex));
         }
-        return filePrefix + "_" + randomUUID() + extension;
+        catch (IOException e) {
+            throw new PrestoException(HIVE_FILESYSTEM_ERROR, format("Error renaming file. fromPath: %s toPath: %s", fromPath, toPath), e);
+        }
     }
 
-    private Block[] getDataBlocks(Page page, Block sampleWeightBlock)
+    private void updateFileInfo(List<Slice> partitionUpdatesWithRenamedFileNames, SettableFuture<?> renamingFuture, PartitionUpdate partitionUpdate, String fileName, FileWriteInfo fileWriteInfo, int writerIndex)
     {
-        Block[] blocks = new Block[dataColumnInputIndex.length + (sampleWeightBlock != null ? 1 : 0)];
+        // Update the file info in partitionUpdate with new filename
+        FileWriteInfo fileInfoWithRenamedFileName = new FileWriteInfo(fileName, fileName, fileWriteInfo.getFileSize());
+        PartitionUpdate partitionUpdateWithRenamedFileName = new PartitionUpdate(partitionUpdate.getName(),
+                partitionUpdate.getUpdateMode(),
+                partitionUpdate.getWritePath(),
+                partitionUpdate.getTargetPath(),
+                ImmutableList.of(fileInfoWithRenamedFileName),
+                partitionUpdate.getRowCount(),
+                partitionUpdate.getInMemoryDataSizeInBytes(),
+                partitionUpdate.getOnDiskDataSizeInBytes(),
+                true);
+        partitionUpdatesWithRenamedFileNames.add(wrappedBuffer(partitionUpdateCodec.toJsonBytes(partitionUpdateWithRenamedFileName)));
+
+        hiveMetadataUpdater.removeResultFuture(writerIndex);
+        renamingFuture.set(null);
+    }
+
+    private int[] getWriterIndexes(Page page)
+    {
+        Page partitionColumns = extractColumns(page, partitionColumnsInputIndex);
+        Block bucketBlock = buildBucketBlock(page);
+        int[] writerIndexes = pagePartitioner.partitionPage(partitionColumns, bucketBlock);
+        if (pagePartitioner.getMaxIndex() >= maxOpenWriters) {
+            throw new PrestoException(HIVE_TOO_MANY_OPEN_PARTITIONS, format("Exceeded limit of %s open writers for partitions/buckets", maxOpenWriters));
+        }
+
+        // expand writers list to new size
+        while (writers.size() <= pagePartitioner.getMaxIndex()) {
+            writers.add(null);
+        }
+
+        // create missing writers
+        for (int position = 0; position < page.getPositionCount(); position++) {
+            int writerIndex = writerIndexes[position];
+            if (writers.get(writerIndex) != null) {
+                continue;
+            }
+
+            OptionalInt bucketNumber = OptionalInt.empty();
+            if (bucketBlock != null) {
+                bucketNumber = OptionalInt.of(bucketBlock.getInt(position));
+            }
+            HiveWriter writer = writerFactory.createWriter(partitionColumns, position, bucketNumber);
+            writers.set(writerIndex, writer);
+
+            // Send metadata update request if needed
+            sendMetadataUpdateRequest(writer.getPartitionName(), writerIndex, writer.isWriteTempData());
+        }
+        verify(writers.size() == pagePartitioner.getMaxIndex() + 1);
+        verify(!writers.contains(null));
+
+        return writerIndexes;
+    }
+
+    private Page getDataPage(Page page)
+    {
+        Block[] blocks = new Block[dataColumnInputIndex.length];
         for (int i = 0; i < dataColumnInputIndex.length; i++) {
             int dataColumn = dataColumnInputIndex[i];
             blocks[i] = page.getBlock(dataColumn);
         }
-        if (sampleWeightBlock != null) {
-            // sample weight block is always last
-            blocks[blocks.length - 1] = sampleWeightBlock;
-        }
-        return blocks;
+        return new Page(page.getPositionCount(), blocks);
     }
 
-    private Block[] getPartitionBlocks(Page page)
+    private Block buildBucketBlock(Page page)
     {
-        Block[] blocks = new Block[partitionColumnsInputIndex.length];
-        for (int i = 0; i < partitionColumnsInputIndex.length; i++) {
-            int dataColumn = partitionColumnsInputIndex[i];
+        if (bucketFunction == null) {
+            return null;
+        }
+
+        IntArrayBlockBuilder bucketColumnBuilder = new IntArrayBlockBuilder(null, page.getPositionCount());
+        Page bucketColumnsPage = extractColumns(page, bucketColumns);
+        for (int position = 0; position < page.getPositionCount(); position++) {
+            int bucket = bucketFunction.getBucket(bucketColumnsPage, position);
+            bucketColumnBuilder.writeInt(bucket);
+        }
+        return bucketColumnBuilder.build();
+    }
+
+    private static Page extractColumns(Page page, int[] columns)
+    {
+        Block[] blocks = new Block[columns.length];
+        for (int i = 0; i < columns.length; i++) {
+            int dataColumn = columns[i];
             blocks[i] = page.getBlock(dataColumn);
         }
-        return blocks;
+        return new Page(page.getPositionCount(), blocks);
     }
 
-    @VisibleForTesting
-    public static class HiveRecordWriter
+    private static class HiveWriterPagePartitioner
     {
-        private final String partitionName;
-        private final boolean isNew;
-        private final String fileName;
-        private final String writePath;
-        private final String targetPath;
-        private final int fieldCount;
-        @SuppressWarnings("deprecation")
-        private final Serializer serializer;
-        private final RecordWriter recordWriter;
-        private final SettableStructObjectInspector tableInspector;
-        private final List<StructField> structFields;
-        private final Object row;
-        private final FieldSetter[] setters;
+        private final PageIndexer pageIndexer;
 
-        public HiveRecordWriter(
-                String schemaName,
-                String tableName,
-                String partitionName,
-                boolean compress,
-                boolean isNew,
-                List<DataColumn> inputColumns,
-                String outputFormat,
-                String serDe,
-                Properties schema,
-                String fileName,
-                String writePath,
-                String targetPath,
-                TypeManager typeManager,
-                JobConf conf)
+        public HiveWriterPagePartitioner(
+                List<HiveColumnHandle> inputColumns,
+                boolean bucketed,
+                PageIndexerFactory pageIndexerFactory,
+                TypeManager typeManager)
         {
-            this.partitionName = partitionName;
-            this.isNew = isNew;
-            this.fileName = fileName;
-            this.writePath = writePath;
-            this.targetPath = targetPath;
+            requireNonNull(inputColumns, "inputColumns is null");
+            requireNonNull(pageIndexerFactory, "pageIndexerFactory is null");
 
-            // existing tables may have columns in a different order
-            List<String> fileColumnNames = Splitter.on(',').trimResults().omitEmptyStrings().splitToList(schema.getProperty(META_TABLE_COLUMNS, ""));
-            List<HiveType> fileColumnHiveTypes = toHiveTypes(schema.getProperty(META_TABLE_COLUMN_TYPES, ""));
-
-            // verify we can write all input columns to the file
-            Map<String, DataColumn> inputColumnMap = inputColumns.stream()
-                    .collect(toMap(DataColumn::getName, identity()));
-            Set<String> missingColumns = Sets.difference(inputColumnMap.keySet(), new HashSet<>(fileColumnNames));
-            if (!missingColumns.isEmpty()) {
-                throw new PrestoException(NOT_FOUND, format("Table %s.%s does not have columns %s", schema, tableName, missingColumns));
-            }
-            if (fileColumnNames.size() != fileColumnHiveTypes.size()) {
-                throw new PrestoException(HIVE_INVALID_METADATA, format("Partition '%s' in table '%s.%s' has mismatched metadata for column names and types",
-                        partitionName,
-                        schemaName,
-                        tableName));
-            }
-
-            // verify the file types match the input type
-            // todo adapt input types to the file types as Hive does
-            for (int fileIndex = 0; fileIndex < fileColumnNames.size(); fileIndex++) {
-                String columnName = fileColumnNames.get(fileIndex);
-                HiveType fileColumnHiveType = fileColumnHiveTypes.get(fileIndex);
-                HiveType inputHiveType = inputColumnMap.get(columnName).getHiveType();
-
-                if (!fileColumnHiveType.equals(inputHiveType)) {
-                    // todo this should be moved to a helper
-                    throw new PrestoException(HIVE_PARTITION_SCHEMA_MISMATCH, format("" +
-                                    "There is a mismatch between the table and partition schemas. " +
-                                    "The column '%s' in table '%s.%s' is declared as type '%s', " +
-                                    "but partition '%s' declared column '%s' as type '%s'.",
-                            columnName,
-                            schemaName,
-                            tableName,
-                            inputHiveType,
-                            partitionName,
-                            columnName,
-                            fileColumnHiveType));
-                }
-            }
-
-            fieldCount = fileColumnNames.size();
-
-            if (serDe.equals(org.apache.hadoop.hive.serde2.columnar.LazyBinaryColumnarSerDe.class.getName())) {
-                serDe = OptimizedLazyBinaryColumnarSerde.class.getName();
-            }
-            serializer = initializeSerializer(conf, schema, serDe);
-            recordWriter = HiveWriteUtils.createRecordWriter(new Path(writePath, fileName), conf, compress, schema, outputFormat);
-
-            List<Type> fileColumnTypes = fileColumnHiveTypes.stream()
-                    .map(hiveType -> hiveType.getType(typeManager))
+            List<Type> partitionColumnTypes = inputColumns.stream()
+                    .filter(HiveColumnHandle::isPartitionKey)
+                    .map(column -> typeManager.getType(column.getTypeSignature()))
                     .collect(toList());
-            tableInspector = getStandardStructObjectInspector(fileColumnNames, getRowColumnInspectors(fileColumnTypes));
 
-            // reorder (and possibly reduce) struct fields to match input
-            structFields = ImmutableList.copyOf(inputColumns.stream()
-                            .map(DataColumn::getName)
-                            .map(tableInspector::getStructFieldRef)
-                            .collect(toList()));
-
-            row = tableInspector.create();
-
-            setters = new FieldSetter[structFields.size()];
-            for (int i = 0; i < setters.length; i++) {
-                setters[i] = createFieldSetter(tableInspector, row, structFields.get(i), inputColumns.get(i).getType());
+            if (bucketed) {
+                partitionColumnTypes.add(INTEGER);
             }
+
+            this.pageIndexer = pageIndexerFactory.createPageIndexer(partitionColumnTypes);
         }
 
-        public void addRow(Block[] columns, int position)
+        public int[] partitionPage(Page partitionColumns, Block bucketBlock)
         {
-            for (int field = 0; field < fieldCount; field++) {
-                if (columns[field].isNull(position)) {
-                    tableInspector.setStructFieldData(row, structFields.get(field), null);
+            if (bucketBlock != null) {
+                Block[] blocks = new Block[partitionColumns.getChannelCount() + 1];
+                for (int i = 0; i < partitionColumns.getChannelCount(); i++) {
+                    blocks[i] = partitionColumns.getBlock(i);
                 }
-                else {
-                    setters[field].setField(columns[field], position);
-                }
+                blocks[blocks.length - 1] = bucketBlock;
+                partitionColumns = new Page(partitionColumns.getPositionCount(), blocks);
             }
-
-            try {
-                recordWriter.write(serializer.serialize(row, tableInspector));
-            }
-            catch (SerDeException | IOException e) {
-                throw new PrestoException(HIVE_WRITER_DATA_ERROR, e);
-            }
+            return pageIndexer.indexPage(partitionColumns);
         }
 
-        public void commit()
+        public int getMaxIndex()
         {
-            try {
-                recordWriter.close(false);
-            }
-            catch (IOException e) {
-                throw new PrestoException(HIVE_WRITER_CLOSE_ERROR, "Error committing write to Hive", e);
-            }
-        }
-
-        public void rollback()
-        {
-            try {
-                recordWriter.close(true);
-            }
-            catch (IOException e) {
-                throw new PrestoException(HIVE_WRITER_CLOSE_ERROR, "Error rolling back write to Hive", e);
-            }
-        }
-
-        public PartitionUpdate getPartitionUpdate()
-        {
-            return new PartitionUpdate(
-                    partitionName,
-                    isNew,
-                    writePath,
-                    targetPath,
-                    ImmutableList.of(fileName));
-        }
-
-        @SuppressWarnings("deprecation")
-        private static Serializer initializeSerializer(Configuration conf, Properties properties, String serializerName)
-        {
-            try {
-                Serializer result = (Serializer) Class.forName(serializerName).getConstructor().newInstance();
-                result.initialize(conf, properties);
-                return result;
-            }
-            catch (SerDeException | ReflectiveOperationException e) {
-                throw Throwables.propagate(e);
-            }
-        }
-
-        @Override
-        public String toString()
-        {
-            return toStringHelper(this)
-                    .add("partitionName", partitionName)
-                    .add("writePath", writePath)
-                    .add("fileName", fileName)
-                    .toString();
-        }
-    }
-
-    @VisibleForTesting
-    public static class DataColumn
-    {
-        private final String name;
-        private final Type type;
-        private final HiveType hiveType;
-
-        public DataColumn(String name, Type type, HiveType hiveType)
-        {
-            this.name = requireNonNull(name, "name is null");
-            this.type = requireNonNull(type, "type is null");
-            this.hiveType = requireNonNull(hiveType, "hiveType is null");
-        }
-
-        public String getName()
-        {
-            return name;
-        }
-
-        public Type getType()
-        {
-            return type;
-        }
-
-        public HiveType getHiveType()
-        {
-            return hiveType;
+            return pageIndexer.getMaxIndex();
         }
     }
 }

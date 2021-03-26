@@ -13,49 +13,33 @@
  */
 package com.facebook.presto.sql.planner.plan;
 
-import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.tree.SampledRelation;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.PlanNodeId;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 
 import javax.annotation.concurrent.Immutable;
 
 import java.util.List;
-import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
 @Immutable
 public class SampleNode
-        extends PlanNode
+        extends InternalPlanNode
 {
     private final PlanNode source;
     private final double sampleRatio;
     private final Type sampleType;
-    private final boolean rescaled;
-    private final Optional<Symbol> sampleWeightSymbol;
 
     public enum Type
     {
         BERNOULLI,
-        POISSONIZED,
-        SYSTEM;
-
-        public static Type fromType(SampledRelation.Type sampleType)
-        {
-            switch (sampleType) {
-                case BERNOULLI:
-                    return Type.BERNOULLI;
-                case POISSONIZED:
-                    return Type.POISSONIZED;
-                case SYSTEM:
-                    return Type.SYSTEM;
-                default:
-                    throw new UnsupportedOperationException("Unsupported sample type: " + sampleType);
-            }
-        }
+        SYSTEM
     }
 
     @JsonCreator
@@ -63,40 +47,22 @@ public class SampleNode
             @JsonProperty("id") PlanNodeId id,
             @JsonProperty("source") PlanNode source,
             @JsonProperty("sampleRatio") double sampleRatio,
-            @JsonProperty("sampleType") Type sampleType,
-            @JsonProperty("rescaled") boolean rescaled,
-            @JsonProperty("sampleWeightSymbol") Optional<Symbol> sampleWeightSymbol)
+            @JsonProperty("sampleType") Type sampleType)
     {
         super(id);
 
         checkArgument(sampleRatio >= 0.0, "sample ratio must be greater than or equal to 0");
-        checkArgument((sampleRatio <= 1.0) || (sampleType == Type.POISSONIZED), "sample ratio must be less than or equal to 1");
+        checkArgument((sampleRatio <= 1.0), "sample ratio must be less than or equal to 1");
 
         this.sampleType = requireNonNull(sampleType, "sample type is null");
         this.source = requireNonNull(source, "source is null");
         this.sampleRatio = sampleRatio;
-        this.rescaled = rescaled;
-        checkArgument(!rescaled || sampleType == Type.POISSONIZED);
-        this.sampleWeightSymbol = requireNonNull(sampleWeightSymbol, "sample weight symbol is null");
-        checkArgument(sampleWeightSymbol.isPresent() == (sampleType == Type.POISSONIZED), "sample weight symbol must be used with POISSONIZED sampling");
     }
 
     @Override
     public List<PlanNode> getSources()
     {
         return ImmutableList.of(source);
-    }
-
-    @JsonProperty
-    public boolean isRescaled()
-    {
-        return rescaled;
-    }
-
-    @JsonProperty
-    public Optional<Symbol> getSampleWeightSymbol()
-    {
-        return sampleWeightSymbol;
     }
 
     @JsonProperty
@@ -118,19 +84,20 @@ public class SampleNode
     }
 
     @Override
-    public List<Symbol> getOutputSymbols()
+    public List<VariableReferenceExpression> getOutputVariables()
     {
-        if (sampleWeightSymbol.isPresent()) {
-            return ImmutableList.<Symbol>builder().addAll(source.getOutputSymbols()).add(sampleWeightSymbol.get()).build();
-        }
-        else {
-            return source.getOutputSymbols();
-        }
+        return source.getOutputVariables();
     }
 
     @Override
-    public <C, R> R accept(PlanVisitor<C, R> visitor, C context)
+    public <R, C> R accept(InternalPlanVisitor<R, C> visitor, C context)
     {
         return visitor.visitSample(this, context);
+    }
+
+    @Override
+    public PlanNode replaceChildren(List<PlanNode> newChildren)
+    {
+        return new SampleNode(getId(), Iterables.getOnlyElement(newChildren), sampleRatio, sampleType);
     }
 }

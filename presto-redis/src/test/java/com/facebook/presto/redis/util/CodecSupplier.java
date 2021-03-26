@@ -13,18 +13,18 @@
  */
 package com.facebook.presto.redis.util;
 
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.airlift.json.JsonCodecFactory;
+import com.facebook.airlift.json.ObjectMapperProvider;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.spi.type.Type;
 import com.fasterxml.jackson.databind.DeserializationContext;
-import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.deser.std.FromStringDeserializer;
-import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.json.JsonCodec;
-import io.airlift.json.JsonCodecFactory;
-import io.airlift.json.ObjectMapperProvider;
 
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import java.util.function.Supplier;
+
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 
 public final class CodecSupplier<T>
         implements Supplier<JsonCodec<T>>
@@ -36,7 +36,7 @@ public final class CodecSupplier<T>
     {
         this.clazz = clazz;
         ObjectMapperProvider objectMapperProvider = new ObjectMapperProvider();
-        objectMapperProvider.setJsonDeserializers(ImmutableMap.<Class<?>, JsonDeserializer<?>>of(Type.class, new TypeDeserializer(metadata)));
+        objectMapperProvider.setJsonDeserializers(ImmutableMap.of(Type.class, new TypeDeserializer(metadata)));
         this.codecFactory = new JsonCodecFactory(objectMapperProvider);
     }
 

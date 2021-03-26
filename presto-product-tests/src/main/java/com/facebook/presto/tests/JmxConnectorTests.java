@@ -13,23 +13,25 @@
  */
 package com.facebook.presto.tests;
 
-import com.teradata.tempto.ProductTest;
+import io.prestodb.tempto.ProductTest;
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.tests.TestGroups.JDBC;
 import static com.facebook.presto.tests.TestGroups.JMX_CONNECTOR;
-import static com.teradata.tempto.assertions.QueryAssert.assertThat;
-import static com.teradata.tempto.query.QueryExecutor.query;
+import static io.prestodb.tempto.assertions.QueryAssert.assertThat;
+import static io.prestodb.tempto.query.QueryExecutor.query;
 import static java.sql.JDBCType.BIGINT;
-import static java.sql.JDBCType.LONGNVARCHAR;
+import static java.sql.JDBCType.VARCHAR;
 
 public class JmxConnectorTests
         extends ProductTest
 {
-    @Test(groups = JMX_CONNECTOR)
+    @Test(groups = {JMX_CONNECTOR, JDBC})
     public void selectFromJavaRuntimeJmxMBean()
     {
-        assertThat(query("SELECT node, vmname, vmversion FROM jmx.jmx.\"java.lang:type=runtime\""))
-                .hasColumns(LONGNVARCHAR, LONGNVARCHAR, LONGNVARCHAR)
+        String sql = "SELECT node, vmname, vmversion FROM jmx.current.\"java.lang:type=runtime\"";
+        assertThat(query(sql))
+                .hasColumns(VARCHAR, VARCHAR, VARCHAR)
                 .hasAnyRows();
     }
 
@@ -37,7 +39,7 @@ public class JmxConnectorTests
     public void selectFromJavaOperatingSystemJmxMBean()
     {
         assertThat(query("SELECT openfiledescriptorcount, maxfiledescriptorcount " +
-                "FROM jmx.jmx.\"java.lang:type=operatingsystem\""))
+                "FROM jmx.current.\"java.lang:type=operatingsystem\""))
                 .hasColumns(BIGINT, BIGINT)
                 .hasAnyRows();
     }

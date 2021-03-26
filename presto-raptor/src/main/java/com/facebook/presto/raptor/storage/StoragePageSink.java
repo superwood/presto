@@ -13,10 +13,11 @@
  */
 package com.facebook.presto.raptor.storage;
 
+import com.facebook.presto.common.Page;
 import com.facebook.presto.raptor.metadata.ShardInfo;
-import com.facebook.presto.spi.Page;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 public interface StoragePageSink
 {
@@ -24,13 +25,11 @@ public interface StoragePageSink
 
     void appendPages(List<Page> pages, int[] pageIndexes, int[] positionIndexes);
 
-    void appendRow(Row row);
-
     boolean isFull();
 
     void flush();
 
-    List<ShardInfo> commit();
+    CompletableFuture<List<ShardInfo>> commit();
 
     void rollback();
 }

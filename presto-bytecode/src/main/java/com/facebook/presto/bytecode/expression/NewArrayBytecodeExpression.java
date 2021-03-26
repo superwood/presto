@@ -18,18 +18,26 @@ import com.facebook.presto.bytecode.BytecodeNode;
 import com.facebook.presto.bytecode.MethodGenerationContext;
 import com.facebook.presto.bytecode.ParameterizedType;
 import com.facebook.presto.bytecode.instruction.TypeInstruction;
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
+
+import javax.annotation.Nullable;
 
 import java.util.List;
 
+import static com.facebook.presto.bytecode.ArrayOpCode.getArrayOpCode;
 import static com.facebook.presto.bytecode.expression.BytecodeExpressions.constantInt;
+import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
 class NewArrayBytecodeExpression
         extends BytecodeExpression
 {
     private final BytecodeExpression length;
-    private final ParameterizedType type;
+    private final ParameterizedType elementType;
+
+    @Nullable
+    private final List<BytecodeExpression> elements;
 
     public NewArrayBytecodeExpression(ParameterizedType type, int length)
     {
@@ -38,30 +46,58 @@ class NewArrayBytecodeExpression
 
     public NewArrayBytecodeExpression(ParameterizedType type, BytecodeExpression length)
     {
+        this(type, length, null);
+    }
+
+    public NewArrayBytecodeExpression(ParameterizedType type, List<BytecodeExpression> elements)
+    {
+        this(type, constantInt(elements.size()), elements);
+    }
+
+    private NewArrayBytecodeExpression(ParameterizedType type, BytecodeExpression length, List<BytecodeExpression> elements)
+    {
         super(type);
-        this.type = requireNonNull(type, "type is null");
+        requireNonNull(type, "type is null");
+        checkArgument(type.getArrayComponentType() != null, "type %s must be array type", type);
+        this.elementType = type.getArrayComponentType();
         this.length = requireNonNull(length, "length is null");
+        this.elements = (elements == null) ? null : ImmutableList.copyOf(elements);
     }
 
     @Override
     public BytecodeNode getBytecode(MethodGenerationContext generationContext)
     {
-        if (type.getArrayComponentType().isPrimitive()) {
-            return new BytecodeBlock()
+        BytecodeBlock bytecodeBlock;
+        if (elementType.isPrimitive()) {
+            bytecodeBlock = new BytecodeBlock()
                     .append(length)
-                    .append(TypeInstruction.newPrimitiveArray(type.getArrayComponentType()));
+                    .append(TypeInstruction.newPrimitiveArray(elementType));
         }
         else {
-            return new BytecodeBlock()
+            bytecodeBlock = new BytecodeBlock()
                     .append(length)
-                    .append(TypeInstruction.newObjectArray(type.getArrayComponentType()));
+                    .append(TypeInstruction.newObjectArray(elementType));
         }
+        if (elements != null) {
+            for (int i = 0; i < elements.size(); i++) {
+                BytecodeExpression element = elements.get(i);
+                bytecodeBlock
+                        .dup()
+                        .append(constantInt(i))
+                        .append(element)
+                        .append(getArrayOpCode(elementType).getStore());
+            }
+        }
+        return bytecodeBlock;
     }
 
     @Override
     protected String formatOneLine()
     {
-        return "new " + getType().getArrayComponentType().getSimpleName() + "[" + length + "]";
+        if (elements == null) {
+            return "new " + elementType.getSimpleName() + "[" + length + "]";
+        }
+        return "new " + elementType.getSimpleName() + "[] {" + Joiner.on(", ").join(elements) + "}";
     }
 
     @Override

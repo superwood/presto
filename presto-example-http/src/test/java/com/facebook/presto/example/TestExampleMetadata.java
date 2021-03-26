@@ -25,12 +25,12 @@ import com.google.common.io.Resources;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
-import java.net.URI;
 import java.net.URL;
+import java.util.Optional;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static com.facebook.presto.example.MetadataUtil.CATALOG_CODEC;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
@@ -43,7 +43,6 @@ public class TestExampleMetadata
     private static final String CONNECTOR_ID = "TEST";
     private static final ExampleTableHandle NUMBERS_TABLE_HANDLE = new ExampleTableHandle(CONNECTOR_ID, "example", "numbers");
     private ExampleMetadata metadata;
-    private URI metadataUri;
 
     @BeforeMethod
     public void setUp()
@@ -51,8 +50,7 @@ public class TestExampleMetadata
     {
         URL metadataUrl = Resources.getResource(TestExampleClient.class, "/example-data/example-metadata.json");
         assertNotNull(metadataUrl, "metadataUrl is null");
-        metadataUri = metadataUrl.toURI();
-        ExampleClient client = new ExampleClient(new ExampleConfig().setMetadata(metadataUri), CATALOG_CODEC);
+        ExampleClient client = new ExampleClient(new ExampleConfig().setMetadata(metadataUrl.toURI()), CATALOG_CODEC);
         metadata = new ExampleMetadata(new ExampleConnectorId(CONNECTOR_ID), client);
     }
 
@@ -76,7 +74,7 @@ public class TestExampleMetadata
     {
         // known table
         assertEquals(metadata.getColumnHandles(SESSION, NUMBERS_TABLE_HANDLE), ImmutableMap.of(
-                "text", new ExampleColumnHandle(CONNECTOR_ID, "text", VARCHAR, 0),
+                "text", new ExampleColumnHandle(CONNECTOR_ID, "text", createUnboundedVarcharType(), 0),
                 "value", new ExampleColumnHandle(CONNECTOR_ID, "value", BIGINT, 1)));
 
         // unknown table
@@ -101,7 +99,7 @@ public class TestExampleMetadata
         ConnectorTableMetadata tableMetadata = metadata.getTableMetadata(SESSION, NUMBERS_TABLE_HANDLE);
         assertEquals(tableMetadata.getTable(), new SchemaTableName("example", "numbers"));
         assertEquals(tableMetadata.getColumns(), ImmutableList.of(
-                new ColumnMetadata("text", VARCHAR),
+                new ColumnMetadata("text", createUnboundedVarcharType()),
                 new ColumnMetadata("value", BIGINT)));
 
         // unknown tables should produce null
@@ -114,27 +112,27 @@ public class TestExampleMetadata
     public void testListTables()
     {
         // all schemas
-        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, null)), ImmutableSet.of(
+        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, Optional.empty())), ImmutableSet.of(
                 new SchemaTableName("example", "numbers"),
                 new SchemaTableName("tpch", "orders"),
                 new SchemaTableName("tpch", "lineitem")));
 
         // specific schema
-        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, "example")), ImmutableSet.of(
+        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, Optional.of("example"))), ImmutableSet.of(
                 new SchemaTableName("example", "numbers")));
-        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, "tpch")), ImmutableSet.of(
+        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, Optional.of("tpch"))), ImmutableSet.of(
                 new SchemaTableName("tpch", "orders"),
                 new SchemaTableName("tpch", "lineitem")));
 
         // unknown schema
-        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, "unknown")), ImmutableSet.of());
+        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, Optional.of("unknown"))), ImmutableSet.of());
     }
 
     @Test
     public void getColumnMetadata()
     {
-        assertEquals(metadata.getColumnMetadata(SESSION, NUMBERS_TABLE_HANDLE, new ExampleColumnHandle(CONNECTOR_ID, "text", VARCHAR, 0)),
-                new ColumnMetadata("text", VARCHAR));
+        assertEquals(metadata.getColumnMetadata(SESSION, NUMBERS_TABLE_HANDLE, new ExampleColumnHandle(CONNECTOR_ID, "text", createUnboundedVarcharType(), 0)),
+                new ColumnMetadata("text", createUnboundedVarcharType()));
 
         // example connector assumes that the table handle and column handle are
         // properly formed, so it will return a metadata object for any
@@ -146,9 +144,12 @@ public class TestExampleMetadata
     @Test(expectedExceptions = PrestoException.class)
     public void testCreateTable()
     {
-        metadata.createTable(SESSION, new ConnectorTableMetadata(
-                new SchemaTableName("example", "foo"),
-                ImmutableList.of(new ColumnMetadata("text", VARCHAR))));
+        metadata.createTable(
+                SESSION,
+                new ConnectorTableMetadata(
+                        new SchemaTableName("example", "foo"),
+                        ImmutableList.of(new ColumnMetadata("text", createUnboundedVarcharType()))),
+                false);
     }
 
     @Test(expectedExceptions = PrestoException.class)

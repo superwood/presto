@@ -16,55 +16,72 @@ package com.facebook.presto.jdbc;
 import com.facebook.presto.client.StatementStats;
 
 import java.util.Optional;
+import java.util.OptionalDouble;
 
+import static java.lang.Math.min;
 import static java.util.Objects.requireNonNull;
 
 public final class QueryStats
 {
     private final String queryId;
     private final String state;
+    private final boolean queued;
     private final boolean scheduled;
     private final int nodes;
     private final int totalSplits;
     private final int queuedSplits;
     private final int runningSplits;
     private final int completedSplits;
-    private final long userTimeMillis;
     private final long cpuTimeMillis;
     private final long wallTimeMillis;
+    private final long queuedTimeMillis;
+    private final long elapsedTimeMillis;
     private final long processedRows;
     private final long processedBytes;
+    private final long peakMemoryBytes;
+    private final long peakTotalMemoryBytes;
+    private final long peakTaskTotalMemoryBytes;
     private final Optional<StageStats> rootStage;
 
     public QueryStats(
             String queryId,
             String state,
+            boolean queued,
             boolean scheduled,
             int nodes,
             int totalSplits,
             int queuedSplits,
             int runningSplits,
             int completedSplits,
-            long userTimeMillis,
             long cpuTimeMillis,
             long wallTimeMillis,
+            long queuedTimeMillis,
+            long elapsedTimeMillis,
             long processedRows,
             long processedBytes,
+            long peakMemoryBytes,
+            long peakTotalMemoryBytes,
+            long peakTaskTotalMemoryBytes,
             Optional<StageStats> rootStage)
     {
         this.queryId = requireNonNull(queryId, "queryId is null");
         this.state = requireNonNull(state, "state is null");
+        this.queued = queued;
         this.scheduled = scheduled;
         this.nodes = nodes;
         this.totalSplits = totalSplits;
         this.queuedSplits = queuedSplits;
         this.runningSplits = runningSplits;
         this.completedSplits = completedSplits;
-        this.userTimeMillis = userTimeMillis;
         this.cpuTimeMillis = cpuTimeMillis;
         this.wallTimeMillis = wallTimeMillis;
+        this.queuedTimeMillis = queuedTimeMillis;
+        this.elapsedTimeMillis = elapsedTimeMillis;
         this.processedRows = processedRows;
         this.processedBytes = processedBytes;
+        this.peakMemoryBytes = peakMemoryBytes;
+        this.peakTotalMemoryBytes = peakTotalMemoryBytes;
+        this.peakTaskTotalMemoryBytes = peakTaskTotalMemoryBytes;
         this.rootStage = requireNonNull(rootStage, "rootStage is null");
     }
 
@@ -73,17 +90,22 @@ public final class QueryStats
         return new QueryStats(
                 queryId,
                 stats.getState(),
+                stats.isQueued(),
                 stats.isScheduled(),
                 stats.getNodes(),
                 stats.getTotalSplits(),
                 stats.getQueuedSplits(),
                 stats.getRunningSplits(),
                 stats.getCompletedSplits(),
-                stats.getUserTimeMillis(),
                 stats.getCpuTimeMillis(),
                 stats.getWallTimeMillis(),
+                stats.getQueuedTimeMillis(),
+                stats.getElapsedTimeMillis(),
                 stats.getProcessedRows(),
                 stats.getProcessedBytes(),
+                stats.getPeakMemoryBytes(),
+                stats.getPeakTotalMemoryBytes(),
+                stats.getPeakTaskTotalMemoryBytes(),
                 Optional.ofNullable(stats.getRootStage()).map(StageStats::create));
     }
 
@@ -95,6 +117,11 @@ public final class QueryStats
     public String getState()
     {
         return state;
+    }
+
+    public boolean isQueued()
+    {
+        return queued;
     }
 
     public boolean isScheduled()
@@ -127,11 +154,6 @@ public final class QueryStats
         return completedSplits;
     }
 
-    public long getUserTimeMillis()
-    {
-        return userTimeMillis;
-    }
-
     public long getCpuTimeMillis()
     {
         return cpuTimeMillis;
@@ -140,6 +162,16 @@ public final class QueryStats
     public long getWallTimeMillis()
     {
         return wallTimeMillis;
+    }
+
+    public long getQueuedTimeMillis()
+    {
+        return queuedTimeMillis;
+    }
+
+    public long getElapsedTimeMillis()
+    {
+        return elapsedTimeMillis;
     }
 
     public long getProcessedRows()
@@ -152,8 +184,31 @@ public final class QueryStats
         return processedBytes;
     }
 
+    public long getPeakMemoryBytes()
+    {
+        return peakMemoryBytes;
+    }
+
+    public long getPeakTotalMemoryBytes()
+    {
+        return peakTotalMemoryBytes;
+    }
+
+    public long getPeakTaskTotalMemoryBytes()
+    {
+        return peakTaskTotalMemoryBytes;
+    }
+
     public Optional<StageStats> getRootStage()
     {
         return rootStage;
+    }
+
+    public OptionalDouble getProgressPercentage()
+    {
+        if (!scheduled || totalSplits == 0) {
+            return OptionalDouble.empty();
+        }
+        return OptionalDouble.of(min(100, (completedSplits * 100.0) / totalSplits));
     }
 }

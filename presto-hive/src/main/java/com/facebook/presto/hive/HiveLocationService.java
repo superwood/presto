@@ -13,119 +13,148 @@
  */
 package com.facebook.presto.hive;
 
-import com.facebook.presto.hive.metastore.HiveMetastore;
+import com.facebook.presto.hive.LocationHandle.TableType;
+import com.facebook.presto.hive.LocationHandle.WriteMode;
+import com.facebook.presto.hive.metastore.Partition;
+import com.facebook.presto.hive.metastore.SemiTransactionalHiveMetastore;
+import com.facebook.presto.hive.metastore.Table;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.metastore.api.Partition;
-import org.apache.hadoop.hive.metastore.api.Table;
 
 import javax.inject.Inject;
 
-import java.io.IOException;
 import java.util.Optional;
 
-import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_PATH_ALREADY_EXISTS;
+import static com.facebook.presto.hive.HiveSessionProperties.isTemporaryStagingDirectoryEnabled;
 import static com.facebook.presto.hive.HiveWriteUtils.createTemporaryPath;
 import static com.facebook.presto.hive.HiveWriteUtils.getTableDefaultLocation;
-import static com.facebook.presto.hive.HiveWriteUtils.pathExists;
+import static com.facebook.presto.hive.HiveWriteUtils.isS3FileSystem;
+import static com.facebook.presto.hive.LocationHandle.TableType.EXISTING;
+import static com.facebook.presto.hive.LocationHandle.TableType.NEW;
+import static com.facebook.presto.hive.LocationHandle.TableType.TEMPORARY;
+import static com.facebook.presto.hive.LocationHandle.WriteMode.DIRECT_TO_TARGET_EXISTING_DIRECTORY;
+import static com.facebook.presto.hive.LocationHandle.WriteMode.DIRECT_TO_TARGET_NEW_DIRECTORY;
+import static com.facebook.presto.hive.LocationHandle.WriteMode.STAGE_AND_MOVE_TO_TARGET_DIRECTORY;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.createDirectory;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.pathExists;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
+import static java.util.UUID.randomUUID;
 
 public class HiveLocationService
         implements LocationService
 {
-    private final HiveMetastore metastore;
     private final HdfsEnvironment hdfsEnvironment;
 
     @Inject
-    public HiveLocationService(HiveMetastore metastore, HdfsEnvironment hdfsEnvironment)
+    public HiveLocationService(HdfsEnvironment hdfsEnvironment)
     {
-        this.metastore = requireNonNull(metastore);
-        this.hdfsEnvironment = requireNonNull(hdfsEnvironment);
+        this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
     }
 
     @Override
-    public LocationHandle forNewTable(String queryId, String schemaName, String tableName)
+    public LocationHandle forNewTable(SemiTransactionalHiveMetastore metastore, ConnectorSession session, String schemaName, String tableName, boolean tempPathRequired)
     {
-        Path targetPath = getTableDefaultLocation(metastore, hdfsEnvironment, schemaName, tableName);
+        Path targetPath = getTableDefaultLocation(session, metastore, hdfsEnvironment, schemaName, tableName);
 
+        HdfsContext context = new HdfsContext(session, schemaName, tableName, targetPath.toString(), true);
         // verify the target directory for the table
-        if (pathExists(hdfsEnvironment, targetPath)) {
+        if (pathExists(context, hdfsEnvironment, targetPath)) {
             throw new PrestoException(HIVE_PATH_ALREADY_EXISTS, format("Target directory for table '%s.%s' already exists: %s", schemaName, tableName, targetPath));
         }
+        return createLocationHandle(context, session, targetPath, NEW, tempPathRequired);
+    }
 
-        Path writePath;
-        if (shouldUseTemporaryDirectory(targetPath)) {
-            writePath = createTemporaryPath(hdfsEnvironment, targetPath);
+    @Override
+    public LocationHandle forExistingTable(SemiTransactionalHiveMetastore metastore, ConnectorSession session, Table table, boolean tempPathRequired)
+    {
+        String tablePath = table.getStorage().getLocation();
+        HdfsContext context = new HdfsContext(session, table.getDatabaseName(), table.getTableName(), tablePath, false);
+        Path targetPath = new Path(tablePath);
+        return createLocationHandle(context, session, targetPath, EXISTING, tempPathRequired);
+    }
+
+    @Override
+    public LocationHandle forTemporaryTable(SemiTransactionalHiveMetastore metastore, ConnectorSession session, Table table, boolean tempPathRequired)
+    {
+        String schemaName = table.getDatabaseName();
+        String tableName = table.getTableName();
+        Path targetPath = getTableDefaultLocation(session, metastore, hdfsEnvironment, schemaName, tableName);
+        HdfsContext context = new HdfsContext(session, schemaName, tableName, targetPath.toString(), false);
+        return new LocationHandle(
+                targetPath,
+                targetPath,
+                tempPathRequired ? Optional.of(createTemporaryPath(session, context, hdfsEnvironment, targetPath)) : Optional.empty(),
+                TEMPORARY,
+                DIRECT_TO_TARGET_NEW_DIRECTORY);
+    }
+
+    private LocationHandle createLocationHandle(HdfsContext context, ConnectorSession session, Path targetPath, TableType tableType, boolean tempPathRequired)
+    {
+        Optional<Path> tempPath = tempPathRequired ? Optional.of(createTemporaryPath(session, context, hdfsEnvironment, targetPath)) : Optional.empty();
+        if (shouldUseTemporaryDirectory(session, context, targetPath)) {
+            Path writePath = createTemporaryPath(session, context, hdfsEnvironment, targetPath);
+            createDirectory(context, hdfsEnvironment, writePath);
+            return new LocationHandle(targetPath, writePath, tempPath, tableType, STAGE_AND_MOVE_TO_TARGET_DIRECTORY);
+        }
+        if (tableType.equals(EXISTING)) {
+            return new LocationHandle(targetPath, targetPath, tempPath, tableType, DIRECT_TO_TARGET_EXISTING_DIRECTORY);
+        }
+        return new LocationHandle(targetPath, targetPath, tempPath, tableType, DIRECT_TO_TARGET_NEW_DIRECTORY);
+    }
+
+    private boolean shouldUseTemporaryDirectory(ConnectorSession session, HdfsContext context, Path path)
+    {
+        return isTemporaryStagingDirectoryEnabled(session)
+                // skip using temporary directory for S3
+                && !isS3FileSystem(context, hdfsEnvironment, path);
+    }
+
+    @Override
+    public WriteInfo getQueryWriteInfo(LocationHandle locationHandle)
+    {
+        return new WriteInfo(locationHandle.getTargetPath(), locationHandle.getWritePath(), locationHandle.getTempPath(), locationHandle.getWriteMode());
+    }
+
+    @Override
+    public WriteInfo getTableWriteInfo(LocationHandle locationHandle)
+    {
+        return new WriteInfo(locationHandle.getTargetPath(), locationHandle.getWritePath(), locationHandle.getTempPath(), locationHandle.getWriteMode());
+    }
+
+    @Override
+    public WriteInfo getPartitionWriteInfo(LocationHandle locationHandle, Optional<Partition> partition, String partitionName)
+    {
+        Optional<Path> tempPath = locationHandle.getTempPath().map(path -> new Path(path, randomUUID().toString().replaceAll("-", "_")));
+        if (partition.isPresent()) {
+            // existing partition
+            WriteMode writeMode = locationHandle.getWriteMode();
+            Path targetPath = new Path(partition.get().getStorage().getLocation());
+
+            Path writePath;
+            switch (writeMode) {
+                case STAGE_AND_MOVE_TO_TARGET_DIRECTORY:
+                    writePath = new Path(locationHandle.getWritePath(), partitionName);
+                    break;
+                case DIRECT_TO_TARGET_EXISTING_DIRECTORY:
+                    writePath = targetPath;
+                    break;
+                case DIRECT_TO_TARGET_NEW_DIRECTORY:
+                default:
+                    throw new UnsupportedOperationException(format("inserting into existing partition is not supported for %s", writeMode));
+            }
+
+            return new WriteInfo(targetPath, writePath, tempPath, writeMode);
         }
         else {
-            writePath = targetPath;
+            // new partition
+            return new WriteInfo(
+                    new Path(locationHandle.getTargetPath(), partitionName),
+                    new Path(locationHandle.getWritePath(), partitionName),
+                    tempPath,
+                    locationHandle.getWriteMode());
         }
-
-        return new LocationHandle(targetPath, Optional.of(writePath), false);
-    }
-
-    @Override
-    public LocationHandle forExistingTable(String queryId, Table table)
-    {
-        Path targetPath = new Path(table.getSd().getLocation());
-
-        Optional<Path> writePath;
-        if (shouldUseTemporaryDirectory(targetPath)) {
-            writePath = Optional.of(createTemporaryPath(hdfsEnvironment, targetPath));
-        }
-        else {
-            writePath = Optional.empty();
-        }
-
-        return new LocationHandle(targetPath, writePath, true);
-    }
-
-    private boolean shouldUseTemporaryDirectory(Path path)
-    {
-        try {
-            // skip using temporary directory for S3
-            return !(hdfsEnvironment.getFileSystem(path) instanceof PrestoS3FileSystem);
-        }
-        catch (IOException e) {
-            throw new PrestoException(HIVE_FILESYSTEM_ERROR, "Failed checking path: " + path, e);
-        }
-    }
-
-    @Override
-    public Path targetPath(LocationHandle locationHandle, Partition partition, String partitionName)
-    {
-        return new Path(partition.getSd().getLocation());
-    }
-
-    @Override
-    public Path targetPath(LocationHandle locationHandle, Optional<String> partitionName)
-    {
-        if (!partitionName.isPresent()) {
-            return locationHandle.getTargetPath();
-        }
-        return new Path(locationHandle.getTargetPath(), partitionName.get());
-    }
-
-    @Override
-    public Path targetPathRoot(LocationHandle locationHandle)
-    {
-        return locationHandle.getTargetPath();
-    }
-
-    @Override
-    public Optional<Path> writePath(LocationHandle locationHandle, Optional<String> partitionName)
-    {
-        if (!partitionName.isPresent()) {
-            return locationHandle.getWritePath();
-        }
-        return locationHandle.getWritePath().map(path -> new Path(path, partitionName.get()));
-    }
-
-    @Override
-    public Optional<Path> writePathRoot(LocationHandle locationHandle)
-    {
-        return locationHandle.getWritePath();
     }
 }

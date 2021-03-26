@@ -13,36 +13,36 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.ExceededMemoryLimitException;
 import com.facebook.presto.bytecode.DynamicClassLoader;
-import com.facebook.presto.metadata.FunctionRegistry;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignatureParameter;
+import com.facebook.presto.metadata.BoundVariables;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.SqlAggregationFunction;
+import com.facebook.presto.operator.aggregation.AggregationMetadata.AccumulatorStateDescriptor;
 import com.facebook.presto.operator.aggregation.state.KeyValuePairStateSerializer;
 import com.facebook.presto.operator.aggregation.state.KeyValuePairsState;
 import com.facebook.presto.operator.aggregation.state.KeyValuePairsStateFactory;
-import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.type.MapType;
 import com.google.common.collect.ImmutableList;
 
 import java.lang.invoke.MethodHandle;
 import java.util.List;
-import java.util.Map;
 
-import static com.facebook.presto.metadata.Signature.comparableTypeParameter;
-import static com.facebook.presto.metadata.Signature.typeParameter;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.operator.aggregation.AggregationMetadata.ParameterMetadata;
 import static com.facebook.presto.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.BLOCK_INDEX;
 import static com.facebook.presto.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.BLOCK_INPUT_CHANNEL;
 import static com.facebook.presto.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.NULLABLE_BLOCK_INPUT_CHANNEL;
 import static com.facebook.presto.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.STATE;
 import static com.facebook.presto.operator.aggregation.AggregationUtils.generateAggregationName;
-import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
+import static com.facebook.presto.spi.function.Signature.comparableTypeParameter;
+import static com.facebook.presto.spi.function.Signature.typeVariable;
 import static com.facebook.presto.util.Reflection.methodHandle;
-import static java.lang.String.format;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 
 public class MapAggregationFunction
         extends SqlAggregationFunction
@@ -55,7 +55,11 @@ public class MapAggregationFunction
 
     public MapAggregationFunction()
     {
-        super(NAME, ImmutableList.of(comparableTypeParameter("K"), typeParameter("V")), "map(K,V)", ImmutableList.of("K", "V"));
+        super(NAME,
+                ImmutableList.of(comparableTypeParameter("K"), typeVariable("V")),
+                ImmutableList.of(),
+                parseTypeSignature("map(K,V)"),
+                ImmutableList.of(parseTypeSignature("K"), parseTypeSignature("V")));
     }
 
     @Override
@@ -65,45 +69,45 @@ public class MapAggregationFunction
     }
 
     @Override
-    public InternalAggregationFunction specialize(Map<String, Type> types, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, FunctionAndTypeManager functionAndTypeManager)
     {
-        Type keyType = types.get("K");
-        Type valueType = types.get("V");
-        return generateAggregation(keyType, valueType);
+        Type keyType = boundVariables.getTypeVariable("K");
+        Type valueType = boundVariables.getTypeVariable("V");
+        MapType outputType = (MapType) functionAndTypeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+                TypeSignatureParameter.of(keyType.getTypeSignature()),
+                TypeSignatureParameter.of(valueType.getTypeSignature())));
+        return generateAggregation(keyType, valueType, outputType);
     }
 
-    private static InternalAggregationFunction generateAggregation(Type keyType, Type valueType)
+    private static InternalAggregationFunction generateAggregation(Type keyType, Type valueType, MapType outputType)
     {
         DynamicClassLoader classLoader = new DynamicClassLoader(MapAggregationFunction.class.getClassLoader());
         List<Type> inputTypes = ImmutableList.of(keyType, valueType);
-        Type outputType = new MapType(keyType, valueType);
-        KeyValuePairStateSerializer stateSerializer = new KeyValuePairStateSerializer(keyType, valueType, false);
+        KeyValuePairStateSerializer stateSerializer = new KeyValuePairStateSerializer(outputType);
         Type intermediateType = stateSerializer.getSerializedType();
 
         AggregationMetadata metadata = new AggregationMetadata(
-                generateAggregationName(NAME, outputType, inputTypes),
+                generateAggregationName(NAME, outputType.getTypeSignature(), inputTypes.stream().map(Type::getTypeSignature).collect(toImmutableList())),
                 createInputParameterMetadata(keyType, valueType),
                 INPUT_FUNCTION.bindTo(keyType).bindTo(valueType),
-                null,
-                null,
                 COMBINE_FUNCTION,
                 OUTPUT_FUNCTION,
-                KeyValuePairsState.class,
-                stateSerializer,
-                new KeyValuePairsStateFactory(keyType, valueType),
-                outputType,
-                false);
+                ImmutableList.of(new AccumulatorStateDescriptor(
+                        KeyValuePairsState.class,
+                        stateSerializer,
+                        new KeyValuePairsStateFactory(keyType, valueType))),
+                outputType);
 
-        GenericAccumulatorFactoryBinder factory = new AccumulatorCompiler().generateAccumulatorFactoryBinder(metadata, classLoader);
-        return new InternalAggregationFunction(NAME, inputTypes, intermediateType, outputType, true, false, factory);
+        GenericAccumulatorFactoryBinder factory = AccumulatorCompiler.generateAccumulatorFactoryBinder(metadata, classLoader);
+        return new InternalAggregationFunction(NAME, inputTypes, ImmutableList.of(intermediateType), outputType, true, true, factory);
     }
 
     private static List<ParameterMetadata> createInputParameterMetadata(Type keyType, Type valueType)
     {
         return ImmutableList.of(new ParameterMetadata(STATE),
-                                new ParameterMetadata(BLOCK_INPUT_CHANNEL, keyType),
-                                new ParameterMetadata(NULLABLE_BLOCK_INPUT_CHANNEL, valueType),
-                                new ParameterMetadata(BLOCK_INDEX));
+                new ParameterMetadata(BLOCK_INPUT_CHANNEL, keyType),
+                new ParameterMetadata(NULLABLE_BLOCK_INPUT_CHANNEL, valueType),
+                new ParameterMetadata(BLOCK_INDEX));
     }
 
     public static void input(Type keyType, Type valueType, KeyValuePairsState state, Block key, Block value, int position)
@@ -115,12 +119,7 @@ public class MapAggregationFunction
         }
 
         long startSize = pairs.estimatedInMemorySize();
-        try {
-            pairs.add(key, value, position, position);
-        }
-        catch (ExceededMemoryLimitException e) {
-            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, format("The result of map_agg may not exceed %s", e.getMaxMemory()));
-        }
+        pairs.add(key, value, position, position);
         state.addMemoryUsage(pairs.estimatedInMemorySize() - startSize);
     }
 
@@ -132,12 +131,7 @@ public class MapAggregationFunction
             KeyValuePairs pairs = state.get();
             long startSize = pairs.estimatedInMemorySize();
             for (int i = 0; i < keys.getPositionCount(); i++) {
-                try {
-                    pairs.add(keys, values, i, i);
-                }
-                catch (ExceededMemoryLimitException e) {
-                    throw new PrestoException(INVALID_FUNCTION_ARGUMENT, format("The result of map_agg may not exceed %s", e.getMaxMemory()));
-                }
+                pairs.add(keys, values, i, i);
             }
             state.addMemoryUsage(pairs.estimatedInMemorySize() - startSize);
         }
@@ -153,9 +147,7 @@ public class MapAggregationFunction
             out.appendNull();
         }
         else {
-            Block block = pairs.toMapNativeEncoding();
-            out.writeObject(block);
-            out.closeEntry();
+            pairs.serialize(out);
         }
     }
 }

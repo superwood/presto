@@ -14,16 +14,15 @@
 package com.facebook.presto.ml;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.metadata.FunctionFactory;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.type.ParametricType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.testing.LocalQueryRunner;
 import com.facebook.presto.tests.AbstractTestQueryFramework;
 import com.facebook.presto.tpch.TpchConnectorFactory;
-import com.facebook.presto.type.ParametricType;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterables;
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.metadata.FunctionExtractor.extractFunctions;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 
@@ -32,12 +31,11 @@ public class TestMLQueries
 {
     public TestMLQueries()
     {
-        super(createLocalQueryRunner());
+        super(TestMLQueries::createLocalQueryRunner);
     }
 
     @Test
     public void testPrediction()
-            throws Exception
     {
         assertQuery("SELECT classify(features(1, 2), model) " +
                 "FROM (SELECT learn_classifier(labels, features) AS model FROM (VALUES (1, features(1, 2))) t(labels, features)) t2", "SELECT 1");
@@ -45,7 +43,6 @@ public class TestMLQueries
 
     @Test
     public void testVarcharPrediction()
-            throws Exception
     {
         assertQuery("SELECT classify(features(1, 2), model) " +
                 "FROM (SELECT learn_classifier(labels, features) AS model FROM (VALUES ('cat', features(1, 2))) t(labels, features)) t2", "SELECT 'cat'");
@@ -64,18 +61,17 @@ public class TestMLQueries
         // local queries run directly against the generator
         localQueryRunner.createCatalog(
                 defaultSession.getCatalog().get(),
-                new TpchConnectorFactory(localQueryRunner.getNodeManager(), 1),
-                ImmutableMap.<String, String>of());
+                new TpchConnectorFactory(1),
+                ImmutableMap.of());
 
         MLPlugin plugin = new MLPlugin();
-        plugin.setTypeManager(localQueryRunner.getTypeManager());
-        for (Type type : plugin.getServices(Type.class)) {
-            localQueryRunner.getTypeManager().addType(type);
+        for (Type type : plugin.getTypes()) {
+            localQueryRunner.getFunctionAndTypeManager().addType(type);
         }
-        for (ParametricType parametricType : plugin.getServices(ParametricType.class)) {
-            localQueryRunner.getTypeManager().addParametricType(parametricType);
+        for (ParametricType parametricType : plugin.getParametricTypes()) {
+            localQueryRunner.getFunctionAndTypeManager().addParametricType(parametricType);
         }
-        localQueryRunner.getMetadata().getFunctionRegistry().addFunctions(Iterables.getOnlyElement(plugin.getServices(FunctionFactory.class)).listFunctions());
+        localQueryRunner.getMetadata().registerBuiltInFunctions(extractFunctions(new MLPlugin().getFunctions()));
 
         return localQueryRunner;
     }

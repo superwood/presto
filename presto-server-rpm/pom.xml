@@ -5,7 +5,7 @@
     <parent>
         <groupId>com.facebook.presto</groupId>
         <artifactId>presto-root</artifactId>
-        <version>0.143-SNAPSHOT</version>
+        <version>0.251-SNAPSHOT</version>
     </parent>
 
     <artifactId>presto-server-rpm</artifactId>
@@ -15,9 +15,9 @@
     <properties>
         <air.main.basedir>${project.parent.basedir}</air.main.basedir>
 
+        <air.check.skip-enforcer>true</air.check.skip-enforcer>
         <air.check.skip-checkstyle>true</air.check.skip-checkstyle>
         <air.check.skip-duplicate-finder>true</air.check.skip-duplicate-finder>
-        <air.check.skip-dependency-version-check>true</air.check.skip-dependency-version-check>
         <air.check.skip-extended>true</air.check.skip-extended>
 
         <server.tar.package>presto-server-${project.version}</server.tar.package>
@@ -27,7 +27,6 @@
         <dependency>
             <groupId>com.facebook.presto</groupId>
             <artifactId>presto-server</artifactId>
-            <version>${project.version}</version>
             <type>tar.gz</type>
             <scope>runtime</scope>
         </dependency>
@@ -51,7 +50,6 @@
                                 <artifactItem>
                                     <groupId>com.facebook.presto</groupId>
                                     <artifactId>presto-server</artifactId>
-                                    <version>${project.version}</version>
                                     <type>tar.gz</type>
                                     <outputDirectory>${project.build.outputDirectory}
                                     </outputDirectory>
@@ -63,9 +61,9 @@
             </plugin>
             <!-- Build presto-server rpm using the untarred artifacts -->
             <plugin>
-                <groupId>uk.co.codezen</groupId>
-                <artifactId>redlinerpm-maven-plugin</artifactId>
-                <version>2.0</version>
+                <groupId>com.teradata</groupId>
+                <artifactId>redlinerpm-maven-plugin-td</artifactId>
+                <version>2.1.5</version>
                 <extensions>true</extensions>
 
                 <configuration>
@@ -74,6 +72,7 @@
                     <packages>
                         <package>
                             <name>presto-server-rpm</name>
+                            <nameOverride>presto-server-rpm-${project.version}.x86_64.rpm</nameOverride>
                             <version>${project.version}</version>
                             <release>1</release>
 
@@ -96,7 +95,22 @@
                                 <dependency>
                                     <name>/usr/sbin/groupadd</name>
                                 </dependency>
+                                <dependency>
+                                    <!-- Used e.g. to generate node.properties -->
+                                    <name>/usr/bin/uuidgen</name>
+                                </dependency>
+                                <dependency>
+                                    <!-- Used e.g. by service launcher -->
+                                    <name>/usr/bin/sudo</name>
+                                </dependency>
                             </dependencies>
+
+                            <links>
+                                <link>
+                                    <path>/usr/lib/presto/etc</path>
+                                    <target>/etc/presto</target>
+                                </link>
+                            </links>
 
                             <rules>
                                 <rule>
@@ -106,6 +120,15 @@
                                     <fileMode>0755</fileMode>
                                     <includes>
                                         <include>*</include>
+                                    </includes>
+                                </rule>
+
+                                <rule>
+                                    <destination>/usr/lib/presto/bin</destination>
+                                    <base>${server.tar.package}/bin</base>
+                                    <!-- copy sub folders -->
+                                    <includes>
+                                        <include>*/**</include>
                                     </includes>
                                 </rule>
 
@@ -168,27 +191,4 @@
             </plugin>
         </plugins>
     </build>
-    <profiles>
-        <profile>
-            <!-- This profile builds an rpm that works on versions of rpm earlier than 4.6.
-            Later versions of redline-rpm use 64bit integers, which isn't
-            supported before version 4.6 of rpm -->
-            <id>old-rpm</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <artifactId>redlinerpm-maven-plugin</artifactId>
-                        <groupId>uk.co.codezen</groupId>
-                        <dependencies>
-                            <dependency>
-                                <artifactId>redline</artifactId>
-                                <groupId>org.redline-rpm</groupId>
-                                <version>1.2.1</version>
-                            </dependency>
-                        </dependencies>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-    </profiles>
 </project>

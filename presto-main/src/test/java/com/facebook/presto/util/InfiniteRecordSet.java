@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.util;
 
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.RecordSet;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
@@ -58,12 +58,6 @@ public class InfiniteRecordSet
         {
             this.types = requireNonNull(ImmutableList.copyOf(types), "types is null");
             this.record = requireNonNull(ImmutableList.copyOf(record), "record is null");
-        }
-
-        @Override
-        public long getTotalBytes()
-        {
-            return 0;
         }
 
         @Override

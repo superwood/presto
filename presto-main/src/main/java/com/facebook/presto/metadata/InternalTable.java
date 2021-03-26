@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.metadata;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnMetadata;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 
@@ -24,7 +24,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import static com.facebook.presto.spi.type.TypeUtils.writeNativeValue;
+import static com.facebook.presto.common.type.TypeUtils.writeNativeValue;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
@@ -72,7 +72,7 @@ public class InternalTable
         private final Map<String, Integer> columnIndexes;
         private final List<Type> types;
         private final List<Page> pages;
-        private PageBuilder pageBuilder;
+        private final PageBuilder pageBuilder;
 
         public Builder(List<String> columnNames, List<Type> types)
         {

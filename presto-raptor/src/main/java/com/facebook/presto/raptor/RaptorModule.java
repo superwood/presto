@@ -13,14 +13,15 @@
  */
 package com.facebook.presto.raptor;
 
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.raptor.metadata.Distribution;
 import com.facebook.presto.raptor.metadata.ForMetadata;
-import com.facebook.presto.raptor.metadata.ShardDelta;
-import com.facebook.presto.raptor.metadata.ShardInfo;
 import com.facebook.presto.raptor.metadata.TableColumn;
 import com.facebook.presto.raptor.systemtables.ShardMetadataSystemTable;
+import com.facebook.presto.raptor.systemtables.TableMetadataSystemTable;
+import com.facebook.presto.raptor.systemtables.TableStatsSystemTable;
+import com.facebook.presto.spi.NodeManager;
 import com.facebook.presto.spi.SystemTable;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Provides;
@@ -32,8 +33,8 @@ import org.skife.jdbi.v2.tweak.ConnectionFactory;
 
 import javax.inject.Singleton;
 
+import static com.facebook.presto.raptor.metadata.SchemaDaoUtil.createTablesWithRetry;
 import static com.google.inject.multibindings.Multibinder.newSetBinder;
-import static io.airlift.json.JsonCodecBinder.jsonCodecBinder;
 import static java.util.Objects.requireNonNull;
 
 public class RaptorModule
@@ -51,21 +52,17 @@ public class RaptorModule
     {
         binder.bind(RaptorConnectorId.class).toInstance(new RaptorConnectorId(connectorId));
         binder.bind(RaptorConnector.class).in(Scopes.SINGLETON);
-        binder.bind(RaptorMetadataFactory.class).in(Scopes.SINGLETON);
         binder.bind(RaptorSplitManager.class).in(Scopes.SINGLETON);
         binder.bind(RaptorPageSourceProvider.class).in(Scopes.SINGLETON);
         binder.bind(RaptorPageSinkProvider.class).in(Scopes.SINGLETON);
         binder.bind(RaptorHandleResolver.class).in(Scopes.SINGLETON);
         binder.bind(RaptorNodePartitioningProvider.class).in(Scopes.SINGLETON);
         binder.bind(RaptorSessionProperties.class).in(Scopes.SINGLETON);
-        binder.bind(RaptorTableProperties.class).in(Scopes.SINGLETON);
-        binder.bind(NodeSupplier.class).to(RaptorNodeSupplier.class).in(Scopes.SINGLETON);
 
         Multibinder<SystemTable> tableBinder = newSetBinder(binder, SystemTable.class);
         tableBinder.addBinding().to(ShardMetadataSystemTable.class).in(Scopes.SINGLETON);
-
-        jsonCodecBinder(binder).bindJsonCodec(ShardInfo.class);
-        jsonCodecBinder(binder).bindJsonCodec(ShardDelta.class);
+        tableBinder.addBinding().to(TableMetadataSystemTable.class).in(Scopes.SINGLETON);
+        tableBinder.addBinding().to(TableStatsSystemTable.class).in(Scopes.SINGLETON);
     }
 
     @ForMetadata
@@ -76,6 +73,14 @@ public class RaptorModule
         DBI dbi = new DBI(connectionFactory);
         dbi.registerMapper(new TableColumn.Mapper(typeManager));
         dbi.registerMapper(new Distribution.Mapper(typeManager));
+        createTablesWithRetry(dbi);
         return dbi;
+    }
+
+    @Provides
+    @Singleton
+    public static NodeSupplier createNodeSupplier(NodeManager nodeManager)
+    {
+        return nodeManager::getWorkerNodes;
     }
 }

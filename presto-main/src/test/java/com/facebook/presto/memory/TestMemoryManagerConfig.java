@@ -13,16 +13,18 @@
  */
 package com.facebook.presto.memory;
 
+import com.facebook.airlift.configuration.testing.ConfigAssertions;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.configuration.testing.ConfigAssertions;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import org.testng.annotations.Test;
 
 import java.util.Map;
 
-import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
-import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
+import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
+import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
+import static com.facebook.presto.memory.MemoryManagerConfig.LowMemoryKillerPolicy.NONE;
+import static com.facebook.presto.memory.MemoryManagerConfig.LowMemoryKillerPolicy.TOTAL_RESERVATION_ON_BLOCKED_NODES;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -33,27 +35,33 @@ public class TestMemoryManagerConfig
     public void testDefaults()
     {
         assertRecordedDefaults(ConfigAssertions.recordDefaults(MemoryManagerConfig.class)
-                .setKillOnOutOfMemory(false)
+                .setLowMemoryKillerPolicy(NONE)
                 .setKillOnOutOfMemoryDelay(new Duration(5, MINUTES))
                 .setMaxQueryMemory(new DataSize(20, GIGABYTE))
-                .setMaxQueryMemoryPerNode(new DataSize(1, GIGABYTE)));
+                .setSoftMaxQueryMemory(new DataSize(20, GIGABYTE))
+                .setMaxQueryTotalMemory(new DataSize(40, GIGABYTE))
+                .setSoftMaxQueryTotalMemory(new DataSize(40, GIGABYTE)));
     }
 
     @Test
     public void testExplicitPropertyMappings()
     {
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
-                .put("query.low-memory-killer.enabled", "true")
+                .put("query.low-memory-killer.policy", "total-reservation-on-blocked-nodes")
                 .put("query.low-memory-killer.delay", "20s")
                 .put("query.max-memory", "2GB")
-                .put("query.max-memory-per-node", "2GB")
+                .put("query.soft-max-memory", "1GB")
+                .put("query.max-total-memory", "3GB")
+                .put("query.soft-max-total-memory", "2GB")
                 .build();
 
         MemoryManagerConfig expected = new MemoryManagerConfig()
-                .setKillOnOutOfMemory(true)
+                .setLowMemoryKillerPolicy(TOTAL_RESERVATION_ON_BLOCKED_NODES)
                 .setKillOnOutOfMemoryDelay(new Duration(20, SECONDS))
                 .setMaxQueryMemory(new DataSize(2, GIGABYTE))
-                .setMaxQueryMemoryPerNode(new DataSize(2, GIGABYTE));
+                .setSoftMaxQueryMemory(new DataSize(1, GIGABYTE))
+                .setMaxQueryTotalMemory(new DataSize(3, GIGABYTE))
+                .setSoftMaxQueryTotalMemory(new DataSize(2, GIGABYTE));
 
         assertFullMapping(properties, expected);
     }

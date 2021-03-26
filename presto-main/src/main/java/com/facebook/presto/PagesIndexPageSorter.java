@@ -13,28 +13,47 @@
  */
 package com.facebook.presto;
 
+import com.facebook.presto.array.AdaptiveLongBigArray;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.SortOrder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.PagesIndex;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PageSorter;
-import com.facebook.presto.spi.block.SortOrder;
-import com.facebook.presto.spi.type.Type;
+
+import javax.inject.Inject;
 
 import java.util.List;
 
 import static com.facebook.presto.operator.SyntheticAddress.decodePosition;
 import static com.facebook.presto.operator.SyntheticAddress.decodeSliceIndex;
+import static java.util.Objects.requireNonNull;
 
 public class PagesIndexPageSorter
         implements PageSorter
 {
+    private final PagesIndex.Factory pagesIndexFactory;
+
+    @Inject
+    public PagesIndexPageSorter(PagesIndex.Factory pagesIndexFactory)
+    {
+        this.pagesIndexFactory = requireNonNull(pagesIndexFactory, "pagesIndexFactory is null");
+    }
+
     @Override
     public long[] sort(List<Type> types, List<Page> pages, List<Integer> sortChannels, List<SortOrder> sortOrders, int expectedPositions)
     {
-        PagesIndex pagesIndex = new PagesIndex(types, expectedPositions);
+        PagesIndex pagesIndex = pagesIndexFactory.newPagesIndex(types, expectedPositions);
         pages.forEach(pagesIndex::addPage);
         pagesIndex.sort(sortChannels, sortOrders);
 
-        return pagesIndex.getValueAddresses().toLongArray(null);
+        int positionCount = pagesIndex.getPositionCount();
+        AdaptiveLongBigArray valueAddresses = pagesIndex.getValueAddresses();
+        long[] result = new long[positionCount];
+        for (int i = 0; i < positionCount; i++) {
+            result[i] = valueAddresses.get(i);
+        }
+
+        return result;
     }
 
     @Override

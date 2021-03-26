@@ -13,46 +13,65 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.hive.TestHiveEventListenerPlugin.TestingHiveEventListener;
+import com.facebook.presto.spi.QueryId;
+import com.facebook.presto.spi.eventlistener.EventListener;
+import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.tests.AbstractTestDistributedQueries;
+import org.testng.annotations.AfterClass;
+import org.testng.annotations.Test;
+
+import java.util.Optional;
+import java.util.Set;
 
 import static com.facebook.presto.hive.HiveQueryRunner.createQueryRunner;
-import static com.facebook.presto.hive.HiveQueryRunner.createSampledSession;
+import static com.facebook.presto.sql.tree.ExplainType.Type.LOGICAL;
+import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.airlift.tpch.TpchTable.getTables;
+import static java.lang.String.format;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertTrue;
 
 public class TestHiveDistributedQueries
         extends AbstractTestDistributedQueries
 {
     public TestHiveDistributedQueries()
+    {
+        super(() -> createQueryRunner(getTables()));
+    }
+
+    @Override
+    protected boolean supportsNotNullColumns()
+    {
+        return false;
+    }
+
+    @Override
+    @AfterClass(alwaysRun = true)
+    public void close()
             throws Exception
     {
-        super(createQueryRunner(getTables()), createSampledSession());
+        Optional<EventListener> eventListener = getQueryRunner().getEventListener();
+        assertTrue(eventListener.isPresent());
+        assertTrue(eventListener.get() instanceof TestingHiveEventListener);
+        Set<QueryId> runningQueryIds = ((TestingHiveEventListener) eventListener.get()).getRunningQueries();
+        assertTrue(runningQueryIds.isEmpty(), format("Query completion events not sent for %d queries", runningQueryIds.size()));
+        super.close();
     }
 
     @Override
     public void testDelete()
-            throws Exception
     {
         // Hive connector currently does not support row-by-row delete
     }
 
-    @Override
-    public void testAddColumn()
-            throws Exception
+    @Test
+    public void testExplainOfCreateTableAs()
     {
-        // Hive connector currently does not support schema change
+        String query = "CREATE TABLE copy_orders AS SELECT * FROM orders";
+        MaterializedResult result = computeActual("EXPLAIN " + query);
+        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getExplainPlan(query, LOGICAL));
     }
 
-    @Override
-    public void testRenameColumn()
-            throws Exception
-    {
-        // Hive connector currently does not support schema change
-    }
-
-    @Override
-    public void testRenameTable()
-            throws Exception
-    {
-        // Hive connector currently does not support table rename
-    }
+    // Hive specific tests should normally go in TestHiveIntegrationSmokeTest
 }

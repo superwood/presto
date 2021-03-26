@@ -13,12 +13,11 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.DateType;
-import com.facebook.presto.spi.type.SqlDate;
-import com.facebook.presto.spi.type.StandardTypes;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.DateType;
+import com.facebook.presto.common.type.SqlDate;
+import com.facebook.presto.common.type.StandardTypes;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -29,7 +28,7 @@ public class TestDateMaxAggregation
     @Override
     public Block[] getSequenceBlocks(int start, int length)
     {
-        BlockBuilder blockBuilder = DateType.DATE.createBlockBuilder(new BlockBuilderStatus(), length);
+        BlockBuilder blockBuilder = DateType.DATE.createBlockBuilder(null, length);
         for (int i = start; i < start + length; i++) {
             DateType.DATE.writeLong(blockBuilder, i);
         }

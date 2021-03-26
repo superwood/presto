@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.tests.tpch;
 
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.RecordSet;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
@@ -61,12 +61,6 @@ class MaterializedTupleRecordSet
         {
             this.iterator = requireNonNull(iterator, "iterator is null");
             this.types = ImmutableList.copyOf(requireNonNull(types, "types is null"));
-        }
-
-        @Override
-        public long getTotalBytes()
-        {
-            return 0;
         }
 
         @Override

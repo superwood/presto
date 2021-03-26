@@ -13,18 +13,20 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.type.SqlType;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.spi.function.ScalarFunction;
+import com.facebook.presto.spi.function.SqlType;
+
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.HIDDEN;
 
 public final class CombineHashFunction
 {
     private CombineHashFunction() {}
 
-    @ScalarFunction(value = "combine_hash", hidden = true)
+    @ScalarFunction(value = "combine_hash", visibility = HIDDEN)
     @SqlType(StandardTypes.BIGINT)
     public static long getHash(@SqlType(StandardTypes.BIGINT) long previousHashValue, @SqlType(StandardTypes.BIGINT) long value)
     {
-        // Hash values are required to be ints
-        return (int) (31 * previousHashValue + value);
+        return (31 * previousHashValue + value);
     }
 }

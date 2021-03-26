@@ -13,9 +13,10 @@
  */
 package com.facebook.presto.operator.aggregation.state;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.spi.function.AccumulatorStateSerializer;
 
 public class BlockStateSerializer
         implements AccumulatorStateSerializer<BlockState>
@@ -47,11 +48,6 @@ public class BlockStateSerializer
     @Override
     public void deserialize(Block block, int index, BlockState state)
     {
-        if (block.isNull(index)) {
-            state.setBlock(null);
-        }
-        else {
-            state.setBlock((Block) type.getObject(block, index));
-        }
+        state.setBlock((Block) type.getObject(block, index));
     }
 }

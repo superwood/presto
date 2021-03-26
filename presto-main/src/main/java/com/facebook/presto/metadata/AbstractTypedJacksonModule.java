@@ -17,6 +17,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo.Id;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.Version;
+import com.fasterxml.jackson.databind.DatabindContext;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.JsonMappingException;
@@ -32,8 +33,7 @@ import com.fasterxml.jackson.databind.jsontype.impl.TypeIdResolverBase;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.ser.BeanSerializerFactory;
 import com.fasterxml.jackson.databind.ser.std.StdSerializer;
-import com.fasterxml.jackson.databind.type.SimpleType;
-import com.google.common.base.Throwables;
+import com.fasterxml.jackson.databind.type.TypeFactory;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 
@@ -42,7 +42,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.function.Function;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Throwables.propagateIfInstanceOf;
+import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static java.util.Objects.requireNonNull;
 
 public abstract class AbstractTypedJacksonModule<T>
@@ -71,7 +71,12 @@ public abstract class AbstractTypedJacksonModule<T>
         public InternalTypeDeserializer(Class<T> baseClass, TypeIdResolver typeIdResolver)
         {
             super(baseClass);
-            this.typeDeserializer = new AsPropertyTypeDeserializer(SimpleType.construct(baseClass), typeIdResolver, TYPE_PROPERTY, false, null);
+            this.typeDeserializer = new AsPropertyTypeDeserializer(
+                    TypeFactory.defaultInstance().constructType(baseClass),
+                    typeIdResolver,
+                    TYPE_PROPERTY,
+                    false,
+                    null);
         }
 
         @SuppressWarnings("unchecked")
@@ -110,8 +115,11 @@ public abstract class AbstractTypedJacksonModule<T>
                 serializer.serializeWithType(value, generator, provider, typeSerializer);
             }
             catch (ExecutionException e) {
-                propagateIfInstanceOf(e.getCause(), IOException.class);
-                throw Throwables.propagate(e.getCause());
+                Throwable cause = e.getCause();
+                if (cause != null) {
+                    throwIfInstanceOf(cause, IOException.class);
+                }
+                throw new RuntimeException(e);
             }
         }
 
@@ -153,12 +161,12 @@ public abstract class AbstractTypedJacksonModule<T>
         }
 
         @Override
-        public JavaType typeFromId(String id)
+        public JavaType typeFromId(DatabindContext context, String id)
         {
             requireNonNull(id, "id is null");
             Class<?> typeClass = classResolver.apply(id);
             checkArgument(typeClass != null, "Unknown type ID: %s", id);
-            return SimpleType.construct(typeClass);
+            return context.getTypeFactory().constructType(typeClass);
         }
 
         @Override

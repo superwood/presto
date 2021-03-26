@@ -13,13 +13,12 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 
-import static com.facebook.presto.type.JsonType.JSON;
+import static com.facebook.presto.common.type.JsonType.JSON;
 
 public class TestJsonType
         extends AbstractTestType
@@ -31,7 +30,7 @@ public class TestJsonType
 
     public static Block createTestBlock()
     {
-        BlockBuilder blockBuilder = JSON.createBlockBuilder(new BlockBuilderStatus(), 1);
+        BlockBuilder blockBuilder = JSON.createBlockBuilder(null, 1);
         Slice slice = Slices.utf8Slice("{\"x\":1, \"y\":2}");
         JSON.writeSlice(blockBuilder, slice);
         return blockBuilder.build();

@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.raptor.metadata;
 
-import io.airlift.configuration.Config;
-import io.airlift.configuration.ConfigDescription;
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigDescription;
 import io.airlift.units.Duration;
 import io.airlift.units.MaxDuration;
 import io.airlift.units.MinDuration;
@@ -35,6 +35,7 @@ public class ShardCleanerConfig
     private Duration backupCleanerInterval = new Duration(5, MINUTES);
     private Duration backupCleanTime = new Duration(1, DAYS);
     private int backupDeletionThreads = 50;
+    private Duration maxCompletedTransactionAge = new Duration(1, DAYS);
 
     @NotNull
     @MinDuration("1m")
@@ -136,6 +137,22 @@ public class ShardCleanerConfig
     public ShardCleanerConfig setBackupDeletionThreads(int backupDeletionThreads)
     {
         this.backupDeletionThreads = backupDeletionThreads;
+        return this;
+    }
+
+    @NotNull
+    @MinDuration("1m")
+    @MaxDuration("30d")
+    public Duration getMaxCompletedTransactionAge()
+    {
+        return maxCompletedTransactionAge;
+    }
+
+    @Config("raptor.max-completed-transaction-age")
+    @ConfigDescription("Maximum time a record of a successful or failed transaction is kept")
+    public ShardCleanerConfig setMaxCompletedTransactionAge(Duration maxCompletedTransactionAge)
+    {
+        this.maxCompletedTransactionAge = maxCompletedTransactionAge;
         return this;
     }
 }

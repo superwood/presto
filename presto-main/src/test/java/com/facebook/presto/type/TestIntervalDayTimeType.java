@@ -13,12 +13,10 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.SqlIntervalDayTime;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
 
-import static com.facebook.presto.spi.type.IntervalDayTimeType.INTERVAL_DAY_TIME;
+import static com.facebook.presto.type.IntervalDayTimeType.INTERVAL_DAY_TIME;
 
 public class TestIntervalDayTimeType
         extends AbstractTestType
@@ -30,7 +28,7 @@ public class TestIntervalDayTimeType
 
     public static Block createTestBlock()
     {
-        BlockBuilder blockBuilder = INTERVAL_DAY_TIME.createBlockBuilder(new BlockBuilderStatus(), 15);
+        BlockBuilder blockBuilder = INTERVAL_DAY_TIME.createBlockBuilder(null, 15);
         INTERVAL_DAY_TIME.writeLong(blockBuilder, 1111);
         INTERVAL_DAY_TIME.writeLong(blockBuilder, 1111);
         INTERVAL_DAY_TIME.writeLong(blockBuilder, 1111);

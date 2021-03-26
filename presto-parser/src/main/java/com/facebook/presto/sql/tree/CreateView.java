@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.google.common.collect.ImmutableList;
+
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -22,31 +25,42 @@ import static java.util.Objects.requireNonNull;
 public class CreateView
         extends Statement
 {
+    public enum Security {
+        INVOKER, DEFINER
+    }
+
     private final QualifiedName name;
     private final Query query;
     private final boolean replace;
+    private final Optional<Security> security;
 
-    public CreateView(QualifiedName name, Query query, boolean replace)
+    public CreateView(QualifiedName name, Query query, boolean replace, Optional<Security> security)
     {
-        this(Optional.empty(), name, query, replace);
+        this(Optional.empty(), name, query, replace, security);
     }
 
-    public CreateView(NodeLocation location, QualifiedName name, Query query, boolean replace)
+    public CreateView(NodeLocation location, QualifiedName name, Query query, boolean replace, Optional<Security> security)
     {
-        this(Optional.of(location), name, query, replace);
+        this(Optional.of(location), name, query, replace, security);
     }
 
-    private CreateView(Optional<NodeLocation> location, QualifiedName name, Query query, boolean replace)
+    private CreateView(Optional<NodeLocation> location, QualifiedName name, Query query, boolean replace, Optional<Security> security)
     {
         super(location);
         this.name = requireNonNull(name, "name is null");
         this.query = requireNonNull(query, "query is null");
         this.replace = replace;
+        this.security = requireNonNull(security, "security is null");
     }
 
     public QualifiedName getName()
     {
         return name;
+    }
+
+    public Optional<Security> getSecurity()
+    {
+        return security;
     }
 
     public Query getQuery()
@@ -66,9 +80,15 @@ public class CreateView
     }
 
     @Override
+    public List<Node> getChildren()
+    {
+        return ImmutableList.of(query);
+    }
+
+    @Override
     public int hashCode()
     {
-        return Objects.hash(name, query, replace);
+        return Objects.hash(name, query, replace, security);
     }
 
     @Override
@@ -83,7 +103,8 @@ public class CreateView
         CreateView o = (CreateView) obj;
         return Objects.equals(name, o.name)
                 && Objects.equals(query, o.query)
-                && Objects.equals(replace, o.replace);
+                && Objects.equals(replace, o.replace)
+                && Objects.equals(security, o.security);
     }
 
     @Override
@@ -93,6 +114,7 @@ public class CreateView
                 .add("name", name)
                 .add("query", query)
                 .add("replace", replace)
+                .add("security", security)
                 .toString();
     }
 }

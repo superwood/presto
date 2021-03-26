@@ -13,9 +13,8 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
 import org.testng.annotations.Test;
 
 import java.util.ArrayList;
@@ -25,8 +24,8 @@ import java.util.List;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static org.testng.Assert.assertEquals;
 
 public class TestTypedKeyValueHeap
@@ -78,17 +77,17 @@ public class TestTypedKeyValueHeap
                 IntStream.range(0, OUTPUT_SIZE).map(x -> OUTPUT_SIZE - 1 - x).mapToObj(key -> Integer.toString(key * 2)).iterator());
     }
 
-    private void test(IntStream keyInputStream, Stream<String> valueInputStream, BlockComparator comparator, Iterator<String> outputIterator)
+    private static void test(IntStream keyInputStream, Stream<String> valueInputStream, BlockComparator comparator, Iterator<String> outputIterator)
     {
-        BlockBuilder keysBlockBuilder = BIGINT.createBlockBuilder(new BlockBuilderStatus(), INPUT_SIZE);
-        BlockBuilder valuesBlockBuilder = VARCHAR.createBlockBuilder(new BlockBuilderStatus(), INPUT_SIZE);
+        BlockBuilder keysBlockBuilder = BIGINT.createBlockBuilder(null, INPUT_SIZE);
+        BlockBuilder valuesBlockBuilder = VARCHAR.createBlockBuilder(null, INPUT_SIZE);
         keyInputStream.forEach(x -> BIGINT.writeLong(keysBlockBuilder, x));
         valueInputStream.forEach(x -> VARCHAR.writeString(valuesBlockBuilder, x));
 
         TypedKeyValueHeap heap = new TypedKeyValueHeap(comparator, BIGINT, VARCHAR, OUTPUT_SIZE);
         heap.addAll(keysBlockBuilder, valuesBlockBuilder);
 
-        BlockBuilder resultBlockBuilder = VARCHAR.createBlockBuilder(new BlockBuilderStatus(), OUTPUT_SIZE);
+        BlockBuilder resultBlockBuilder = VARCHAR.createBlockBuilder(null, OUTPUT_SIZE);
         heap.popAll(resultBlockBuilder);
 
         Block resultBlock = resultBlockBuilder.build();

@@ -26,35 +26,28 @@ public class Union
         extends SetOperation
 {
     private final List<Relation> relations;
-    private final boolean distinct;
 
-    public Union(List<Relation> relations, boolean distinct)
+    public Union(List<Relation> relations, Optional<Boolean> distinct)
     {
         this(Optional.empty(), relations, distinct);
     }
 
-    public Union(NodeLocation location, List<Relation> relations, boolean distinct)
+    public Union(NodeLocation location, List<Relation> relations, Optional<Boolean> distinct)
     {
         this(Optional.of(location), relations, distinct);
     }
 
-    private Union(Optional<NodeLocation> location, List<Relation> relations, boolean distinct)
+    private Union(Optional<NodeLocation> location, List<Relation> relations, Optional<Boolean> distinct)
     {
-        super(location);
+        super(location, distinct);
         requireNonNull(relations, "relations is null");
 
         this.relations = ImmutableList.copyOf(relations);
-        this.distinct = distinct;
     }
 
     public List<Relation> getRelations()
     {
         return relations;
-    }
-
-    public boolean isDistinct()
-    {
-        return distinct;
     }
 
     @Override
@@ -64,11 +57,17 @@ public class Union
     }
 
     @Override
+    public List<? extends Node> getChildren()
+    {
+        return relations;
+    }
+
+    @Override
     public String toString()
     {
         return toStringHelper(this)
                 .add("relations", relations)
-                .add("distinct", distinct)
+                .add("distinct", isDistinct())
                 .toString();
     }
 
@@ -83,12 +82,12 @@ public class Union
         }
         Union o = (Union) obj;
         return Objects.equals(relations, o.relations) &&
-                Objects.equals(distinct, o.distinct);
+                Objects.equals(isDistinct(), o.isDistinct());
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(relations, distinct);
+        return Objects.hash(relations, isDistinct());
     }
 }

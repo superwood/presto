@@ -25,14 +25,11 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
-import java.util.function.Predicate;
 
-import static com.facebook.presto.util.ImmutableCollectors.toImmutableList;
-import static com.facebook.presto.util.ImmutableCollectors.toImmutableSet;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkElementIndex;
 import static com.google.common.base.Predicates.not;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -66,11 +63,16 @@ public class RelationType
     }
 
     /**
-     * Gets the index of the specified field or -1 if not found.
+     * Gets the index of the specified field.
+     *
+     * @throws IllegalArgumentException when field is not found
      */
     public int indexOf(Field field)
     {
-        return fieldIndexes.get(field);
+        requireNonNull(field, "field cannot be null");
+        Integer index = fieldIndexes.get(field);
+        checkArgument(index != null, "Field %s not found", field);
+        return index;
     }
 
     /**
@@ -116,19 +118,6 @@ public class RelationType
     }
 
     /**
-     * Returns all unique relations in this tuple.
-     * For detecting duplicate relations in a Join.
-     */
-    public Set<QualifiedName> getRelationAliases()
-    {
-        return allFields.stream()
-                .map(Field::getRelationAlias)
-                .filter(Optional::isPresent)
-                .map(Optional::get)
-                .collect(toImmutableSet());
-    }
-
-    /**
      * This method is used for SELECT * or x.* queries
      */
     public List<Field> resolveFieldsWithPrefix(Optional<QualifiedName> prefix)
@@ -148,9 +137,9 @@ public class RelationType
                 .collect(toImmutableList());
     }
 
-    public Predicate<QualifiedName> canResolvePredicate()
+    public boolean canResolve(QualifiedName name)
     {
-        return input -> !resolveFields(input).isEmpty();
+        return !resolveFields(name).isEmpty();
     }
 
     /**
@@ -185,12 +174,26 @@ public class RelationType
             Field field = allFields.get(i);
             Optional<String> columnAlias = field.getName();
             if (columnAliases == null) {
-                fieldsBuilder.add(Field.newQualified(QualifiedName.of(relationAlias), columnAlias, field.getType(), field.isHidden()));
+                fieldsBuilder.add(Field.newQualified(
+                        QualifiedName.of(relationAlias),
+                        columnAlias,
+                        field.getType(),
+                        field.isHidden(),
+                        field.getOriginTable(),
+                        field.getOriginColumnName(),
+                        field.isAliased()));
             }
             else if (!field.isHidden()) {
                 // hidden fields are not exposed when there are column aliases
                 columnAlias = Optional.of(columnAliases.get(i));
-                fieldsBuilder.add(Field.newQualified(QualifiedName.of(relationAlias), columnAlias, field.getType(), false));
+                fieldsBuilder.add(Field.newQualified(
+                        QualifiedName.of(relationAlias),
+                        columnAlias,
+                        field.getType(),
+                        false,
+                        field.getOriginTable(),
+                        field.getOriginColumnName(),
+                        field.isAliased()));
             }
         }
 

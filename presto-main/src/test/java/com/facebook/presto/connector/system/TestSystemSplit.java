@@ -13,21 +13,21 @@
  */
 package com.facebook.presto.connector.system;
 
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.HostAddress;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import io.airlift.json.JsonCodec;
 import org.testng.annotations.Test;
 
-import static io.airlift.json.JsonCodec.jsonCodec;
+import static com.facebook.airlift.json.JsonCodec.jsonCodec;
 import static org.testng.Assert.assertEquals;
 
 public class TestSystemSplit
 {
     @Test
     public void testSerialization()
-            throws Exception
     {
-        String connectorId = "testid";
+        ConnectorId connectorId = new ConnectorId("testid");
         SystemTableHandle tableHandle = new SystemTableHandle(connectorId, "xyz", "foo");
         SystemSplit expected = new SystemSplit(connectorId, tableHandle, HostAddress.fromParts("127.0.0.1", 0), TupleDomain.all());
 

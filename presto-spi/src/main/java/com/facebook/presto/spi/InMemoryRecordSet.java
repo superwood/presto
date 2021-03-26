@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.spi;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 
@@ -25,32 +25,27 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static java.util.Objects.requireNonNull;
 
 public class InMemoryRecordSet
         implements RecordSet
 {
     private final List<Type> types;
     private final Iterable<? extends List<?>> records;
-    private final long totalBytes;
 
-    public InMemoryRecordSet(Collection<? extends Type> types, Collection<? extends List<?>> records)
+    public InMemoryRecordSet(Collection<? extends Type> types, Iterable<? extends List<?>> records)
     {
         this.types = Collections.unmodifiableList(new ArrayList<>(types));
         this.records = records;
-
-        long totalBytes = 0;
-        for (List<?> record : records) {
-            totalBytes += sizeOf(record);
-        }
-        this.totalBytes = totalBytes;
     }
 
     @Override
@@ -62,7 +57,7 @@ public class InMemoryRecordSet
     @Override
     public RecordCursor cursor()
     {
-        return new InMemoryRecordCursor(types, records.iterator(), totalBytes);
+        return new InMemoryRecordCursor(types, records.iterator());
     }
 
     private static class InMemoryRecordCursor
@@ -70,23 +65,13 @@ public class InMemoryRecordSet
     {
         private final List<Type> types;
         private final Iterator<? extends List<?>> records;
-        private final long totalBytes;
         private List<?> record;
         private long completedBytes;
 
-        private InMemoryRecordCursor(List<Type> types, Iterator<? extends List<?>> records, long totalBytes)
+        private InMemoryRecordCursor(List<Type> types, Iterator<? extends List<?>> records)
         {
             this.types = types;
-
             this.records = records;
-
-            this.totalBytes = totalBytes;
-        }
-
-        @Override
-        public long getTotalBytes()
-        {
-            return totalBytes;
         }
 
         @Override
@@ -124,7 +109,7 @@ public class InMemoryRecordSet
         public boolean getBoolean(int field)
         {
             checkState(record != null, "no current record");
-            checkNotNull(record.get(field), "value is null");
+            requireNonNull(record.get(field), "value is null");
             return (Boolean) record.get(field);
         }
 
@@ -132,7 +117,7 @@ public class InMemoryRecordSet
         public long getLong(int field)
         {
             checkState(record != null, "no current record");
-            checkNotNull(record.get(field), "value is null");
+            requireNonNull(record.get(field), "value is null");
             return ((Number) record.get(field)).longValue();
         }
 
@@ -140,7 +125,7 @@ public class InMemoryRecordSet
         public double getDouble(int field)
         {
             checkState(record != null, "no current record");
-            checkNotNull(record.get(field), "value is null");
+            requireNonNull(record.get(field), "value is null");
             return (Double) record.get(field);
         }
 
@@ -149,7 +134,7 @@ public class InMemoryRecordSet
         {
             checkState(record != null, "no current record");
             Object value = record.get(field);
-            checkNotNull(value, "value is null");
+            requireNonNull(value, "value is null");
             if (value instanceof byte[]) {
                 return Slices.wrappedBuffer((byte[]) value);
             }
@@ -167,7 +152,7 @@ public class InMemoryRecordSet
         {
             checkState(record != null, "no current record");
             Object value = record.get(field);
-            checkNotNull(value, "value is null");
+            requireNonNull(value, "value is null");
             return value;
         }
 
@@ -210,14 +195,14 @@ public class InMemoryRecordSet
 
         private Builder(Collection<Type> types)
         {
-            checkNotNull(types, "types is null");
+            requireNonNull(types, "types is null");
             this.types = Collections.unmodifiableList(new ArrayList<>(types));
             checkArgument(!this.types.isEmpty(), "types is empty");
         }
 
         public Builder addRow(Object... values)
         {
-            checkNotNull(values, "values is null");
+            requireNonNull(values, "values is null");
             checkArgument(values.length == types.size(), "Expected %s values in row, but got %s values", types.size(), values.length);
             for (int i = 0; i < values.length; i++) {
                 Object value = values[i];
@@ -228,6 +213,9 @@ public class InMemoryRecordSet
                 Type type = types.get(i);
                 if (BOOLEAN.equals(type)) {
                     checkArgument(value instanceof Boolean, "Expected value %d to be an instance of Boolean, but is a %s", i, value.getClass().getSimpleName());
+                }
+                else if (INTEGER.equals(type)) {
+                    checkArgument(value instanceof Integer, "Expected value %d to be an instance of Integer, but is a %s", i, value.getClass().getSimpleName());
                 }
                 else if (BIGINT.equals(type) || DATE.equals(type) || TIMESTAMP.equals(type) || TIMESTAMP_WITH_TIME_ZONE.equals(type)) {
                     checkArgument(value instanceof Integer || value instanceof Long,
@@ -245,6 +233,10 @@ public class InMemoryRecordSet
                             "Expected value %d to be an instance of Slice, but is a %s", i, value.getClass().getSimpleName());
                 }
                 else if (type.getTypeSignature().getBase().equals("array")) {
+                    checkArgument(value instanceof Block,
+                            "Expected value %d to be an instance of Block, but is a %s", i, value.getClass().getSimpleName());
+                }
+                else if (type.getTypeSignature().getBase().equals("row")) {
                     checkArgument(value instanceof Block,
                             "Expected value %d to be an instance of Block, but is a %s", i, value.getClass().getSimpleName());
                 }
@@ -267,13 +259,6 @@ public class InMemoryRecordSet
     {
         if (!test) {
             throw new IllegalArgumentException(String.format(message, args));
-        }
-    }
-
-    private static void checkNotNull(Object value, String message)
-    {
-        if (value == null) {
-            throw new NullPointerException(message);
         }
     }
 
@@ -307,7 +292,7 @@ public class InMemoryRecordSet
                 completedBytes += ((Block) value).getSizeInBytes();
             }
             else if (value instanceof Slice) {
-                completedBytes += ((Slice) value).getBytes().length;
+                completedBytes += ((Slice) value).length();
             }
             else {
                 throw new IllegalArgumentException("Unknown type: " + value.getClass());

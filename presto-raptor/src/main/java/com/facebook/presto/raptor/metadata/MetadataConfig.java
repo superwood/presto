@@ -13,10 +13,11 @@
  */
 package com.facebook.presto.raptor.metadata;
 
-import io.airlift.configuration.Config;
-import io.airlift.configuration.ConfigDescription;
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigDescription;
 import io.airlift.units.Duration;
 
+import javax.validation.constraints.Min;
 import javax.validation.constraints.NotNull;
 
 import static java.util.concurrent.TimeUnit.MINUTES;
@@ -24,6 +25,9 @@ import static java.util.concurrent.TimeUnit.MINUTES;
 public class MetadataConfig
 {
     private Duration startupGracePeriod = new Duration(5, MINUTES);
+    private Duration reassignmentDelay = new Duration(0, MINUTES);
+    private Duration reassignmentInterval = new Duration(0, MINUTES);
+    private int minimumNodeCount;
 
     @NotNull
     public Duration getStartupGracePeriod()
@@ -36,6 +40,48 @@ public class MetadataConfig
     public MetadataConfig setStartupGracePeriod(Duration startupGracePeriod)
     {
         this.startupGracePeriod = startupGracePeriod;
+        return this;
+    }
+
+    @NotNull
+    public Duration getReassignmentDelay()
+    {
+        return reassignmentDelay;
+    }
+
+    @Config("raptor.reassignment-delay")
+    @ConfigDescription("Minimum delay before allowing reassignments for a node")
+    public MetadataConfig setReassignmentDelay(Duration reassignmentDelay)
+    {
+        this.reassignmentDelay = reassignmentDelay;
+        return this;
+    }
+
+    @NotNull
+    public Duration getReassignmentInterval()
+    {
+        return reassignmentInterval;
+    }
+
+    @Config("raptor.reassignment-interval")
+    @ConfigDescription("Minimum interval between reassignments for different nodes")
+    public MetadataConfig setReassignmentInterval(Duration reassignmentInterval)
+    {
+        this.reassignmentInterval = reassignmentInterval;
+        return this;
+    }
+
+    @Min(0)
+    public int getMinimumNodeCount()
+    {
+        return minimumNodeCount;
+    }
+
+    @Config("raptor.minimum-node-count")
+    @ConfigDescription("Minimum nodes required for background data recovery and reassignment procedures to activate")
+    public MetadataConfig setMinimumNodeCount(int minimumNodeCount)
+    {
+        this.minimumNodeCount = minimumNodeCount;
         return this;
     }
 }

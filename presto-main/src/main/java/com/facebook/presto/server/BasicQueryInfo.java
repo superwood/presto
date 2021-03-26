@@ -13,134 +13,224 @@
  */
 package com.facebook.presto.server;
 
+import com.facebook.drift.annotations.ThriftConstructor;
+import com.facebook.drift.annotations.ThriftField;
+import com.facebook.drift.annotations.ThriftStruct;
+import com.facebook.presto.Session;
 import com.facebook.presto.SessionRepresentation;
-import com.facebook.presto.execution.QueryId;
+import com.facebook.presto.execution.ExecutionFailureInfo;
 import com.facebook.presto.execution.QueryInfo;
 import com.facebook.presto.execution.QueryState;
-import com.facebook.presto.operator.BlockedReason;
 import com.facebook.presto.spi.ErrorCode;
-import com.facebook.presto.spi.StandardErrorCode.ErrorType;
+import com.facebook.presto.spi.ErrorType;
+import com.facebook.presto.spi.PrestoWarning;
+import com.facebook.presto.spi.QueryId;
+import com.facebook.presto.spi.memory.MemoryPoolId;
+import com.facebook.presto.spi.resourceGroups.QueryType;
+import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.common.collect.ImmutableSet;
-import io.airlift.units.Duration;
-import org.joda.time.DateTime;
+import com.google.common.collect.ImmutableList;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.Immutable;
 
 import java.net.URI;
-import java.util.Set;
+import java.util.List;
+import java.util.Optional;
 
+import static com.facebook.presto.execution.QueryState.FAILED;
+import static com.facebook.presto.memory.LocalMemoryManager.GENERAL_POOL;
+import static com.facebook.presto.server.BasicQueryStats.immediateFailureQueryStats;
 import static com.google.common.base.MoreObjects.toStringHelper;
-import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
+/**
+ * Lightweight version of QueryInfo. Parts of the web UI depend on the fields
+ * being named consistently across these classes.
+ */
+@ThriftStruct
 @Immutable
 public class BasicQueryInfo
 {
     private final QueryId queryId;
     private final SessionRepresentation session;
+    private final Optional<ResourceGroupId> resourceGroupId;
     private final QueryState state;
-    private final ErrorType errorType;
-    private final ErrorCode errorCode;
+    private final MemoryPoolId memoryPool;
     private final boolean scheduled;
-    private final boolean fullyBlocked;
-    private final Set<BlockedReason> blockedReasons;
     private final URI self;
     private final String query;
-    private final Duration elapsedTime;
-    private final DateTime endTime;
-    private final DateTime createTime;
-    private final int runningDrivers;
-    private final int queuedDrivers;
-    private final int completedDrivers;
-    private final int totalDrivers;
+    private final BasicQueryStats queryStats;
+    private final ErrorType errorType;
+    private final ErrorCode errorCode;
+    private final ExecutionFailureInfo failureInfo;
+    private final Optional<QueryType> queryType;
+    private final List<PrestoWarning> warnings;
 
+    @ThriftConstructor
     @JsonCreator
     public BasicQueryInfo(
             @JsonProperty("queryId") QueryId queryId,
             @JsonProperty("session") SessionRepresentation session,
+            @JsonProperty("resourceGroupId") Optional<ResourceGroupId> resourceGroupId,
             @JsonProperty("state") QueryState state,
-            @JsonProperty("errorType") ErrorType errorType,
-            @JsonProperty("errorCode") ErrorCode errorCode,
+            @JsonProperty("memoryPool") MemoryPoolId memoryPool,
             @JsonProperty("scheduled") boolean scheduled,
-            @JsonProperty("fullyBlocked") boolean fullyBlocked,
-            @JsonProperty("blockedReasons") Set<BlockedReason> blockedReasons,
             @JsonProperty("self") URI self,
             @JsonProperty("query") String query,
-            @JsonProperty("elapsedTime") Duration elapsedTime,
-            @JsonProperty("endTime") DateTime endTime,
-            @JsonProperty("createTime") DateTime createTime,
-            @JsonProperty("runningDrivers") int runningDrivers,
-            @JsonProperty("queuedDrivers") int queuedDrivers,
-            @JsonProperty("completedDrivers") int completedDrivers,
-            @JsonProperty("totalDrivers") int totalDrivers)
-
+            @JsonProperty("queryStats") BasicQueryStats queryStats,
+            @JsonProperty("errorType") ErrorType errorType,
+            @JsonProperty("errorCode") ErrorCode errorCode,
+            @JsonProperty("failureInfo") ExecutionFailureInfo failureInfo,
+            @JsonProperty("queryType") Optional<QueryType> queryType,
+            @JsonProperty("warnings") List<PrestoWarning> warnings)
     {
         this.queryId = requireNonNull(queryId, "queryId is null");
         this.session = requireNonNull(session, "session is null");
+        this.resourceGroupId = requireNonNull(resourceGroupId, "resourceGroupId is null");
         this.state = requireNonNull(state, "state is null");
+        this.memoryPool = memoryPool;
         this.errorType = errorType;
         this.errorCode = errorCode;
+        this.failureInfo = failureInfo;
         this.scheduled = scheduled;
-        this.fullyBlocked = fullyBlocked;
-        this.blockedReasons = ImmutableSet.copyOf(requireNonNull(blockedReasons, "blockedReasons is null"));
         this.self = requireNonNull(self, "self is null");
         this.query = requireNonNull(query, "query is null");
-        this.elapsedTime = elapsedTime;
-        this.endTime = endTime;
-        this.createTime = createTime;
+        this.queryStats = requireNonNull(queryStats, "queryStats is null");
+        this.queryType = requireNonNull(queryType, "queryType is null");
+        this.warnings = requireNonNull(warnings, "warnings is null");
+    }
 
-        checkArgument(runningDrivers >= 0, "runningDrivers is less than zero");
-        this.runningDrivers = runningDrivers;
-        checkArgument(queuedDrivers >= 0, "queuedDrivers is less than zero");
-        this.queuedDrivers = queuedDrivers;
-        checkArgument(completedDrivers >= 0, "completedDrivers is less than zero");
-        this.completedDrivers = completedDrivers;
-        checkArgument(totalDrivers >= 0, "totalDrivers is less than zero");
-        this.totalDrivers = totalDrivers;
+    public BasicQueryInfo(
+            QueryId queryId,
+            SessionRepresentation session,
+            Optional<ResourceGroupId> resourceGroupId,
+            QueryState state,
+            MemoryPoolId memoryPool,
+            boolean scheduled,
+            URI self,
+            String query,
+            BasicQueryStats queryStats,
+            ExecutionFailureInfo failureInfo,
+            Optional<QueryType> queryType,
+            List<PrestoWarning> warnings)
+    {
+        this(
+                queryId,
+                session,
+                resourceGroupId,
+                state,
+                memoryPool,
+                scheduled,
+                self,
+                query,
+                queryStats,
+                (failureInfo != null && failureInfo.getErrorCode() != null) ? failureInfo.getErrorCode().getType() : null,
+                failureInfo != null ? failureInfo.getErrorCode() : null,
+                failureInfo,
+                queryType, warnings);
     }
 
     public BasicQueryInfo(QueryInfo queryInfo)
     {
         this(queryInfo.getQueryId(),
                 queryInfo.getSession(),
+                queryInfo.getResourceGroupId(),
                 queryInfo.getState(),
-                queryInfo.getErrorType(),
-                queryInfo.getErrorCode(),
+                queryInfo.getMemoryPool(),
                 queryInfo.isScheduled(),
-                queryInfo.getQueryStats().isFullyBlocked(),
-                queryInfo.getQueryStats().getBlockedReasons(),
                 queryInfo.getSelf(),
                 queryInfo.getQuery(),
-                queryInfo.getQueryStats().getElapsedTime(),
-                queryInfo.getQueryStats().getEndTime(),
-                queryInfo.getQueryStats().getCreateTime(),
-                queryInfo.getQueryStats().getRunningDrivers(),
-                queryInfo.getQueryStats().getQueuedDrivers(),
-                queryInfo.getQueryStats().getCompletedDrivers(),
-                queryInfo.getQueryStats().getTotalDrivers());
+                new BasicQueryStats(queryInfo.getQueryStats()),
+                queryInfo.getErrorType(),
+                queryInfo.getErrorCode(),
+                queryInfo.getFailureInfo(),
+                queryInfo.getQueryType(),
+                queryInfo.getWarnings());
     }
 
+    public static BasicQueryInfo immediateFailureQueryInfo(Session session, String query, URI self, Optional<ResourceGroupId> resourceGroupId, ExecutionFailureInfo failure)
+    {
+        return new BasicQueryInfo(
+                session.getQueryId(),
+                session.toSessionRepresentation(),
+                resourceGroupId,
+                FAILED,
+                GENERAL_POOL,
+                false,
+                self,
+                query,
+                immediateFailureQueryStats(),
+                failure,
+                Optional.empty(),
+                ImmutableList.of());
+    }
+
+    @ThriftField(1)
     @JsonProperty
     public QueryId getQueryId()
     {
         return queryId;
     }
 
+    @ThriftField(2)
     @JsonProperty
     public SessionRepresentation getSession()
     {
         return session;
     }
 
+    @ThriftField(3)
+    @JsonProperty
+    public Optional<ResourceGroupId> getResourceGroupId()
+    {
+        return resourceGroupId;
+    }
+
+    @ThriftField(4)
     @JsonProperty
     public QueryState getState()
     {
         return state;
     }
 
+    @ThriftField(5)
+    @JsonProperty
+    public MemoryPoolId getMemoryPool()
+    {
+        return memoryPool;
+    }
+
+    @ThriftField(6)
+    @JsonProperty
+    public boolean isScheduled()
+    {
+        return scheduled;
+    }
+
+    @ThriftField(7)
+    @JsonProperty
+    public URI getSelf()
+    {
+        return self;
+    }
+
+    @ThriftField(8)
+    @JsonProperty
+    public String getQuery()
+    {
+        return query;
+    }
+
+    @ThriftField(9)
+    @JsonProperty
+    public BasicQueryStats getQueryStats()
+    {
+        return queryStats;
+    }
+
+    @ThriftField(10)
     @Nullable
     @JsonProperty
     public ErrorType getErrorType()
@@ -148,6 +238,7 @@ public class BasicQueryInfo
         return errorType;
     }
 
+    @ThriftField(11)
     @Nullable
     @JsonProperty
     public ErrorCode getErrorCode()
@@ -155,76 +246,26 @@ public class BasicQueryInfo
         return errorCode;
     }
 
+    @ThriftField(12)
+    @Nullable
     @JsonProperty
-    public boolean isScheduled()
+    public ExecutionFailureInfo getFailureInfo()
     {
-        return scheduled;
+        return failureInfo;
     }
 
+    @ThriftField(13)
     @JsonProperty
-    public boolean isFullyBlocked()
+    public Optional<QueryType> getQueryType()
     {
-        return fullyBlocked;
+        return queryType;
     }
 
+    @ThriftField(14)
     @JsonProperty
-    public Set<BlockedReason> getBlockedReasons()
+    public List<PrestoWarning> getWarnings()
     {
-        return blockedReasons;
-    }
-
-    @JsonProperty
-    public URI getSelf()
-    {
-        return self;
-    }
-
-    @JsonProperty
-    public String getQuery()
-    {
-        return query;
-    }
-
-    @JsonProperty
-    public Duration getElapsedTime()
-    {
-        return elapsedTime;
-    }
-
-    @JsonProperty
-    public DateTime getEndTime()
-    {
-        return endTime;
-    }
-
-    @JsonProperty
-    public int getRunningDrivers()
-    {
-        return runningDrivers;
-    }
-
-    @JsonProperty
-    public int getQueuedDrivers()
-    {
-        return queuedDrivers;
-    }
-
-    @JsonProperty
-    public int getTotalDrivers()
-    {
-        return totalDrivers;
-    }
-
-    @JsonProperty
-    public int getCompletedDrivers()
-    {
-        return completedDrivers;
-    }
-
-    @JsonProperty
-    public DateTime getCreateTime()
-    {
-        return createTime;
+        return warnings;
     }
 
     @Override

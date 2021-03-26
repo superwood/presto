@@ -61,14 +61,6 @@ public interface Connector
     }
 
     /**
-     * @throws UnsupportedOperationException if this connector does not support writing tables record at a time
-     */
-    default ConnectorRecordSinkProvider getRecordSinkProvider()
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    /**
      * @throws UnsupportedOperationException if this connector does not support indexes
      */
     default ConnectorIndexProvider getIndexProvider()
@@ -80,6 +72,22 @@ public interface Connector
      * @throws UnsupportedOperationException if this connector does not support partitioned table layouts
      */
     default ConnectorNodePartitioningProvider getNodePartitioningProvider()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * @throws UnsupportedOperationException if this connector does not need to optimize query plans
+     */
+    default ConnectorPlanOptimizerProvider getConnectorPlanOptimizerProvider()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * @throws UnsupportedOperationException if this connector does not support metadata updates
+     */
+    default ConnectorMetadataUpdaterProvider getConnectorMetadataUpdaterProvider()
     {
         throw new UnsupportedOperationException();
     }
@@ -109,9 +117,33 @@ public interface Connector
     }
 
     /**
+     * @return the schema properties for this connector
+     */
+    default List<PropertyMetadata<?>> getSchemaProperties()
+    {
+        return emptyList();
+    }
+
+    /**
+     * @return the analyze properties for this connector
+     */
+    default List<PropertyMetadata<?>> getAnalyzeProperties()
+    {
+        return emptyList();
+    }
+
+    /**
      * @return the table properties for this connector
      */
     default List<PropertyMetadata<?>> getTableProperties()
+    {
+        return emptyList();
+    }
+
+    /**
+     * @return the column properties for this connector
+     */
+    default List<PropertyMetadata<?>> getColumnProperties()
     {
         return emptyList();
     }
@@ -157,4 +189,9 @@ public interface Connector
      * have been returned from the connector.
      */
     default void shutdown() {}
+
+    default Set<ConnectorCapabilities> getCapabilities()
+    {
+        return emptySet();
+    }
 }

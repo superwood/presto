@@ -13,11 +13,12 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.type.SqlType;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.spi.function.LiteralParameters;
+import com.facebook.presto.spi.function.ScalarFunction;
+import com.facebook.presto.spi.function.SqlNullable;
+import com.facebook.presto.spi.function.SqlType;
 import io.airlift.slice.Slice;
-
-import javax.annotation.Nullable;
 
 public final class CustomFunctions
 {
@@ -30,16 +31,17 @@ public final class CustomFunctions
         return x + y;
     }
 
-    @ScalarFunction("custom_is_null")
+    @ScalarFunction(value = "custom_is_null", calledOnNullInput = true)
+    @LiteralParameters("x")
     @SqlType(StandardTypes.BOOLEAN)
-    public static boolean customIsNullVarchar(@Nullable @SqlType(StandardTypes.VARCHAR) Slice slice)
+    public static boolean customIsNullVarchar(@SqlNullable @SqlType("varchar(x)") Slice slice)
     {
         return slice == null;
     }
 
-    @ScalarFunction("custom_is_null")
+    @ScalarFunction(value = "custom_is_null", calledOnNullInput = true)
     @SqlType(StandardTypes.BOOLEAN)
-    public static boolean customIsNullBigint(@Nullable @SqlType(StandardTypes.BIGINT) Long value)
+    public static boolean customIsNullBigint(@SqlNullable @SqlType(StandardTypes.BIGINT) Long value)
     {
         return value == null;
     }

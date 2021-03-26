@@ -13,58 +13,54 @@
  */
 package com.facebook.presto.execution;
 
+import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.Session;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.QualifiedObjectName;
 import com.facebook.presto.metadata.ViewDefinition;
 import com.facebook.presto.security.AccessControl;
-import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.ConnectorTableMetadata;
+import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.sql.analyzer.Analysis;
 import com.facebook.presto.sql.analyzer.Analyzer;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
-import com.facebook.presto.sql.analyzer.QueryExplainer;
-import com.facebook.presto.sql.parser.ParsingException;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.tree.CreateView;
-import com.facebook.presto.sql.tree.Query;
+import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.Statement;
 import com.facebook.presto.transaction.TransactionManager;
-import io.airlift.json.JsonCodec;
+import com.google.common.util.concurrent.ListenableFuture;
 
 import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 
 import static com.facebook.presto.metadata.MetadataUtil.createQualifiedObjectName;
+import static com.facebook.presto.metadata.MetadataUtil.toSchemaTableName;
 import static com.facebook.presto.metadata.ViewDefinition.ViewColumn;
-import static com.facebook.presto.spi.StandardErrorCode.INTERNAL_ERROR;
-import static com.facebook.presto.sql.SqlFormatter.formatSql;
-import static com.facebook.presto.util.ImmutableCollectors.toImmutableList;
+import static com.facebook.presto.sql.SqlFormatterUtil.getFormattedSql;
+import static com.facebook.presto.sql.tree.CreateView.Security.INVOKER;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static java.util.Objects.requireNonNull;
-import static java.util.concurrent.CompletableFuture.completedFuture;
 
 public class CreateViewTask
         implements DataDefinitionTask<CreateView>
 {
     private final JsonCodec<ViewDefinition> codec;
     private final SqlParser sqlParser;
-    private final AccessControl accessControl;
-    private final boolean experimentalSyntaxEnabled;
 
     @Inject
     public CreateViewTask(
             JsonCodec<ViewDefinition> codec,
             SqlParser sqlParser,
-            AccessControl accessControl,
             FeaturesConfig featuresConfig)
     {
         this.codec = requireNonNull(codec, "codec is null");
         this.sqlParser = requireNonNull(sqlParser, "sqlParser is null");
-        this.accessControl = requireNonNull(accessControl, "accessControl is null");
         requireNonNull(featuresConfig, "featuresConfig is null");
-        this.experimentalSyntaxEnabled = featuresConfig.isExperimentalSyntaxEnabled();
     }
 
     @Override
@@ -74,58 +70,49 @@ public class CreateViewTask
     }
 
     @Override
-    public String explain(CreateView statement)
+    public String explain(CreateView statement, List<Expression> parameters)
     {
         return "CREATE VIEW " + statement.getName();
     }
 
     @Override
-    public CompletableFuture<?> execute(CreateView statement, TransactionManager transactionManager, Metadata metadata, AccessControl accessControl, QueryStateMachine stateMachine)
+    public ListenableFuture<?> execute(CreateView statement, TransactionManager transactionManager, Metadata metadata, AccessControl accessControl, QueryStateMachine stateMachine, List<Expression> parameters)
     {
         Session session = stateMachine.getSession();
         QualifiedObjectName name = createQualifiedObjectName(session, statement, statement.getName());
 
-        accessControl.checkCanCreateView(session.getRequiredTransactionId(), session.getIdentity(), name);
+        accessControl.checkCanCreateView(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), name);
 
-        String sql = getFormattedSql(statement);
+        String sql = getFormattedSql(statement.getQuery(), sqlParser, Optional.of(parameters));
 
-        Analysis analysis = analyzeStatement(statement, session, metadata);
+        Analysis analysis = analyzeStatement(statement, session, metadata, accessControl, parameters, stateMachine.getWarningCollector());
 
-        List<ViewColumn> columns = analysis.getOutputDescriptor()
+        List<ViewColumn> columns = analysis.getOutputDescriptor(statement.getQuery())
                 .getVisibleFields().stream()
                 .map(field -> new ViewColumn(field.getName().get(), field.getType()))
                 .collect(toImmutableList());
 
-        String data = codec.toJson(new ViewDefinition(sql, session.getCatalog(), session.getSchema(), columns, Optional.of(session.getUser())));
+        List<ColumnMetadata> columnMetadata = columns.stream()
+                .map(column -> new ColumnMetadata(column.getName(), column.getType()))
+                .collect(toImmutableList());
 
-        metadata.createView(session, name, data, statement.isReplace());
+        ConnectorTableMetadata viewMetadata = new ConnectorTableMetadata(toSchemaTableName(name), columnMetadata);
+        // use DEFINER security by default
+        Optional<String> owner = Optional.of(session.getUser());
+        if (statement.getSecurity().orElse(null) == INVOKER) {
+            owner = Optional.empty();
+        }
 
-        return completedFuture(null);
+        String data = codec.toJson(new ViewDefinition(sql, session.getCatalog(), session.getSchema(), columns, owner, !owner.isPresent()));
+
+        metadata.createView(session, name.getCatalogName(), viewMetadata, data, statement.isReplace());
+
+        return immediateFuture(null);
     }
 
-    private Analysis analyzeStatement(Statement statement, Session session, Metadata metadata)
+    private Analysis analyzeStatement(Statement statement, Session session, Metadata metadata, AccessControl accessControl, List<Expression> parameters, WarningCollector warningCollector)
     {
-        Analyzer analyzer = new Analyzer(session, metadata, sqlParser, accessControl, Optional.<QueryExplainer>empty(), experimentalSyntaxEnabled);
+        Analyzer analyzer = new Analyzer(session, metadata, sqlParser, accessControl, Optional.empty(), parameters, warningCollector);
         return analyzer.analyze(statement);
-    }
-
-    private String getFormattedSql(CreateView statement)
-    {
-        Query query = statement.getQuery();
-        String sql = formatSql(query);
-
-        // verify round-trip
-        Statement parsed;
-        try {
-            parsed = sqlParser.createStatement(sql);
-        }
-        catch (ParsingException e) {
-            throw new PrestoException(INTERNAL_ERROR, "Formatted query does not parse: " + query);
-        }
-        if (!query.equals(parsed)) {
-            throw new PrestoException(INTERNAL_ERROR, "Query does not round-trip: " + query);
-        }
-
-        return sql;
     }
 }

@@ -13,18 +13,21 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.operator.scalar.ScalarOperator;
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.type.StandardTypes;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.function.ScalarOperator;
+import com.facebook.presto.spi.function.SqlType;
 import org.joda.time.DateTimeField;
 import org.joda.time.chrono.ISOChronology;
 
 import java.util.concurrent.TimeUnit;
 
-import static com.facebook.presto.metadata.OperatorType.ADD;
-import static com.facebook.presto.metadata.OperatorType.SUBTRACT;
-import static com.facebook.presto.spi.type.DateTimeEncoding.unpackMillisUtc;
-import static com.facebook.presto.spi.type.DateTimeEncoding.updateMillisUtc;
+import static com.facebook.presto.common.function.OperatorType.ADD;
+import static com.facebook.presto.common.function.OperatorType.SUBTRACT;
+import static com.facebook.presto.common.type.DateTimeEncoding.unpackMillisUtc;
+import static com.facebook.presto.common.type.DateTimeEncoding.updateMillisUtc;
+import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static com.facebook.presto.util.DateTimeZoneIndex.getChronology;
 import static com.facebook.presto.util.DateTimeZoneIndex.unpackChronology;
 
@@ -42,7 +45,7 @@ public final class DateTimeOperators
     public static long datePlusIntervalDayToSecond(@SqlType(StandardTypes.DATE) long left, @SqlType(StandardTypes.INTERVAL_DAY_TO_SECOND) long right)
     {
         if (MILLIS_OF_DAY.get(right) != 0) {
-            throw new IllegalArgumentException("Can not add hour, minutes or seconds to a Date");
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Cannot add hour, minutes or seconds to a date");
         }
         return left + TimeUnit.MILLISECONDS.toDays(right);
     }
@@ -52,23 +55,23 @@ public final class DateTimeOperators
     public static long intervalDayToSecondPlusDate(@SqlType(StandardTypes.INTERVAL_DAY_TO_SECOND) long left, @SqlType(StandardTypes.DATE) long right)
     {
         if (MILLIS_OF_DAY.get(left) != 0) {
-            throw new IllegalArgumentException("Can not add hour, minutes or seconds to a Date");
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Cannot add hour, minutes or seconds to a date");
         }
         return TimeUnit.MILLISECONDS.toDays(left) + right;
     }
 
     @ScalarOperator(ADD)
     @SqlType(StandardTypes.TIME)
-    public static long timePlusIntervalDayToSecond(ConnectorSession session, @SqlType(StandardTypes.TIME) long left, @SqlType(StandardTypes.INTERVAL_DAY_TO_SECOND) long right)
+    public static long timePlusIntervalDayToSecond(SqlFunctionProperties properties, @SqlType(StandardTypes.TIME) long left, @SqlType(StandardTypes.INTERVAL_DAY_TO_SECOND) long right)
     {
-        return modulo24Hour(getChronology(session.getTimeZoneKey()), left + right);
+        return modulo24Hour(getChronology(properties.getTimeZoneKey()), left + right);
     }
 
     @ScalarOperator(ADD)
     @SqlType(StandardTypes.TIME)
-    public static long intervalDayToSecondPlusTime(ConnectorSession session, @SqlType(StandardTypes.INTERVAL_DAY_TO_SECOND) long left, @SqlType(StandardTypes.TIME) long right)
+    public static long intervalDayToSecondPlusTime(SqlFunctionProperties properties, @SqlType(StandardTypes.INTERVAL_DAY_TO_SECOND) long left, @SqlType(StandardTypes.TIME) long right)
     {
-        return modulo24Hour(getChronology(session.getTimeZoneKey()), left + right);
+        return modulo24Hour(getChronology(properties.getTimeZoneKey()), left + right);
     }
 
     @ScalarOperator(ADD)
@@ -159,16 +162,26 @@ public final class DateTimeOperators
 
     @ScalarOperator(ADD)
     @SqlType(StandardTypes.TIMESTAMP)
-    public static long timestampPlusIntervalYearToMonth(ConnectorSession session, @SqlType(StandardTypes.TIMESTAMP) long left, @SqlType(StandardTypes.INTERVAL_YEAR_TO_MONTH) long right)
+    public static long timestampPlusIntervalYearToMonth(SqlFunctionProperties properties, @SqlType(StandardTypes.TIMESTAMP) long left, @SqlType(StandardTypes.INTERVAL_YEAR_TO_MONTH) long right)
     {
-        return getChronology(session.getTimeZoneKey()).monthOfYear().add(left, right);
+        if (properties.isLegacyTimestamp()) {
+            return getChronology(properties.getTimeZoneKey()).monthOfYear().add(left, right);
+        }
+        else {
+            return MONTH_OF_YEAR_UTC.add(left, right);
+        }
     }
 
     @ScalarOperator(ADD)
     @SqlType(StandardTypes.TIMESTAMP)
-    public static long intervalYearToMonthPlusTimestamp(ConnectorSession session, @SqlType(StandardTypes.INTERVAL_YEAR_TO_MONTH) long left, @SqlType(StandardTypes.TIMESTAMP) long right)
+    public static long intervalYearToMonthPlusTimestamp(SqlFunctionProperties properties, @SqlType(StandardTypes.INTERVAL_YEAR_TO_MONTH) long left, @SqlType(StandardTypes.TIMESTAMP) long right)
     {
-        return getChronology(session.getTimeZoneKey()).monthOfYear().add(right, left);
+        if (properties.isLegacyTimestamp()) {
+            return getChronology(properties.getTimeZoneKey()).monthOfYear().add(right, left);
+        }
+        else {
+            return MONTH_OF_YEAR_UTC.add(right, left);
+        }
     }
 
     @ScalarOperator(ADD)
@@ -190,16 +203,16 @@ public final class DateTimeOperators
     public static long dateMinusIntervalDayToSecond(@SqlType(StandardTypes.DATE) long left, @SqlType(StandardTypes.INTERVAL_DAY_TO_SECOND) long right)
     {
         if (MILLIS_OF_DAY.get(right) != 0) {
-            throw new IllegalArgumentException("Can not subtract hour, minutes or seconds from a Date");
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Cannot subtract hour, minutes or seconds from a date");
         }
         return left - TimeUnit.MILLISECONDS.toDays(right);
     }
 
     @ScalarOperator(SUBTRACT)
     @SqlType(StandardTypes.TIME)
-    public static long timeMinusIntervalDayToSecond(ConnectorSession session, @SqlType(StandardTypes.TIME) long left, @SqlType(StandardTypes.INTERVAL_DAY_TO_SECOND) long right)
+    public static long timeMinusIntervalDayToSecond(SqlFunctionProperties properties, @SqlType(StandardTypes.TIME) long left, @SqlType(StandardTypes.INTERVAL_DAY_TO_SECOND) long right)
     {
-        return modulo24Hour(getChronology(session.getTimeZoneKey()), left - right);
+        return modulo24Hour(getChronology(properties.getTimeZoneKey()), left - right);
     }
 
     @ScalarOperator(SUBTRACT)
@@ -225,7 +238,7 @@ public final class DateTimeOperators
 
     @ScalarOperator(SUBTRACT)
     @SqlType(StandardTypes.DATE)
-    public static long dateMinusIntervalYearToMonth(ConnectorSession session, @SqlType(StandardTypes.DATE) long left, @SqlType(StandardTypes.INTERVAL_YEAR_TO_MONTH) long right)
+    public static long dateMinusIntervalYearToMonth(SqlFunctionProperties properties, @SqlType(StandardTypes.DATE) long left, @SqlType(StandardTypes.INTERVAL_YEAR_TO_MONTH) long right)
     {
         long millis = MONTH_OF_YEAR_UTC.add(TimeUnit.DAYS.toMillis(left), -right);
         return TimeUnit.MILLISECONDS.toDays(millis);
@@ -247,9 +260,14 @@ public final class DateTimeOperators
 
     @ScalarOperator(SUBTRACT)
     @SqlType(StandardTypes.TIMESTAMP)
-    public static long timestampMinusIntervalYearToMonth(ConnectorSession session, @SqlType(StandardTypes.TIMESTAMP) long left, @SqlType(StandardTypes.INTERVAL_YEAR_TO_MONTH) long right)
+    public static long timestampMinusIntervalYearToMonth(SqlFunctionProperties properties, @SqlType(StandardTypes.TIMESTAMP) long left, @SqlType(StandardTypes.INTERVAL_YEAR_TO_MONTH) long right)
     {
-        return getChronology(session.getTimeZoneKey()).monthOfYear().add(left, -right);
+        if (properties.isLegacyTimestamp()) {
+            return getChronology(properties.getTimeZoneKey()).monthOfYear().add(left, -right);
+        }
+        else {
+            return MONTH_OF_YEAR_UTC.add(left, -right);
+        }
     }
 
     @ScalarOperator(SUBTRACT)
@@ -263,5 +281,10 @@ public final class DateTimeOperators
     public static int modulo24Hour(ISOChronology chronology, long millis)
     {
         return chronology.millisOfDay().get(millis) - chronology.getZone().getOffset(millis);
+    }
+
+    public static long modulo24Hour(long millis)
+    {
+        return MILLIS_OF_DAY.get(millis);
     }
 }

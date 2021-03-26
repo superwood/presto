@@ -13,10 +13,10 @@
  */
 package com.facebook.presto;
 
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.BigintType;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.BigintType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.type.TypeUtils;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
@@ -134,6 +134,11 @@ public class RowPagesBuilder
         if (hashEnabled) {
             return ImmutableList.copyOf(Iterables.concat(types, ImmutableList.of(BigintType.BIGINT)));
         }
+        return types;
+    }
+
+    public List<Type> getTypesWithoutHash()
+    {
         return types;
     }
 

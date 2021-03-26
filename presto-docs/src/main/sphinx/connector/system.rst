@@ -28,7 +28,7 @@ Query one of the tables::
 
 Kill a running query::
 
-    CALL system.runtime.kill_query('20151207_215727_00146_tx3nr');
+    CALL system.runtime.kill_query(query_id => '20151207_215727_00146_tx3nr', message => 'Using too many resources');
 
 System Connector Tables
 -----------------------
@@ -37,6 +37,12 @@ System Connector Tables
 ^^^^^^^^^^^^^^^^^^^^^
 
 The catalogs table contains the list of available catalogs.
+
+``metadata.schema_properties``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The schema properties table contains the list of available properties
+that can be set when creating a new schema.
 
 ``metadata.table_properties``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -76,6 +82,7 @@ idle time, initialization parameters, and accessed catalogs.
 System Connector Procedures
 ---------------------------
 
-.. function:: runtime.kill_query(id)
+.. function:: runtime.kill_query(query_id, message)
 
-    Kill the query with the specified ``id``.
+    Kill the query identified by ``query_id``. The query failure message
+    will include the specified ``message``.

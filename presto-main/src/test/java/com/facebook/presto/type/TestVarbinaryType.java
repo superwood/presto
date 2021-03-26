@@ -13,14 +13,13 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.SqlVarbinary;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.SqlVarbinary;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 
 public class TestVarbinaryType
         extends AbstractTestType
@@ -32,7 +31,7 @@ public class TestVarbinaryType
 
     public static Block createTestBlock()
     {
-        BlockBuilder blockBuilder = VARBINARY.createBlockBuilder(new BlockBuilderStatus(), 15);
+        BlockBuilder blockBuilder = VARBINARY.createBlockBuilder(null, 15);
         VARBINARY.writeSlice(blockBuilder, Slices.utf8Slice("apple"));
         VARBINARY.writeSlice(blockBuilder, Slices.utf8Slice("apple"));
         VARBINARY.writeSlice(blockBuilder, Slices.utf8Slice("apple"));

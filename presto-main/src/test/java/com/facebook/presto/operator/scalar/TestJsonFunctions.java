@@ -15,11 +15,11 @@ package com.facebook.presto.operator.scalar;
 
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.JsonType.JSON;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static com.facebook.presto.type.JsonType.JSON;
 import static io.airlift.slice.Slices.utf8Slice;
 import static java.lang.String.format;
 
@@ -27,16 +27,41 @@ public class TestJsonFunctions
         extends AbstractTestFunctions
 {
     @Test
+    public void testIsJsonScalar()
+    {
+        assertFunction("IS_JSON_SCALAR(null)", BOOLEAN, null);
+
+        assertFunction("IS_JSON_SCALAR(JSON 'null')", BOOLEAN, true);
+        assertFunction("IS_JSON_SCALAR(JSON 'true')", BOOLEAN, true);
+        assertFunction("IS_JSON_SCALAR(JSON '1')", BOOLEAN, true);
+        assertFunction("IS_JSON_SCALAR(JSON '\"str\"')", BOOLEAN, true);
+        assertFunction("IS_JSON_SCALAR('null')", BOOLEAN, true);
+        assertFunction("IS_JSON_SCALAR('true')", BOOLEAN, true);
+        assertFunction("IS_JSON_SCALAR('1')", BOOLEAN, true);
+        assertFunction("IS_JSON_SCALAR('\"str\"')", BOOLEAN, true);
+
+        assertFunction("IS_JSON_SCALAR(JSON '[1, 2, 3]')", BOOLEAN, false);
+        assertFunction("IS_JSON_SCALAR(JSON '{\"a\": 1, \"b\": 2}')", BOOLEAN, false);
+        assertFunction("IS_JSON_SCALAR('[1, 2, 3]')", BOOLEAN, false);
+        assertFunction("IS_JSON_SCALAR('{\"a\": 1, \"b\": 2}')", BOOLEAN, false);
+
+        assertInvalidFunction("IS_JSON_SCALAR('')", INVALID_FUNCTION_ARGUMENT, "Invalid JSON value: ");
+        assertInvalidFunction("IS_JSON_SCALAR('[1')", INVALID_FUNCTION_ARGUMENT, "Invalid JSON value: [1");
+        assertInvalidFunction("IS_JSON_SCALAR('1 trailing')", INVALID_FUNCTION_ARGUMENT, "Invalid JSON value: 1 trailing");
+        assertInvalidFunction("IS_JSON_SCALAR('[1, 2] trailing')", INVALID_FUNCTION_ARGUMENT, "Invalid JSON value: [1, 2] trailing");
+    }
+
+    @Test
     public void testJsonArrayLength()
     {
-        assertFunction("JSON_ARRAY_LENGTH('[]')", BIGINT, 0);
-        assertFunction("JSON_ARRAY_LENGTH('[1]')", BIGINT, 1);
-        assertFunction("JSON_ARRAY_LENGTH('[1, \"foo\", null]')", BIGINT, 3);
-        assertFunction("JSON_ARRAY_LENGTH('[2, 4, {\"a\": [8, 9]}, [], [5], 4]')", BIGINT, 6);
-        assertFunction("JSON_ARRAY_LENGTH(JSON '[]')", BIGINT, 0);
-        assertFunction("JSON_ARRAY_LENGTH(JSON '[1]')", BIGINT, 1);
-        assertFunction("JSON_ARRAY_LENGTH(JSON '[1, \"foo\", null]')", BIGINT, 3);
-        assertFunction("JSON_ARRAY_LENGTH(JSON '[2, 4, {\"a\": [8, 9]}, [], [5], 4]')", BIGINT, 6);
+        assertFunction("JSON_ARRAY_LENGTH('[]')", BIGINT, 0L);
+        assertFunction("JSON_ARRAY_LENGTH('[1]')", BIGINT, 1L);
+        assertFunction("JSON_ARRAY_LENGTH('[1, \"foo\", null]')", BIGINT, 3L);
+        assertFunction("JSON_ARRAY_LENGTH('[2, 4, {\"a\": [8, 9]}, [], [5], 4]')", BIGINT, 6L);
+        assertFunction("JSON_ARRAY_LENGTH(JSON '[]')", BIGINT, 0L);
+        assertFunction("JSON_ARRAY_LENGTH(JSON '[1]')", BIGINT, 1L);
+        assertFunction("JSON_ARRAY_LENGTH(JSON '[1, \"foo\", null]')", BIGINT, 3L);
+        assertFunction("JSON_ARRAY_LENGTH(JSON '[2, 4, {\"a\": [8, 9]}, [], [5], 4]')", BIGINT, 6L);
         assertFunction("JSON_ARRAY_LENGTH(null)", BIGINT, null);
     }
 
@@ -165,6 +190,7 @@ public class TestJsonFunctions
         assertFunction("JSON_ARRAY_GET('', null)", JSON, null);
         assertFunction("JSON_ARRAY_GET('', 1)", JSON, null);
         assertFunction("JSON_ARRAY_GET('', -1)", JSON, null);
+        assertFunction("JSON_ARRAY_GET('[1]', -9223372036854775807 - 1)", JSON, null);
     }
 
     @Test
@@ -182,6 +208,7 @@ public class TestJsonFunctions
         assertFunction("JSON_ARRAY_GET('[]', 0)", JSON, null);
         assertFunction("JSON_ARRAY_GET('[null]', 0)", JSON, null);
         assertFunction("JSON_ARRAY_GET('[]', null)", JSON, null);
+        assertFunction("JSON_ARRAY_GET('[1]', -9223372036854775807 - 1)", JSON, null);
     }
 
     @Test
@@ -208,16 +235,14 @@ public class TestJsonFunctions
         assertFunction(
                 "JSON_ARRAY_GET('[true, false, false, true, true, false]', 5)",
                 JSON,
-                utf8Slice(String.valueOf(false))
-        );
+                utf8Slice(String.valueOf(false)));
         assertFunction("JSON_ARRAY_GET(JSON '[true]', 0)", JSON, utf8Slice(String.valueOf(true)));
         assertFunction("JSON_ARRAY_GET(JSON '[true, null]', 1)", JSON, null);
         assertFunction("JSON_ARRAY_GET(JSON '[false, false, true]', 1)", JSON, utf8Slice(String.valueOf(false)));
         assertFunction(
                 "JSON_ARRAY_GET(JSON '[true, false, false, true, true, false]', 5)",
                 JSON,
-                utf8Slice(String.valueOf(false))
-        );
+                utf8Slice(String.valueOf(false)));
         assertFunction("JSON_ARRAY_GET('[true]', -1)", JSON, utf8Slice(String.valueOf(true)));
     }
 
@@ -252,13 +277,7 @@ public class TestJsonFunctions
     {
         assertInvalidFunction("JSON 'INVALID'", INVALID_FUNCTION_ARGUMENT);
         assertInvalidFunction("JSON_PARSE('INVALID')", INVALID_FUNCTION_ARGUMENT);
-    }
-
-    @Test
-    public void testTryInvalidJsonParse()
-    {
-        assertFunction("TRY (JSON 'INVALID')", JSON, null);
-        assertFunction("TRY (JSON_PARSE('INVALID'))", JSON, null);
+        assertInvalidFunction("JSON_PARSE('\"x\": 1')", INVALID_FUNCTION_ARGUMENT);
     }
 
     @Test
@@ -270,47 +289,26 @@ public class TestJsonFunctions
     @Test
     public void testJsonSize()
     {
-        assertFunction(format("JSON_SIZE('%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$"), BIGINT, 1);
-        assertFunction(format("JSON_SIZE('%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$.x"), BIGINT, 2);
-        assertFunction(format("JSON_SIZE('%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : [1,2,3], \"c\" : {\"w\":9}} }", "$.x"), BIGINT, 3);
-        assertFunction(format("JSON_SIZE('%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$.x.a"), BIGINT, 0);
-        assertFunction(format("JSON_SIZE('%s', '%s')", "[1,2,3]", "$"), BIGINT, 3);
+        assertFunction(format("JSON_SIZE('%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$"), BIGINT, 1L);
+        assertFunction(format("JSON_SIZE('%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$.x"), BIGINT, 2L);
+        assertFunction(format("JSON_SIZE('%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : [1,2,3], \"c\" : {\"w\":9}} }", "$.x"), BIGINT, 3L);
+        assertFunction(format("JSON_SIZE('%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$.x.a"), BIGINT, 0L);
+        assertFunction(format("JSON_SIZE('%s', '%s')", "[1,2,3]", "$"), BIGINT, 3L);
+        assertFunction(format("JSON_SIZE('%s', CHAR '%s')", "[1,2,3]", "$"), BIGINT, 3L);
         assertFunction(format("JSON_SIZE(null, '%s')", "$"), BIGINT, null);
         assertFunction(format("JSON_SIZE('%s', '%s')", "INVALID_JSON", "$"), BIGINT, null);
         assertFunction(format("JSON_SIZE('%s', null)", "[1,2,3]"), BIGINT, null);
-        assertFunction(format("JSON_SIZE(JSON '%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$"), BIGINT, 1);
-        assertFunction(format("JSON_SIZE(JSON '%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$.x"), BIGINT, 2);
-        assertFunction(format("JSON_SIZE(JSON '%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : [1,2,3], \"c\" : {\"w\":9}} }", "$.x"), BIGINT, 3);
-        assertFunction(format("JSON_SIZE(JSON '%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$.x.a"), BIGINT, 0);
-        assertFunction(format("JSON_SIZE(JSON '%s', '%s')", "[1,2,3]", "$"), BIGINT, 3);
+        assertFunction(format("JSON_SIZE(JSON '%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$"), BIGINT, 1L);
+        assertFunction(format("JSON_SIZE(JSON '%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$.x"), BIGINT, 2L);
+        assertFunction(format("JSON_SIZE(JSON '%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : [1,2,3], \"c\" : {\"w\":9}} }", "$.x"), BIGINT, 3L);
+        assertFunction(format("JSON_SIZE(JSON '%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$.x.a"), BIGINT, 0L);
+        assertFunction(format("JSON_SIZE(JSON '%s', '%s')", "[1,2,3]", "$"), BIGINT, 3L);
         assertFunction(format("JSON_SIZE(null, '%s')", "$"), BIGINT, null);
         assertFunction(format("JSON_SIZE(JSON '%s', null)", "[1,2,3]"), BIGINT, null);
         assertInvalidFunction(format("JSON_SIZE('%s', '%s')", "{\"\":\"\"}", ""), "Invalid JSON path: ''");
+        assertInvalidFunction(format("JSON_SIZE('%s', CHAR '%s')", "{\"\":\"\"}", " "), "Invalid JSON path: ' '");
         assertInvalidFunction(format("JSON_SIZE('%s', '%s')", "{\"\":\"\"}", "."), "Invalid JSON path: '.'");
         assertInvalidFunction(format("JSON_SIZE('%s', '%s')", "{\"\":\"\"}", "null"), "Invalid JSON path: 'null'");
         assertInvalidFunction(format("JSON_SIZE('%s', '%s')", "{\"\":\"\"}", null), "Invalid JSON path: 'null'");
-    }
-
-    @Test
-    public void testJsonEquality()
-    {
-        assertFunction("JSON '[1,2,3]' = JSON '[1,2,3]'", BOOLEAN, true);
-        assertFunction("JSON '{\"a\":1, \"b\":2}' = JSON '{\"b\":2, \"a\":1}'", BOOLEAN, true);
-        assertFunction("JSON '{\"a\":1, \"b\":2}' = CAST(MAP(ARRAY['b','a'], ARRAY[2,1]) AS JSON)", BOOLEAN, true);
-        assertFunction("JSON 'null' = JSON 'null'", BOOLEAN, true);
-        assertFunction("JSON 'true' = JSON 'true'", BOOLEAN, true);
-        assertFunction("JSON '{\"x\":\"y\"}' = JSON '{\"x\":\"y\"}'", BOOLEAN, true);
-        assertFunction("JSON '[1,2,3]' = JSON '[2,3,1]'", BOOLEAN, false);
-        assertFunction("JSON '{\"p_1\": 1, \"p_2\":\"v_2\", \"p_3\":null, \"p_4\":true, \"p_5\": {\"p_1\":1}}' = " +
-                "JSON '{\"p_2\":\"v_2\", \"p_4\":true, \"p_1\": 1, \"p_3\":null, \"p_5\": {\"p_1\":1}}'", BOOLEAN, true);
-
-        assertFunction("JSON '[1,2,3]' != JSON '[1,2,3]'", BOOLEAN, false);
-        assertFunction("JSON '{\"a\":1, \"b\":2}' != JSON '{\"b\":2, \"a\":1}'", BOOLEAN, false);
-        assertFunction("JSON 'null' != JSON 'null'", BOOLEAN, false);
-        assertFunction("JSON 'true' != JSON 'true'", BOOLEAN, false);
-        assertFunction("JSON '{\"x\":\"y\"}' != JSON '{\"x\":\"y\"}'", BOOLEAN, false);
-        assertFunction("JSON '[1,2,3]' != JSON '[2,3,1]'", BOOLEAN, true);
-        assertFunction("JSON '{\"p_1\": 1, \"p_2\":\"v_2\", \"p_3\":null, \"p_4\":true, \"p_5\": {\"p_1\":1}}' != " +
-                "JSON '{\"p_2\":\"v_2\", \"p_4\":true, \"p_1\": 1, \"p_3\":null, \"p_5\": {\"p_1\":1}}'", BOOLEAN, false);
     }
 }

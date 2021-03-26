@@ -13,19 +13,27 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.metadata.Signature;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.metadata.BoundVariables;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.SqlScalarFunction;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.ArgumentProperty;
+import com.facebook.presto.spi.function.FunctionHandle;
+import com.facebook.presto.spi.function.FunctionKind;
+import com.facebook.presto.spi.function.Signature;
+import com.facebook.presto.spi.function.SqlFunctionVisibility;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Primitives;
 
 import java.lang.invoke.MethodHandle;
-import java.util.Map;
+import java.util.List;
 
-import static com.facebook.presto.metadata.Signature.typeParameter;
-import static com.facebook.presto.type.UnknownType.UNKNOWN;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.metadata.BuiltInTypeAndFunctionNamespaceManager.DEFAULT_NAMESPACE;
+import static com.facebook.presto.metadata.CastType.CAST;
+import static com.facebook.presto.spi.function.Signature.typeVariable;
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.HIDDEN;
 import static java.lang.invoke.MethodHandles.catchException;
 import static java.lang.invoke.MethodHandles.constant;
 import static java.lang.invoke.MethodHandles.dropArguments;
@@ -35,16 +43,24 @@ public class TryCastFunction
         extends SqlScalarFunction
 {
     public static final TryCastFunction TRY_CAST = new TryCastFunction();
+    public static final String TRY_CAST_NAME = "TRY_CAST";
 
     public TryCastFunction()
     {
-        super("TRY_CAST", ImmutableList.of(typeParameter("F"), typeParameter("T")), "T", ImmutableList.of("F"));
+        super(new Signature(
+                QualifiedObjectName.valueOf(DEFAULT_NAMESPACE, TRY_CAST_NAME),
+                FunctionKind.SCALAR,
+                ImmutableList.of(typeVariable("F"), typeVariable("T")),
+                ImmutableList.of(),
+                parseTypeSignature("T"),
+                ImmutableList.of(parseTypeSignature("F")),
+                false));
     }
 
     @Override
-    public boolean isHidden()
+    public final SqlFunctionVisibility getVisibility()
     {
-        return true;
+        return HIDDEN;
     }
 
     @Override
@@ -60,27 +76,25 @@ public class TryCastFunction
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(Map<String, Type> types, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public BuiltInScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, FunctionAndTypeManager functionAndTypeManager)
     {
-        Type fromType = types.get("F");
-        Type toType = types.get("T");
+        Type fromType = boundVariables.getTypeVariable("F");
+        Type toType = boundVariables.getTypeVariable("T");
 
         Class<?> returnType = Primitives.wrap(toType.getJavaType());
+        List<ArgumentProperty> argumentProperties;
         MethodHandle tryCastHandle;
 
-        if (fromType.equals(UNKNOWN)) {
-            tryCastHandle = dropArguments(constant(returnType, null), 0, Void.class);
-        }
-        else {
-            // the resulting method needs to return a boxed type
-            Signature signature = functionRegistry.getCoercion(fromType, toType);
-            MethodHandle coercion = functionRegistry.getScalarFunctionImplementation(signature).getMethodHandle();
-            coercion = coercion.asType(methodType(returnType, coercion.type()));
+        // the resulting method needs to return a boxed type
+        FunctionHandle functionHandle = functionAndTypeManager.lookupCast(CAST, fromType.getTypeSignature(), toType.getTypeSignature());
+        BuiltInScalarFunctionImplementation implementation = functionAndTypeManager.getBuiltInScalarFunctionImplementation(functionHandle);
+        argumentProperties = ImmutableList.of(implementation.getArgumentProperty(0));
+        MethodHandle coercion = implementation.getMethodHandle();
+        coercion = coercion.asType(methodType(returnType, coercion.type()));
 
-            MethodHandle exceptionHandler = dropArguments(constant(returnType, null), 0, RuntimeException.class);
-            tryCastHandle = catchException(coercion, RuntimeException.class, exceptionHandler);
-        }
+        MethodHandle exceptionHandler = dropArguments(constant(returnType, null), 0, RuntimeException.class);
+        tryCastHandle = catchException(coercion, RuntimeException.class, exceptionHandler);
 
-        return new ScalarFunctionImplementation(true, ImmutableList.of(true), tryCastHandle, isDeterministic());
+        return new BuiltInScalarFunctionImplementation(true, argumentProperties, tryCastHandle);
     }
 }

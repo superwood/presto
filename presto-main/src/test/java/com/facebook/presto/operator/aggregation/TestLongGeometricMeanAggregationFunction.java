@@ -13,15 +13,14 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.StandardTypes;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.StandardTypes;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
 
 public class TestLongGeometricMeanAggregationFunction
         extends AbstractTestAggregationFunction
@@ -29,7 +28,7 @@ public class TestLongGeometricMeanAggregationFunction
     @Override
     public Block[] getSequenceBlocks(int start, int length)
     {
-        BlockBuilder blockBuilder = DOUBLE.createBlockBuilder(new BlockBuilderStatus(), length);
+        BlockBuilder blockBuilder = DOUBLE.createBlockBuilder(null, length);
         for (int i = start; i < start + length; i++) {
             DOUBLE.writeDouble(blockBuilder, (double) i);
         }

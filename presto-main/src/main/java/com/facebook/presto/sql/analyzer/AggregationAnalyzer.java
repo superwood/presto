@@ -14,32 +14,44 @@
 package com.facebook.presto.sql.analyzer;
 
 import com.facebook.presto.metadata.Metadata;
+import com.facebook.presto.spi.PrestoWarning;
+import com.facebook.presto.spi.WarningCollector;
+import com.facebook.presto.sql.planner.ParameterRewriter;
+import com.facebook.presto.sql.relational.FunctionResolution;
 import com.facebook.presto.sql.tree.ArithmeticBinaryExpression;
 import com.facebook.presto.sql.tree.ArithmeticUnaryExpression;
 import com.facebook.presto.sql.tree.ArrayConstructor;
 import com.facebook.presto.sql.tree.AstVisitor;
+import com.facebook.presto.sql.tree.AtTimeZone;
 import com.facebook.presto.sql.tree.BetweenPredicate;
+import com.facebook.presto.sql.tree.BindExpression;
 import com.facebook.presto.sql.tree.Cast;
 import com.facebook.presto.sql.tree.CoalesceExpression;
 import com.facebook.presto.sql.tree.ComparisonExpression;
 import com.facebook.presto.sql.tree.CurrentTime;
 import com.facebook.presto.sql.tree.DereferenceExpression;
+import com.facebook.presto.sql.tree.ExistsPredicate;
 import com.facebook.presto.sql.tree.Expression;
+import com.facebook.presto.sql.tree.ExpressionTreeRewriter;
 import com.facebook.presto.sql.tree.Extract;
+import com.facebook.presto.sql.tree.FieldReference;
 import com.facebook.presto.sql.tree.FunctionCall;
+import com.facebook.presto.sql.tree.GroupingOperation;
+import com.facebook.presto.sql.tree.Identifier;
 import com.facebook.presto.sql.tree.IfExpression;
 import com.facebook.presto.sql.tree.InListExpression;
 import com.facebook.presto.sql.tree.InPredicate;
 import com.facebook.presto.sql.tree.IsNotNullPredicate;
 import com.facebook.presto.sql.tree.IsNullPredicate;
+import com.facebook.presto.sql.tree.LambdaExpression;
 import com.facebook.presto.sql.tree.LikePredicate;
 import com.facebook.presto.sql.tree.Literal;
 import com.facebook.presto.sql.tree.LogicalBinaryExpression;
 import com.facebook.presto.sql.tree.Node;
+import com.facebook.presto.sql.tree.NodeRef;
 import com.facebook.presto.sql.tree.NotExpression;
 import com.facebook.presto.sql.tree.NullIfExpression;
-import com.facebook.presto.sql.tree.QualifiedName;
-import com.facebook.presto.sql.tree.QualifiedNameReference;
+import com.facebook.presto.sql.tree.Parameter;
 import com.facebook.presto.sql.tree.Row;
 import com.facebook.presto.sql.tree.SearchedCaseExpression;
 import com.facebook.presto.sql.tree.SimpleCaseExpression;
@@ -51,22 +63,38 @@ import com.facebook.presto.sql.tree.WhenClause;
 import com.facebook.presto.sql.tree.Window;
 import com.facebook.presto.sql.tree.WindowFrame;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
+import com.google.common.collect.Multimap;
 
 import javax.annotation.Nullable;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
+import static com.facebook.presto.spi.StandardWarningCode.PERFORMANCE_WARNING;
+import static com.facebook.presto.spi.function.FunctionKind.AGGREGATE;
+import static com.facebook.presto.sql.NodeUtils.getSortItemsFromOrderBy;
+import static com.facebook.presto.sql.analyzer.ExpressionTreeUtils.checkAndGetColumnReferenceField;
+import static com.facebook.presto.sql.analyzer.ExpressionTreeUtils.extractAggregateFunctions;
+import static com.facebook.presto.sql.analyzer.ExpressionTreeUtils.extractWindowFunctions;
+import static com.facebook.presto.sql.analyzer.FreeLambdaReferenceExtractor.hasFreeReferencesToLambdaArgument;
+import static com.facebook.presto.sql.analyzer.ScopeReferenceExtractor.getReferencesToScope;
+import static com.facebook.presto.sql.analyzer.ScopeReferenceExtractor.hasReferencesToScope;
+import static com.facebook.presto.sql.analyzer.ScopeReferenceExtractor.isFieldFromScope;
+import static com.facebook.presto.sql.analyzer.SemanticErrorCode.INVALID_PROCEDURE_ARGUMENTS;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.MUST_BE_AGGREGATE_OR_GROUP_BY;
+import static com.facebook.presto.sql.analyzer.SemanticErrorCode.MUST_BE_AGGREGATION_FUNCTION;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.NESTED_AGGREGATION;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.NESTED_WINDOW;
-import static com.facebook.presto.util.ImmutableCollectors.toImmutableList;
-import static com.facebook.presto.util.Types.checkType;
+import static com.facebook.presto.sql.analyzer.SemanticErrorCode.ORDER_BY_MUST_BE_IN_AGGREGATE;
+import static com.facebook.presto.sql.analyzer.SemanticErrorCode.REFERENCE_TO_OUTPUT_ATTRIBUTE_WITHIN_ORDER_BY_AGGREGATION;
+import static com.facebook.presto.sql.analyzer.SemanticErrorCode.REFERENCE_TO_OUTPUT_ATTRIBUTE_WITHIN_ORDER_BY_GROUPING;
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.base.Predicates.equalTo;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -75,65 +103,78 @@ import static java.util.Objects.requireNonNull;
 class AggregationAnalyzer
 {
     // fields and expressions in the group by clause
-    private final List<Integer> fieldIndexes;
+    private final Set<FieldId> groupingFields;
     private final List<Expression> expressions;
+    private final Multimap<NodeRef<Expression>, FieldId> columnReferences;
 
     private final Metadata metadata;
-    private final Set<Expression> columnReferences;
+    private final Analysis analysis;
 
-    private final RelationType tupleDescriptor;
+    private final Scope sourceScope;
+    private final Optional<Scope> orderByScope;
+    private final WarningCollector warningCollector;
+    private final FunctionResolution functionResolution;
 
-    public AggregationAnalyzer(List<FieldOrExpression> groupByExpressions, Metadata metadata, RelationType tupleDescriptor, Set<Expression> columnReferences)
+    public static void verifySourceAggregations(
+            List<Expression> groupByExpressions,
+            Scope sourceScope,
+            Expression expression,
+            Metadata metadata,
+            Analysis analysis,
+            WarningCollector warningCollector)
+    {
+        AggregationAnalyzer analyzer = new AggregationAnalyzer(groupByExpressions, sourceScope, Optional.empty(), metadata, analysis, warningCollector);
+        analyzer.analyze(expression);
+    }
+
+    public static void verifyOrderByAggregations(
+            List<Expression> groupByExpressions,
+            Scope sourceScope,
+            Scope orderByScope,
+            Expression expression,
+            Metadata metadata,
+            Analysis analysis,
+            WarningCollector warningCollector)
+    {
+        AggregationAnalyzer analyzer = new AggregationAnalyzer(groupByExpressions, sourceScope, Optional.of(orderByScope), metadata, analysis, warningCollector);
+        analyzer.analyze(expression);
+    }
+
+    private AggregationAnalyzer(List<Expression> groupByExpressions, Scope sourceScope, Optional<Scope> orderByScope, Metadata metadata, Analysis analysis, WarningCollector warningCollector)
     {
         requireNonNull(groupByExpressions, "groupByExpressions is null");
+        requireNonNull(sourceScope, "sourceScope is null");
+        requireNonNull(orderByScope, "orderByScope is null");
         requireNonNull(metadata, "metadata is null");
-        requireNonNull(tupleDescriptor, "tupleDescriptor is null");
-        requireNonNull(columnReferences, "columnReferences is null");
+        requireNonNull(analysis, "analysis is null");
+        requireNonNull(warningCollector, "warningCollector is null");
 
-        this.tupleDescriptor = tupleDescriptor;
+        this.sourceScope = sourceScope;
+        this.warningCollector = warningCollector;
+        this.orderByScope = orderByScope;
         this.metadata = metadata;
-        this.columnReferences = ImmutableSet.copyOf(columnReferences);
+        this.analysis = analysis;
+        this.functionResolution = new FunctionResolution(metadata.getFunctionAndTypeManager());
         this.expressions = groupByExpressions.stream()
-                .filter(FieldOrExpression::isExpression)
-                .map(FieldOrExpression::getExpression)
+                .map(e -> ExpressionTreeRewriter.rewriteWith(new ParameterRewriter(analysis.getParameters()), e))
                 .collect(toImmutableList());
 
-        ImmutableList.Builder<Integer> fieldIndexes = ImmutableList.builder();
+        this.columnReferences = analysis.getColumnReferenceFields();
 
-        fieldIndexes.addAll(groupByExpressions.stream()
-                .filter(FieldOrExpression::isFieldReference)
-                .map(FieldOrExpression::getFieldIndex)
-                .iterator());
+        this.groupingFields = groupByExpressions.stream()
+                .map(NodeRef::of)
+                .filter(columnReferences::containsKey)
+                .map(columnReferences::get)
+                .flatMap(Collection::stream)
+                .collect(toImmutableSet());
 
-        // For a query like "SELECT * FROM T GROUP BY a", groupByExpressions will contain "a",
-        // and the '*' will be expanded to Field references. Therefore we translate all simple name expressions
-        // in the group by clause to fields they reference so that the expansion from '*' can be matched against them
-        for (Expression expression : Iterables.filter(expressions, columnReferences::contains)) {
-            QualifiedName name;
-            if (expression instanceof QualifiedNameReference) {
-                name = ((QualifiedNameReference) expression).getName();
-            }
-            else {
-                name = DereferenceExpression.getQualifiedName(checkType(expression, DereferenceExpression.class, "expression"));
-            }
-
-            List<Field> fields = tupleDescriptor.resolveFields(name);
-            checkState(fields.size() <= 1, "Found more than one field for name '%s': %s", name, fields);
-
-            if (fields.size() == 1) {
-                Field field = Iterables.getOnlyElement(fields);
-                fieldIndexes.add(tupleDescriptor.indexOf(field));
-            }
-        }
-        this.fieldIndexes = fieldIndexes.build();
+        this.groupingFields.forEach(fieldId -> {
+            checkState(isFieldFromScope(fieldId, sourceScope),
+                    "Grouping field %s should originate from %s", fieldId, sourceScope.getRelationType());
+        });
     }
 
-    public boolean analyze(int fieldIndex)
-    {
-        return Iterables.any(fieldIndexes, equalTo(fieldIndex));
-    }
-
-    public void analyze(Expression expression)
+    private void analyze(Expression expression)
     {
         Visitor visitor = new Visitor();
         if (!visitor.process(expression, null)) {
@@ -141,6 +182,9 @@ class AggregationAnalyzer
         }
     }
 
+    /**
+     * visitor returns true if all expressions are constant with respect to the group.
+     */
     private class Visitor
             extends AstVisitor<Boolean, Void>
     {
@@ -151,10 +195,36 @@ class AggregationAnalyzer
         }
 
         @Override
+        protected Boolean visitAtTimeZone(AtTimeZone node, Void context)
+        {
+            return process(node.getValue(), context);
+        }
+
+        @Override
         protected Boolean visitSubqueryExpression(SubqueryExpression node, Void context)
         {
+            /*
+             * Column reference can resolve to (a) some subquery's scope, (b) a projection (ORDER BY scope),
+             * (c) source scope or (d) outer query scope (effectively a constant).
+             * From AggregationAnalyzer's perspective, only case (c) needs verification.
+             */
+            getReferencesToScope(node, analysis, sourceScope)
+                    .filter(expression -> !isGroupingKey(expression))
+                    .findFirst()
+                    .ifPresent(expression -> {
+                        throw new SemanticException(MUST_BE_AGGREGATE_OR_GROUP_BY, expression,
+                                "Subquery uses '%s' which must appear in GROUP BY clause", expression);
+                    });
+
             return true;
-       }
+        }
+
+        @Override
+        protected Boolean visitExists(ExistsPredicate node, Void context)
+        {
+            checkState(node.getSubquery() instanceof SubqueryExpression);
+            return process(node.getSubquery(), context);
+        }
 
         @Override
         protected Boolean visitSubscriptExpression(SubscriptExpression node, Void context)
@@ -258,32 +328,86 @@ class AggregationAnalyzer
         @Override
         protected Boolean visitFunctionCall(FunctionCall node, Void context)
         {
-            if (!node.getWindow().isPresent() && metadata.isAggregationFunction(node.getName())) {
-                AggregateExtractor aggregateExtractor = new AggregateExtractor(metadata);
-                WindowFunctionExtractor windowExtractor = new WindowFunctionExtractor();
-
-                for (Expression argument : node.getArguments()) {
-                    aggregateExtractor.process(argument, null);
-                    windowExtractor.process(argument, null);
+            if (metadata.getFunctionAndTypeManager().getFunctionMetadata(analysis.getFunctionHandle(node)).getFunctionKind() == AGGREGATE) {
+                if (functionResolution.isCountFunction(analysis.getFunctionHandle(node)) && node.isDistinct()) {
+                    warningCollector.add(new PrestoWarning(
+                            PERFORMANCE_WARNING,
+                            "COUNT(DISTINCT xxx) can be a very expensive operation when the cardinality is high for xxx. In most scenarios, using approx_distinct instead would be enough"));
                 }
+                if (!node.getWindow().isPresent()) {
+                    List<FunctionCall> aggregateFunctions = extractAggregateFunctions(analysis.getFunctionHandles(), node.getArguments(), metadata.getFunctionAndTypeManager());
+                    List<FunctionCall> windowFunctions = extractWindowFunctions(node.getArguments());
 
-                if (!aggregateExtractor.getAggregates().isEmpty()) {
-                    throw new SemanticException(NESTED_AGGREGATION,
+                    if (!aggregateFunctions.isEmpty()) {
+                        throw new SemanticException(NESTED_AGGREGATION,
+                                node,
+                                "Cannot nest aggregations inside aggregation '%s': %s",
+                                node.getName(),
+                                aggregateFunctions);
+                    }
+
+                    if (!windowFunctions.isEmpty()) {
+                        throw new SemanticException(NESTED_WINDOW,
+                                node,
+                                "Cannot nest window functions inside aggregation '%s': %s",
+                                node.getName(),
+                                windowFunctions);
+                    }
+
+                    if (node.getOrderBy().isPresent()) {
+                        List<Expression> sortKeys = node.getOrderBy().get().getSortItems().stream()
+                                .map(SortItem::getSortKey)
+                                .collect(toImmutableList());
+                        if (node.isDistinct()) {
+                            List<FieldId> fieldIds = node.getArguments().stream()
+                                    .map(NodeRef::of)
+                                    .map(columnReferences::get)
+                                    .filter(Objects::nonNull)
+                                    .flatMap(Collection::stream)
+                                    .collect(toImmutableList());
+                            for (Expression sortKey : sortKeys) {
+                                if (!node.getArguments().contains(sortKey)
+                                        && !(columnReferences.containsKey(NodeRef.of(sortKey)) && fieldIds.containsAll(columnReferences.get(NodeRef.of(sortKey))))) {
+                                    throw new SemanticException(
+                                            ORDER_BY_MUST_BE_IN_AGGREGATE,
+                                            sortKey,
+                                            "For aggregate function with DISTINCT, ORDER BY expressions must appear in arguments");
+                                }
+                            }
+                        }
+                        // ensure that no output fields are referenced from ORDER BY clause
+                        if (orderByScope.isPresent()) {
+                            for (Expression sortKey : sortKeys) {
+                                verifyNoOrderByReferencesToOutputColumns(
+                                        sortKey,
+                                        REFERENCE_TO_OUTPUT_ATTRIBUTE_WITHIN_ORDER_BY_AGGREGATION,
+                                        "ORDER BY clause in aggregation function must not reference query output columns");
+                            }
+                        }
+                    }
+
+                    // ensure that no output fields are referenced from ORDER BY clause
+                    if (orderByScope.isPresent()) {
+                        node.getArguments().stream()
+                                .forEach(argument -> verifyNoOrderByReferencesToOutputColumns(
+                                        argument,
+                                        REFERENCE_TO_OUTPUT_ATTRIBUTE_WITHIN_ORDER_BY_AGGREGATION,
+                                        "Invalid reference to output projection attribute from ORDER BY aggregation"));
+                    }
+
+                    return true;
+                }
+            }
+            else {
+                if (node.getFilter().isPresent()) {
+                    throw new SemanticException(MUST_BE_AGGREGATION_FUNCTION,
                             node,
-                            "Cannot nest aggregations inside aggregation '%s': %s",
-                            node.getName(),
-                            aggregateExtractor.getAggregates());
+                            "Filter is only valid for aggregation functions",
+                            node);
                 }
-
-                if (!windowExtractor.getWindowFunctions().isEmpty()) {
-                    throw new SemanticException(NESTED_WINDOW,
-                            node,
-                            "Cannot nest window functions inside aggregation '%s': %s",
-                            node.getName(),
-                            windowExtractor.getWindowFunctions());
+                if (node.getOrderBy().isPresent()) {
+                    throw new SemanticException(MUST_BE_AGGREGATION_FUNCTION, node, "ORDER BY is only valid for aggregation functions");
                 }
-
-                return true;
             }
 
             if (node.getWindow().isPresent() && !process(node.getWindow().get(), context)) {
@@ -291,6 +415,23 @@ class AggregationAnalyzer
             }
 
             return node.getArguments().stream().allMatch(expression -> process(expression, context));
+        }
+
+        @Override
+        protected Boolean visitLambdaExpression(LambdaExpression node, Void context)
+        {
+            return process(node.getBody(), context);
+        }
+
+        @Override
+        protected Boolean visitBindExpression(BindExpression node, Void context)
+        {
+            for (Expression value : node.getValues()) {
+                if (!process(value, context)) {
+                    return false;
+                }
+            }
+            return process(node.getFunction(), context);
         }
 
         @Override
@@ -305,7 +446,7 @@ class AggregationAnalyzer
                 }
             }
 
-            for (SortItem sortItem : node.getOrderBy()) {
+            for (SortItem sortItem : getSortItemsFromOrderBy(node.getOrderBy())) {
                 Expression expression = sortItem.getSortKey();
                 if (!process(expression, context)) {
                     throw new SemanticException(MUST_BE_AGGREGATE_OR_GROUP_BY,
@@ -342,30 +483,62 @@ class AggregationAnalyzer
         }
 
         @Override
-        protected Boolean visitQualifiedNameReference(QualifiedNameReference node, Void context)
+        protected Boolean visitIdentifier(Identifier node, Void context)
         {
-            return isField(node.getName());
+            if (analysis.getLambdaArgumentReferences().containsKey(NodeRef.of(node))) {
+                return true;
+            }
+            return isGroupingKey(node);
         }
 
         @Override
         protected Boolean visitDereferenceExpression(DereferenceExpression node, Void context)
         {
-            if (columnReferences.contains(node)) {
-                return isField(DereferenceExpression.getQualifiedName(node));
+            if (columnReferences.containsKey(NodeRef.<Expression>of(node))) {
+                return isGroupingKey(node);
             }
 
             // Allow SELECT col1.f1 FROM table1 GROUP BY col1
             return process(node.getBase(), context);
         }
 
-        private Boolean isField(QualifiedName qualifiedName)
+        private boolean isGroupingKey(Expression node)
         {
-            List<Field> fields = tupleDescriptor.resolveFields(qualifiedName);
-            checkState(!fields.isEmpty(), "No fields for name '%s'", qualifiedName);
-            checkState(fields.size() <= 1, "Found more than one field for name '%s': %s", qualifiedName, fields);
+            FieldId fieldId = checkAndGetColumnReferenceField(node, columnReferences);
 
-            Field field = Iterables.getOnlyElement(fields);
-            return fieldIndexes.contains(tupleDescriptor.indexOf(field));
+            if (orderByScope.isPresent() && isFieldFromScope(fieldId, orderByScope.get())) {
+                return true;
+            }
+
+            return groupingFields.contains(fieldId);
+        }
+
+        @Override
+        protected Boolean visitFieldReference(FieldReference node, Void context)
+        {
+            if (orderByScope.isPresent()) {
+                return true;
+            }
+
+            FieldId fieldId = checkAndGetColumnReferenceField(node, columnReferences);
+            boolean inGroup = groupingFields.contains(fieldId);
+            if (!inGroup) {
+                Field field = sourceScope.getRelationType().getFieldByIndex(node.getFieldIndex());
+
+                String column;
+                if (!field.getName().isPresent()) {
+                    column = Integer.toString(node.getFieldIndex() + 1);
+                }
+                else if (field.getRelationAlias().isPresent()) {
+                    column = String.format("'%s.%s'", field.getRelationAlias().get(), field.getName().get());
+                }
+                else {
+                    column = "'" + field.getName().get() + "'";
+                }
+
+                throw new SemanticException(MUST_BE_AGGREGATE_OR_GROUP_BY, node, "Column %s not in GROUP BY clause", column);
+            }
+            return inGroup;
         }
 
         @Override
@@ -446,13 +619,63 @@ class AggregationAnalyzer
         }
 
         @Override
+        public Boolean visitParameter(Parameter node, Void context)
+        {
+            if (analysis.isDescribe()) {
+                return true;
+            }
+            List<Expression> parameters = analysis.getParameters();
+            checkArgument(node.getPosition() < parameters.size(), "Invalid parameter number %s, max values is %s", node.getPosition(), parameters.size() - 1);
+            return process(parameters.get(node.getPosition()), context);
+        }
+
+        public Boolean visitGroupingOperation(GroupingOperation node, Void context)
+        {
+            // ensure that no output fields are referenced from ORDER BY clause
+            if (orderByScope.isPresent()) {
+                node.getGroupingColumns().forEach(groupingColumn -> verifyNoOrderByReferencesToOutputColumns(
+                        groupingColumn,
+                        REFERENCE_TO_OUTPUT_ATTRIBUTE_WITHIN_ORDER_BY_GROUPING,
+                        "Invalid reference to output of SELECT clause from grouping() expression in ORDER BY"));
+            }
+
+            Optional<Expression> argumentNotInGroupBy = node.getGroupingColumns().stream()
+                    .filter(argument -> !columnReferences.containsKey(NodeRef.of(argument)) || !isGroupingKey(argument))
+                    .findAny();
+            if (argumentNotInGroupBy.isPresent()) {
+                throw new SemanticException(
+                        INVALID_PROCEDURE_ARGUMENTS,
+                        node,
+                        "The arguments to GROUPING() must be expressions referenced by the GROUP BY at the associated query level. Mismatch due to %s.",
+                        argumentNotInGroupBy.get());
+            }
+            return true;
+        }
+
+        @Override
         public Boolean process(Node node, @Nullable Void context)
         {
-            if (expressions.stream().anyMatch(node::equals)) {
+            if (expressions.stream().anyMatch(node::equals)
+                    && (!orderByScope.isPresent() || !hasOrderByReferencesToOutputColumns(node))
+                    && !hasFreeReferencesToLambdaArgument(node, analysis)) {
                 return true;
             }
 
             return super.process(node, context);
         }
+    }
+
+    private boolean hasOrderByReferencesToOutputColumns(Node node)
+    {
+        return hasReferencesToScope(node, analysis, orderByScope.get());
+    }
+
+    private void verifyNoOrderByReferencesToOutputColumns(Node node, SemanticErrorCode errorCode, String errorString)
+    {
+        getReferencesToScope(node, analysis, orderByScope.get())
+                .findFirst()
+                .ifPresent(expression -> {
+                    throw new SemanticException(errorCode, expression, errorString);
+                });
     }
 }

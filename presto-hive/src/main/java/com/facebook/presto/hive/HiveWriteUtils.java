@@ -13,116 +13,222 @@
  */
 package com.facebook.presto.hive;
 
-import com.facebook.presto.hive.metastore.HiveMetastore;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.BigintType;
+import com.facebook.presto.common.type.BooleanType;
+import com.facebook.presto.common.type.CharType;
+import com.facebook.presto.common.type.DateType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.DoubleType;
+import com.facebook.presto.common.type.IntegerType;
+import com.facebook.presto.common.type.RealType;
+import com.facebook.presto.common.type.SmallintType;
+import com.facebook.presto.common.type.TimestampType;
+import com.facebook.presto.common.type.TinyintType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VarbinaryType;
+import com.facebook.presto.common.type.VarcharType;
+import com.facebook.presto.hive.RecordFileWriter.ExtendedRecordWriter;
+import com.facebook.presto.hive.metastore.Database;
+import com.facebook.presto.hive.metastore.Partition;
+import com.facebook.presto.hive.metastore.PrestoTableType;
+import com.facebook.presto.hive.metastore.SemiTransactionalHiveMetastore;
+import com.facebook.presto.hive.metastore.Storage;
+import com.facebook.presto.hive.metastore.Table;
+import com.facebook.presto.hive.s3.PrestoS3FileSystem;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaNotFoundException;
 import com.facebook.presto.spi.SchemaTableName;
-import com.facebook.presto.spi.StandardErrorCode;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.BigintType;
-import com.facebook.presto.spi.type.BooleanType;
-import com.facebook.presto.spi.type.DateType;
-import com.facebook.presto.spi.type.DoubleType;
-import com.facebook.presto.spi.type.TimestampType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarbinaryType;
-import com.facebook.presto.spi.type.VarcharType;
-import com.google.common.base.StandardSystemProperty;
 import com.google.common.collect.ImmutableList;
-import com.google.common.primitives.Ints;
+import com.google.common.primitives.Shorts;
+import com.google.common.primitives.SignedBytes;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.HadoopExtendedFileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.viewfs.ViewFileSystem;
+import org.apache.hadoop.hive.common.type.HiveVarchar;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.ProtectMode;
-import org.apache.hadoop.hive.metastore.api.Database;
-import org.apache.hadoop.hive.metastore.api.Order;
-import org.apache.hadoop.hive.metastore.api.Partition;
-import org.apache.hadoop.hive.metastore.api.SkewedInfo;
-import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
-import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator.RecordWriter;
 import org.apache.hadoop.hive.ql.io.HiveOutputFormat;
+import org.apache.hadoop.hive.ql.io.RCFile;
+import org.apache.hadoop.hive.ql.io.RCFileOutputFormat;
+import org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat;
+import org.apache.hadoop.hive.serde2.SerDeException;
+import org.apache.hadoop.hive.serde2.Serializer;
 import org.apache.hadoop.hive.serde2.io.DateWritable;
 import org.apache.hadoop.hive.serde2.io.DoubleWritable;
+import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
+import org.apache.hadoop.hive.serde2.io.ShortWritable;
 import org.apache.hadoop.hive.serde2.io.TimestampWritable;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory;
 import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector.PrimitiveCategory;
 import org.apache.hadoop.hive.serde2.objectinspector.SettableStructObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.StructField;
+import org.apache.hadoop.hive.serde2.typeinfo.DecimalTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.ListTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.MapTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.StructTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.apache.hadoop.io.BooleanWritable;
+import org.apache.hadoop.io.ByteWritable;
 import org.apache.hadoop.io.BytesWritable;
+import org.apache.hadoop.io.FloatWritable;
+import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.Writable;
+import org.apache.hadoop.io.compress.CompressionCodec;
+import org.apache.hadoop.io.compress.DefaultCodec;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.Reporter;
-import org.joda.time.DateTimeZone;
+import org.apache.hive.common.util.ReflectionUtil;
 
 import java.io.IOException;
-import java.sql.Date;
-import java.sql.Timestamp;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
-import java.util.concurrent.TimeUnit;
 
+import static com.facebook.presto.common.type.Chars.isCharType;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_DATABASE_LOCATION_ERROR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
-import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_METADATA;
-import static com.facebook.presto.hive.HiveErrorCode.HIVE_PATH_ALREADY_EXISTS;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_SERDE_NOT_FOUND;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_WRITER_DATA_ERROR;
-import static com.facebook.presto.hive.HiveSplitManager.PRESTO_OFFLINE;
-import static com.facebook.presto.hive.HiveUtil.checkCondition;
-import static com.facebook.presto.hive.HiveUtil.isArrayType;
-import static com.facebook.presto.hive.HiveUtil.isMapType;
-import static com.facebook.presto.hive.HiveUtil.isRowType;
-import static com.facebook.presto.hive.util.Types.checkType;
+import static com.facebook.presto.hive.HiveSessionProperties.getTemporaryStagingDirectoryPath;
+import static com.facebook.presto.hive.ParquetRecordWriterUtil.createParquetWriter;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.createDirectory;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.getField;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.getHiveDecimal;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.getProtectMode;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.isArrayType;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.isMapType;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.isRowType;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.pathExists;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.verifyOnline;
+import static com.facebook.presto.hive.metastore.PrestoTableType.MANAGED_TABLE;
+import static com.facebook.presto.hive.metastore.PrestoTableType.MATERIALIZED_VIEW;
+import static com.facebook.presto.hive.metastore.PrestoTableType.TEMPORARY_TABLE;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.google.common.base.Strings.isNullOrEmpty;
+import static java.lang.Float.intBitsToFloat;
+import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.UUID.randomUUID;
 import static java.util.stream.Collectors.toList;
-import static org.apache.hadoop.hive.metastore.MetaStoreUtils.getProtectMode;
+import static org.apache.hadoop.hive.conf.HiveConf.ConfVars.COMPRESSRESULT;
+import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_COLUMNS;
+import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.getPrimitiveJavaObjectInspector;
+import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.getPrimitiveWritableObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaBooleanObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaByteArrayObjectInspector;
+import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaByteObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaDateObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaDoubleObjectInspector;
+import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaFloatObjectInspector;
+import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaIntObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaLongObjectInspector;
+import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaShortObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaTimestampObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableBinaryObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableBooleanObjectInspector;
+import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableByteObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableDateObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableDoubleObjectInspector;
+import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableFloatObjectInspector;
+import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableHiveCharObjectInspector;
+import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableIntObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableLongObjectInspector;
+import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableShortObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableStringObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableTimestampObjectInspector;
-import static org.joda.time.DateTimeZone.UTC;
+import static org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory.getCharTypeInfo;
+import static org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory.getVarcharTypeInfo;
+import static org.apache.hadoop.mapred.FileOutputFormat.getOutputCompressorClass;
 
 public final class HiveWriteUtils
 {
-    @SuppressWarnings("OctalInteger")
-    private static final FsPermission ALL_PERMISSIONS = new FsPermission((short) 0777);
-
     private HiveWriteUtils()
     {
     }
 
-    public static RecordWriter createRecordWriter(Path target, JobConf conf, boolean compress, Properties properties, String outputFormatName)
+    public static RecordWriter createRecordWriter(Path target, JobConf conf, Properties properties, String outputFormatName, ConnectorSession session)
     {
         try {
+            boolean compress = HiveConf.getBoolVar(conf, COMPRESSRESULT);
+            if (outputFormatName.equals(RCFileOutputFormat.class.getName())) {
+                return createRcFileWriter(target, conf, properties, compress);
+            }
+            if (outputFormatName.equals(MapredParquetOutputFormat.class.getName())) {
+                return createParquetWriter(target, conf, properties, compress, session);
+            }
             Object writer = Class.forName(outputFormatName).getConstructor().newInstance();
             return ((HiveOutputFormat<?, ?>) writer).getHiveRecordWriter(conf, target, Text.class, compress, properties, Reporter.NULL);
         }
         catch (IOException | ReflectiveOperationException e) {
+            throw new PrestoException(HIVE_WRITER_DATA_ERROR, e);
+        }
+    }
+
+    private static RecordWriter createRcFileWriter(Path target, JobConf conf, Properties properties, boolean compress)
+            throws IOException
+    {
+        int columns = properties.getProperty(META_TABLE_COLUMNS).split(",").length;
+        RCFileOutputFormat.setColumnNumber(conf, columns);
+
+        CompressionCodec codec = null;
+        if (compress) {
+            codec = ReflectionUtil.newInstance(getOutputCompressorClass(conf, DefaultCodec.class), conf);
+        }
+
+        RCFile.Writer writer = new RCFile.Writer(target.getFileSystem(conf), conf, target, () -> {}, codec);
+        return new ExtendedRecordWriter()
+        {
+            private long length;
+
+            @Override
+            public long getWrittenBytes()
+            {
+                return length;
+            }
+
+            @Override
+            public void write(Writable value)
+                    throws IOException
+            {
+                writer.append(value);
+                length = writer.getLength();
+            }
+
+            @Override
+            public void close(boolean abort)
+                    throws IOException
+            {
+                writer.close();
+                if (!abort) {
+                    length = target.getFileSystem(conf).getFileStatus(target).getLen();
+                }
+            }
+        };
+    }
+
+    public static Serializer initializeSerializer(Configuration conf, Properties properties, String serializerName)
+    {
+        try {
+            Serializer result = (Serializer) Class.forName(serializerName).getConstructor().newInstance();
+            result.initialize(conf, properties);
+            return result;
+        }
+        catch (ClassNotFoundException e) {
+            throw new PrestoException(HIVE_SERDE_NOT_FOUND, "Serializer does not exist: " + serializerName);
+        }
+        catch (SerDeException | ReflectiveOperationException e) {
             throw new PrestoException(HIVE_WRITER_DATA_ERROR, e);
         }
     }
@@ -135,11 +241,26 @@ public final class HiveWriteUtils
         else if (type.equals(BigintType.BIGINT)) {
             return javaLongObjectInspector;
         }
+        else if (type.equals(IntegerType.INTEGER)) {
+            return javaIntObjectInspector;
+        }
+        else if (type.equals(SmallintType.SMALLINT)) {
+            return javaShortObjectInspector;
+        }
+        else if (type.equals(TinyintType.TINYINT)) {
+            return javaByteObjectInspector;
+        }
+        else if (type.equals(RealType.REAL)) {
+            return javaFloatObjectInspector;
+        }
         else if (type.equals(DoubleType.DOUBLE)) {
             return javaDoubleObjectInspector;
         }
         else if (type instanceof VarcharType) {
             return writableStringObjectInspector;
+        }
+        else if (type instanceof CharType) {
+            return writableHiveCharObjectInspector;
         }
         else if (type.equals(VarbinaryType.VARBINARY)) {
             return javaByteArrayObjectInspector;
@@ -149,6 +270,10 @@ public final class HiveWriteUtils
         }
         else if (type.equals(TimestampType.TIMESTAMP)) {
             return javaTimestampObjectInspector;
+        }
+        else if (type instanceof DecimalType) {
+            DecimalType decimalType = (DecimalType) type;
+            return getPrimitiveJavaObjectInspector(new DecimalTypeInfo(decimalType.getPrecision(), decimalType.getScale()));
         }
         else if (isArrayType(type)) {
             return ObjectInspectorFactory.getStandardListObjectInspector(getJavaObjectInspector(type.getTypeParameters().get(0)));
@@ -161,7 +286,7 @@ public final class HiveWriteUtils
         else if (isRowType(type)) {
             return ObjectInspectorFactory.getStandardStructObjectInspector(
                     type.getTypeSignature().getParameters().stream()
-                            .map(parameter -> parameter.getNamedTypeSignature().getName())
+                            .map(parameter -> parameter.getNamedTypeSignature().getName().get())
                             .collect(toList()),
                     type.getTypeParameters().stream()
                             .map(HiveWriteUtils::getJavaObjectInspector)
@@ -170,96 +295,32 @@ public final class HiveWriteUtils
         throw new IllegalArgumentException("unsupported type: " + type);
     }
 
-    public static Object getField(Type type, Block block, int position)
+    public static void checkTableIsWritable(Table table, boolean writesToNonManagedTablesEnabled)
     {
-        if (block.isNull(position)) {
-            return null;
+        PrestoTableType tableType = table.getTableType();
+        if (!writesToNonManagedTablesEnabled
+                && !tableType.equals(MANAGED_TABLE)
+                && !tableType.equals(MATERIALIZED_VIEW)
+                && !tableType.equals(TEMPORARY_TABLE)) {
+            throw new PrestoException(NOT_SUPPORTED, "Cannot write to non-managed Hive table");
         }
-        if (BooleanType.BOOLEAN.equals(type)) {
-            return type.getBoolean(block, position);
-        }
-        if (BigintType.BIGINT.equals(type)) {
-            return type.getLong(block, position);
-        }
-        if (DoubleType.DOUBLE.equals(type)) {
-            return type.getDouble(block, position);
-        }
-        if (type instanceof VarcharType) {
-            return new Text(type.getSlice(block, position).getBytes());
-        }
-        if (VarbinaryType.VARBINARY.equals(type)) {
-            return type.getSlice(block, position).getBytes();
-        }
-        if (DateType.DATE.equals(type)) {
-            long days = type.getLong(block, position);
-            return new Date(UTC.getMillisKeepLocal(DateTimeZone.getDefault(), TimeUnit.DAYS.toMillis(days)));
-        }
-        if (TimestampType.TIMESTAMP.equals(type)) {
-            long millisUtc = type.getLong(block, position);
-            return new Timestamp(millisUtc);
-        }
-        if (isArrayType(type)) {
-            Type elementType = type.getTypeParameters().get(0);
 
-            Block arrayBlock = block.getObject(position, Block.class);
-
-            List<Object> list = new ArrayList<>(arrayBlock.getPositionCount());
-            for (int i = 0; i < arrayBlock.getPositionCount(); i++) {
-                Object element = getField(elementType, arrayBlock, i);
-                list.add(element);
-            }
-
-            return Collections.unmodifiableList(list);
-        }
-        if (isMapType(type)) {
-            Type keyType = type.getTypeParameters().get(0);
-            Type valueType = type.getTypeParameters().get(1);
-
-            Block mapBlock = block.getObject(position, Block.class);
-            Map<Object, Object> map = new HashMap<>();
-            for (int i = 0; i < mapBlock.getPositionCount(); i += 2) {
-                Object key = getField(keyType, mapBlock, i);
-                Object value = getField(valueType, mapBlock, i + 1);
-                map.put(key, value);
-            }
-
-            return Collections.unmodifiableMap(map);
-        }
-        if (isRowType(type)) {
-            Block rowBlock = block.getObject(position, Block.class);
-
-            List<Type> fieldTypes = type.getTypeParameters();
-            checkCondition(fieldTypes.size() == rowBlock.getPositionCount(), StandardErrorCode.INTERNAL_ERROR, "Expected row value field count does not match type field count");
-
-            List<Object> row = new ArrayList<>(rowBlock.getPositionCount());
-            for (int i = 0; i < rowBlock.getPositionCount(); i++) {
-                Object element = getField(fieldTypes.get(i), rowBlock, i);
-                row.add(element);
-            }
-
-            return Collections.unmodifiableList(row);
-        }
-        throw new PrestoException(NOT_SUPPORTED, "unsupported type: " + type);
-    }
-
-    public static void checkTableIsWritable(Table table)
-    {
         checkWritable(
-                new SchemaTableName(table.getDbName(), table.getTableName()),
+                new SchemaTableName(table.getDatabaseName(), table.getTableName()),
                 Optional.empty(),
                 getProtectMode(table),
                 table.getParameters(),
-                table.getSd());
+                table.getStorage());
     }
 
     public static void checkPartitionIsWritable(String partitionName, Partition partition)
     {
         checkWritable(
-                new SchemaTableName(partition.getDbName(), partition.getTableName()),
+                new SchemaTableName(partition.getDatabaseName(), partition.getTableName()),
                 Optional.of(partitionName),
                 getProtectMode(partition),
                 partition.getParameters(),
-                partition.getSd());
+                partition.getStorage());
     }
 
     private static void checkWritable(
@@ -267,7 +328,7 @@ public final class HiveWriteUtils
             Optional<String> partitionName,
             ProtectMode protectMode,
             Map<String, String> parameters,
-            StorageDescriptor storageDescriptor)
+            Storage storage)
     {
         String tablePartitionDescription = "Table '" + tableName + "'";
         if (partitionName.isPresent()) {
@@ -275,141 +336,110 @@ public final class HiveWriteUtils
         }
 
         // verify online
-        if (protectMode.offline) {
-            throw new TableOfflineException(tableName, format("%s is offline", tablePartitionDescription));
-        }
-
-        String prestoOffline = parameters.get(PRESTO_OFFLINE);
-        if (!isNullOrEmpty(prestoOffline)) {
-            throw new TableOfflineException(tableName, format("%s is offline for Presto: %s", tablePartitionDescription, prestoOffline));
-        }
+        verifyOnline(tableName, partitionName, protectMode, parameters);
 
         // verify not read only
         if (protectMode.readOnly) {
             throw new HiveReadOnlyException(tableName, partitionName);
         }
 
-        // verify storage descriptor is valid
-        if (storageDescriptor == null) {
-            throw new PrestoException(HIVE_INVALID_METADATA, format("%s does not contain a valid storage descriptor", tablePartitionDescription));
-        }
-
-        // verify bucketing
-        List<String> bucketColumns = storageDescriptor.getBucketCols();
-        if (bucketColumns != null && !bucketColumns.isEmpty()) {
-            throw new PrestoException(NOT_SUPPORTED, format("Inserting into bucketed tables is not supported. %s", tablePartitionDescription));
-        }
-
-        // verify sorting
-        List<Order> sortColumns = storageDescriptor.getSortCols();
-        if (sortColumns != null && !sortColumns.isEmpty()) {
-            throw new PrestoException(NOT_SUPPORTED, format("Inserting into bucketed sorted tables is not supported. %s", tablePartitionDescription));
-        }
-
         // verify skew info
-        SkewedInfo skewedInfo = storageDescriptor.getSkewedInfo();
-        if (skewedInfo != null && skewedInfo.getSkewedColNames() != null && !skewedInfo.getSkewedColNames().isEmpty()) {
+        if (storage.isSkewed()) {
             throw new PrestoException(NOT_SUPPORTED, format("Inserting into bucketed tables with skew is not supported. %s", tablePartitionDescription));
         }
     }
 
-    public static Path getTableDefaultLocation(HiveMetastore metastore, HdfsEnvironment hdfsEnvironment, String schemaName, String tableName)
+    public static Path getTableDefaultLocation(ConnectorSession session, SemiTransactionalHiveMetastore metastore, HdfsEnvironment hdfsEnvironment, String schemaName, String tableName)
     {
-        String location = getDatabase(metastore, schemaName).getLocationUri();
-        if (isNullOrEmpty(location)) {
+        Optional<String> location = getDatabase(metastore, schemaName).getLocation();
+        if (!location.isPresent() || location.get().isEmpty()) {
             throw new PrestoException(HIVE_DATABASE_LOCATION_ERROR, format("Database '%s' location is not set", schemaName));
         }
 
-        Path databasePath = new Path(location);
-        if (!pathExists(hdfsEnvironment, databasePath)) {
-            throw new PrestoException(HIVE_DATABASE_LOCATION_ERROR, format("Database '%s' location does not exist: %s", schemaName, databasePath));
-        }
-        if (!isDirectory(hdfsEnvironment, databasePath)) {
-            throw new PrestoException(HIVE_DATABASE_LOCATION_ERROR, format("Database '%s' location is not a directory: %s", schemaName, databasePath));
+        HdfsContext context = new HdfsContext(session, schemaName, tableName, location.get(), true);
+        Path databasePath = new Path(location.get());
+        if (!isS3FileSystem(context, hdfsEnvironment, databasePath)) {
+            if (!pathExists(context, hdfsEnvironment, databasePath)) {
+                throw new PrestoException(HIVE_DATABASE_LOCATION_ERROR, format("Database '%s' location does not exist: %s", schemaName, databasePath));
+            }
+            if (!isDirectory(context, hdfsEnvironment, databasePath)) {
+                throw new PrestoException(HIVE_DATABASE_LOCATION_ERROR, format("Database '%s' location is not a directory: %s", schemaName, databasePath));
+            }
         }
 
         return new Path(databasePath, tableName);
     }
 
-    private static Database getDatabase(HiveMetastore metastore, String database)
+    private static Database getDatabase(SemiTransactionalHiveMetastore metastore, String database)
     {
         return metastore.getDatabase(database).orElseThrow(() -> new SchemaNotFoundException(database));
     }
 
-    public static boolean pathExists(HdfsEnvironment hdfsEnvironment, Path path)
+    public static boolean isS3FileSystem(HdfsContext context, HdfsEnvironment hdfsEnvironment, Path path)
     {
         try {
-            return hdfsEnvironment.getFileSystem(path).exists(path);
+            return getRawFileSystem(hdfsEnvironment.getFileSystem(context, path)) instanceof PrestoS3FileSystem;
         }
         catch (IOException e) {
             throw new PrestoException(HIVE_FILESYSTEM_ERROR, "Failed checking path: " + path, e);
         }
     }
 
-    private static boolean isDirectory(HdfsEnvironment hdfsEnvironment, Path path)
+    public static boolean isViewFileSystem(HdfsContext context, HdfsEnvironment hdfsEnvironment, Path path)
     {
         try {
-            return hdfsEnvironment.getFileSystem(path).isDirectory(path);
+            return getRawFileSystem(hdfsEnvironment.getFileSystem(context, path)) instanceof ViewFileSystem;
         }
         catch (IOException e) {
             throw new PrestoException(HIVE_FILESYSTEM_ERROR, "Failed checking path: " + path, e);
         }
     }
 
-    public static void renameDirectory(HdfsEnvironment hdfsEnvironment, String schemaName, String tableName, Path source, Path target)
+    private static FileSystem getRawFileSystem(FileSystem fileSystem)
     {
-        if (pathExists(hdfsEnvironment, target)) {
-            throw new PrestoException(HIVE_PATH_ALREADY_EXISTS,
-                    format("Unable to commit creation of table '%s.%s': target directory already exists: %s", schemaName, tableName, target));
+        if (fileSystem instanceof HadoopExtendedFileSystem) {
+            return getRawFileSystem(((HadoopExtendedFileSystem) fileSystem).getRawFileSystem());
         }
+        return fileSystem;
+    }
 
-        if (!pathExists(hdfsEnvironment, target.getParent())) {
-            createDirectory(hdfsEnvironment, target.getParent());
-        }
-
+    private static boolean isDirectory(HdfsContext context, HdfsEnvironment hdfsEnvironment, Path path)
+    {
         try {
-            if (!hdfsEnvironment.getFileSystem(source).rename(source, target)) {
-                throw new PrestoException(HIVE_FILESYSTEM_ERROR, format("Failed to rename %s to %s: rename returned false", source, target));
-            }
+            return hdfsEnvironment.getFileSystem(context, path).isDirectory(path);
         }
         catch (IOException e) {
-            throw new PrestoException(HIVE_FILESYSTEM_ERROR, format("Failed to rename %s to %s", source, target), e);
+            throw new PrestoException(HIVE_FILESYSTEM_ERROR, "Failed checking path: " + path, e);
         }
     }
 
-    public static Path createTemporaryPath(HdfsEnvironment hdfsEnvironment, Path targetPath)
+    public static Path createTemporaryPath(ConnectorSession session, HdfsContext context, HdfsEnvironment hdfsEnvironment, Path targetPath)
     {
         // use a per-user temporary directory to avoid permission problems
-        // TODO: this should use Hadoop UserGroupInformation
-        String temporaryPrefix = "/tmp/presto-" + StandardSystemProperty.USER_NAME.value();
+        String temporaryPrefix = getTemporaryStagingDirectoryPath(session)
+                .replace("${USER}", context.getIdentity().getUser());
+
+        // use relative temporary directory on ViewFS
+        if (isViewFileSystem(context, hdfsEnvironment, targetPath)) {
+            if (pathExists(context, hdfsEnvironment, targetPath)) {
+                temporaryPrefix = ".hive-staging";
+            }
+            else {
+                //use the temporary folder in parent when target path does not exist
+                temporaryPrefix = "../.hive-staging";
+            }
+        }
 
         // create a temporary directory on the same filesystem
         Path temporaryRoot = new Path(targetPath, temporaryPrefix);
+        if (!pathExists(context, hdfsEnvironment, temporaryRoot)) {
+            createDirectory(context, hdfsEnvironment, temporaryRoot);
+        }
         Path temporaryPath = new Path(temporaryRoot, randomUUID().toString());
 
-        createDirectory(hdfsEnvironment, temporaryPath);
+        createDirectory(context, hdfsEnvironment, temporaryPath);
 
         return temporaryPath;
-    }
-
-    public static void createDirectory(HdfsEnvironment hdfsEnvironment, Path path)
-    {
-        try {
-            if (!hdfsEnvironment.getFileSystem(path).mkdirs(path, ALL_PERMISSIONS)) {
-                throw new IOException("mkdirs returned false");
-            }
-        }
-        catch (IOException e) {
-            throw new PrestoException(HIVE_FILESYSTEM_ERROR, "Failed to create directory: " + path, e);
-        }
-
-        // explicitly set permission since the default umask overrides it on creation
-        try {
-            hdfsEnvironment.getFileSystem(path).setPermission(path, ALL_PERMISSIONS);
-        }
-        catch (IOException e) {
-            throw new PrestoException(HIVE_FILESYSTEM_ERROR, "Failed to set permission on directory: " + path, e);
-        }
     }
 
     public static boolean isWritableType(HiveType hiveType)
@@ -424,14 +454,14 @@ public final class HiveWriteUtils
                 PrimitiveCategory primitiveCategory = ((PrimitiveTypeInfo) typeInfo).getPrimitiveCategory();
                 return isWritablePrimitiveType(primitiveCategory);
             case MAP:
-                MapTypeInfo mapTypeInfo = checkType(typeInfo, MapTypeInfo.class, "typeInfo");
+                MapTypeInfo mapTypeInfo = (MapTypeInfo) typeInfo;
                 return isWritableType(mapTypeInfo.getMapKeyTypeInfo()) && isWritableType(mapTypeInfo.getMapValueTypeInfo());
             case LIST:
-                ListTypeInfo listTypeInfo = checkType(typeInfo, ListTypeInfo.class, "typeInfo");
+                ListTypeInfo listTypeInfo = (ListTypeInfo) typeInfo;
                 return isWritableType(listTypeInfo.getListElementTypeInfo());
             case STRUCT:
-                StructTypeInfo structTypeInfo = checkType(typeInfo, StructTypeInfo.class, "typeInfo");
-                return structTypeInfo.getAllStructFieldTypeInfos().stream().allMatch(HiveType::isSupportedType);
+                StructTypeInfo structTypeInfo = (StructTypeInfo) typeInfo;
+                return structTypeInfo.getAllStructFieldTypeInfos().stream().allMatch(HiveWriteUtils::isWritableType);
         }
         return false;
     }
@@ -441,11 +471,18 @@ public final class HiveWriteUtils
         switch (primitiveCategory) {
             case BOOLEAN:
             case LONG:
+            case INT:
+            case SHORT:
+            case BYTE:
+            case FLOAT:
             case DOUBLE:
             case STRING:
             case DATE:
             case TIMESTAMP:
             case BINARY:
+            case DECIMAL:
+            case VARCHAR:
+            case CHAR:
                 return true;
         }
         return false;
@@ -468,12 +505,44 @@ public final class HiveWriteUtils
             return writableLongObjectInspector;
         }
 
+        if (type.equals(IntegerType.INTEGER)) {
+            return writableIntObjectInspector;
+        }
+
+        if (type.equals(SmallintType.SMALLINT)) {
+            return writableShortObjectInspector;
+        }
+
+        if (type.equals(TinyintType.TINYINT)) {
+            return writableByteObjectInspector;
+        }
+
+        if (type.equals(RealType.REAL)) {
+            return writableFloatObjectInspector;
+        }
+
         if (type.equals(DoubleType.DOUBLE)) {
             return writableDoubleObjectInspector;
         }
 
-        if (type.equals(VarcharType.VARCHAR)) {
-            return writableStringObjectInspector;
+        if (type instanceof VarcharType) {
+            VarcharType varcharType = (VarcharType) type;
+            int varcharLength = varcharType.getLength();
+            // VARCHAR columns with the length less than or equal to 65535 are supported natively by Hive
+            if (varcharLength <= HiveVarchar.MAX_VARCHAR_LENGTH) {
+                return getPrimitiveWritableObjectInspector(getVarcharTypeInfo(varcharLength));
+            }
+            // Unbounded VARCHAR is not supported by Hive.
+            // Values for such columns must be stored as STRING in Hive
+            else if (varcharLength == VarcharType.UNBOUNDED_LENGTH) {
+                return writableStringObjectInspector;
+            }
+        }
+
+        if (isCharType(type)) {
+            CharType charType = (CharType) type;
+            int charLength = charType.getLength();
+            return getPrimitiveWritableObjectInspector(getCharTypeInfo(charLength));
         }
 
         if (type.equals(VarbinaryType.VARBINARY)) {
@@ -486,6 +555,11 @@ public final class HiveWriteUtils
 
         if (type.equals(TimestampType.TIMESTAMP)) {
             return writableTimestampObjectInspector;
+        }
+
+        if (type instanceof DecimalType) {
+            DecimalType decimalType = (DecimalType) type;
+            return getPrimitiveWritableObjectInspector(new DecimalTypeInfo(decimalType.getPrecision(), decimalType.getScale()));
         }
 
         if (isArrayType(type) || isMapType(type) || isRowType(type)) {
@@ -505,12 +579,32 @@ public final class HiveWriteUtils
             return new BigintFieldBuilder(rowInspector, row, field);
         }
 
+        if (type.equals(IntegerType.INTEGER)) {
+            return new IntFieldSetter(rowInspector, row, field);
+        }
+
+        if (type.equals(SmallintType.SMALLINT)) {
+            return new SmallintFieldSetter(rowInspector, row, field);
+        }
+
+        if (type.equals(TinyintType.TINYINT)) {
+            return new TinyintFieldSetter(rowInspector, row, field);
+        }
+
+        if (type.equals(RealType.REAL)) {
+            return new FloatFieldSetter(rowInspector, row, field);
+        }
+
         if (type.equals(DoubleType.DOUBLE)) {
             return new DoubleFieldSetter(rowInspector, row, field);
         }
 
         if (type instanceof VarcharType) {
-            return new VarcharFieldSetter(rowInspector, row, field);
+            return new VarcharFieldSetter(rowInspector, row, field, type);
+        }
+
+        if (type instanceof CharType) {
+            return new CharFieldSetter(rowInspector, row, field, type);
         }
 
         if (type.equals(VarbinaryType.VARBINARY)) {
@@ -523,6 +617,11 @@ public final class HiveWriteUtils
 
         if (type.equals(TimestampType.TIMESTAMP)) {
             return new TimestampFieldSetter(rowInspector, row, field);
+        }
+
+        if (type instanceof DecimalType) {
+            DecimalType decimalType = (DecimalType) type;
+            return new DecimalFieldSetter(rowInspector, row, field, decimalType);
         }
 
         if (isArrayType(type)) {
@@ -592,6 +691,60 @@ public final class HiveWriteUtils
         }
     }
 
+    private static class IntFieldSetter
+            extends FieldSetter
+    {
+        private final IntWritable value = new IntWritable();
+
+        public IntFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+        {
+            super(rowInspector, row, field);
+        }
+
+        @Override
+        public void setField(Block block, int position)
+        {
+            value.set(toIntExact(IntegerType.INTEGER.getLong(block, position)));
+            rowInspector.setStructFieldData(row, field, value);
+        }
+    }
+
+    private static class SmallintFieldSetter
+            extends FieldSetter
+    {
+        private final ShortWritable value = new ShortWritable();
+
+        public SmallintFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+        {
+            super(rowInspector, row, field);
+        }
+
+        @Override
+        public void setField(Block block, int position)
+        {
+            value.set(Shorts.checkedCast(SmallintType.SMALLINT.getLong(block, position)));
+            rowInspector.setStructFieldData(row, field, value);
+        }
+    }
+
+    private static class TinyintFieldSetter
+            extends FieldSetter
+    {
+        private final ByteWritable value = new ByteWritable();
+
+        public TinyintFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+        {
+            super(rowInspector, row, field);
+        }
+
+        @Override
+        public void setField(Block block, int position)
+        {
+            value.set(SignedBytes.checkedCast(TinyintType.TINYINT.getLong(block, position)));
+            rowInspector.setStructFieldData(row, field, value);
+        }
+    }
+
     private static class DoubleFieldSetter
             extends FieldSetter
     {
@@ -610,12 +763,12 @@ public final class HiveWriteUtils
         }
     }
 
-    private static class VarcharFieldSetter
+    private static class FloatFieldSetter
             extends FieldSetter
     {
-        private final Text value = new Text();
+        private final FloatWritable value = new FloatWritable();
 
-        public VarcharFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+        public FloatFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
         {
             super(rowInspector, row, field);
         }
@@ -623,7 +776,47 @@ public final class HiveWriteUtils
         @Override
         public void setField(Block block, int position)
         {
-            value.set(VarcharType.VARCHAR.getSlice(block, position).getBytes());
+            value.set(intBitsToFloat((int) RealType.REAL.getLong(block, position)));
+            rowInspector.setStructFieldData(row, field, value);
+        }
+    }
+
+    private static class VarcharFieldSetter
+            extends FieldSetter
+    {
+        private final Text value = new Text();
+        private final Type type;
+
+        public VarcharFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field, Type type)
+        {
+            super(rowInspector, row, field);
+            this.type = type;
+        }
+
+        @Override
+        public void setField(Block block, int position)
+        {
+            value.set(type.getSlice(block, position).getBytes());
+            rowInspector.setStructFieldData(row, field, value);
+        }
+    }
+
+    private static class CharFieldSetter
+            extends FieldSetter
+    {
+        private final Text value = new Text();
+        private final Type type;
+
+        public CharFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field, Type type)
+        {
+            super(rowInspector, row, field);
+            this.type = type;
+        }
+
+        @Override
+        public void setField(Block block, int position)
+        {
+            value.set(type.getSlice(block, position).getBytes());
             rowInspector.setStructFieldData(row, field, value);
         }
     }
@@ -660,7 +853,7 @@ public final class HiveWriteUtils
         @Override
         public void setField(Block block, int position)
         {
-            value.set(Ints.checkedCast(DateType.DATE.getLong(block, position)));
+            value.set(toIntExact(DateType.DATE.getLong(block, position)));
             rowInspector.setStructFieldData(row, field, value);
         }
     }
@@ -684,6 +877,26 @@ public final class HiveWriteUtils
         }
     }
 
+    private static class DecimalFieldSetter
+            extends FieldSetter
+    {
+        private final HiveDecimalWritable value = new HiveDecimalWritable();
+        private final DecimalType decimalType;
+
+        public DecimalFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field, DecimalType decimalType)
+        {
+            super(rowInspector, row, field);
+            this.decimalType = decimalType;
+        }
+
+        @Override
+        public void setField(Block block, int position)
+        {
+            value.set(getHiveDecimal(decimalType, block, position));
+            rowInspector.setStructFieldData(row, field, value);
+        }
+    }
+
     private static class ArrayFieldSetter
             extends FieldSetter
     {
@@ -698,7 +911,7 @@ public final class HiveWriteUtils
         @Override
         public void setField(Block block, int position)
         {
-            Block arrayBlock = block.getObject(position, Block.class);
+            Block arrayBlock = block.getBlock(position);
 
             List<Object> list = new ArrayList<>(arrayBlock.getPositionCount());
             for (int i = 0; i < arrayBlock.getPositionCount(); i++) {
@@ -726,7 +939,7 @@ public final class HiveWriteUtils
         @Override
         public void setField(Block block, int position)
         {
-            Block mapBlock = block.getObject(position, Block.class);
+            Block mapBlock = block.getBlock(position);
             Map<Object, Object> map = new HashMap<>(mapBlock.getPositionCount() * 2);
             for (int i = 0; i < mapBlock.getPositionCount(); i += 2) {
                 Object key = getField(keyType, mapBlock, i);
@@ -752,7 +965,7 @@ public final class HiveWriteUtils
         @Override
         public void setField(Block block, int position)
         {
-            Block rowBlock = block.getObject(position, Block.class);
+            Block rowBlock = block.getBlock(position);
 
             // TODO reuse row object and use FieldSetters, like we do at the top level
             // Ideally, we'd use the same recursive structure starting from the top, but

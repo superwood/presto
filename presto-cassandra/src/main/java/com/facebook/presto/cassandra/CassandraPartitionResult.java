@@ -13,11 +13,12 @@
  */
 package com.facebook.presto.cassandra;
 
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.ColumnHandle;
-import com.facebook.presto.spi.predicate.TupleDomain;
 
 import java.util.List;
 
+import static com.google.common.collect.Iterables.getOnlyElement;
 import static java.util.Objects.requireNonNull;
 
 public class CassandraPartitionResult
@@ -39,5 +40,10 @@ public class CassandraPartitionResult
     public TupleDomain<ColumnHandle> getUnenforcedConstraint()
     {
         return unenforcedConstraint;
+    }
+
+    public boolean isUnpartitioned()
+    {
+        return partitions.size() == 1 && getOnlyElement(partitions).isUnpartitioned();
     }
 }

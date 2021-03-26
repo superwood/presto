@@ -13,16 +13,16 @@
  */
 package com.facebook.presto.sql.planner.plan;
 
-import com.facebook.presto.util.ImmutableCollectors;
+import com.facebook.presto.spi.plan.PlanNode;
 
 import java.util.List;
 
 import static com.facebook.presto.sql.planner.plan.ChildReplacer.replaceChildren;
-import static java.lang.String.format;
-import static java.util.Objects.requireNonNull;
+import static com.google.common.base.Verify.verify;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 
 public abstract class SimplePlanRewriter<C>
-        extends PlanVisitor<SimplePlanRewriter.RewriteContext<C>, PlanNode>
+        extends InternalPlanVisitor<PlanNode, SimplePlanRewriter.RewriteContext<C>>
 {
     public static <C> PlanNode rewriteWith(SimplePlanRewriter<C> rewriter, PlanNode node)
     {
@@ -35,7 +35,7 @@ public abstract class SimplePlanRewriter<C>
     }
 
     @Override
-    protected PlanNode visitPlan(PlanNode node, RewriteContext<C> context)
+    public PlanNode visitPlan(PlanNode node, RewriteContext<C> context)
     {
         return context.defaultRewrite(node, context.get());
     }
@@ -73,7 +73,7 @@ public abstract class SimplePlanRewriter<C>
         {
             List<PlanNode> children = node.getSources().stream()
                     .map(child -> rewrite(child, context))
-                    .collect(ImmutableCollectors.toImmutableList());
+                    .collect(toImmutableList());
 
             return replaceChildren(node, children);
         }
@@ -84,7 +84,7 @@ public abstract class SimplePlanRewriter<C>
         public PlanNode rewrite(PlanNode node, C userContext)
         {
             PlanNode result = node.accept(nodeRewriter, new RewriteContext<>(nodeRewriter, userContext));
-            requireNonNull(result, format("nodeRewriter returned null for %s", node.getClass().getName()));
+            verify(result != null, "nodeRewriter returned null for %s", node.getClass().getName());
 
             return result;
         }

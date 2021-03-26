@@ -13,22 +13,31 @@
  */
 package com.facebook.presto.raptor.storage;
 
-import io.airlift.configuration.Config;
-import io.airlift.configuration.ConfigDescription;
-import io.airlift.configuration.DefunctConfig;
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigDescription;
+import com.facebook.airlift.configuration.DefunctConfig;
+import com.facebook.airlift.configuration.LegacyConfig;
+import com.facebook.presto.common.type.TimeZoneKey;
+import com.facebook.presto.orc.metadata.CompressionKind;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.airlift.units.MaxDataSize;
 import io.airlift.units.MinDataSize;
 import io.airlift.units.MinDuration;
+import org.joda.time.DateTimeZone;
 
 import javax.validation.constraints.Max;
 import javax.validation.constraints.Min;
 import javax.validation.constraints.NotNull;
 
-import java.io.File;
+import java.net.URI;
+import java.time.ZoneId;
+import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 
+import static com.facebook.presto.orc.metadata.CompressionKind.ZSTD;
+import static com.facebook.presto.raptor.storage.StorageManagerConfig.OrcOptimizedWriterStage.ENABLED;
+import static io.airlift.units.DataSize.Unit.BYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.lang.Math.max;
 import static java.lang.Runtime.getRuntime;
@@ -36,7 +45,9 @@ import static java.lang.Runtime.getRuntime;
 @DefunctConfig("storage.backup-directory")
 public class StorageManagerConfig
 {
-    private File dataDirectory;
+    private URI dataDirectory;
+    private String fileSystemProvider = "file";
+    private DataSize minAvailableSpace = new DataSize(0, BYTE);
     private Duration shardRecoveryTimeout = new Duration(30, TimeUnit.SECONDS);
     private Duration missingShardDiscoveryInterval = new Duration(5, TimeUnit.MINUTES);
     private boolean compactionEnabled = true;
@@ -45,25 +56,64 @@ public class StorageManagerConfig
     private DataSize orcMaxMergeDistance = new DataSize(1, MEGABYTE);
     private DataSize orcMaxReadSize = new DataSize(8, MEGABYTE);
     private DataSize orcStreamBufferSize = new DataSize(8, MEGABYTE);
+    private DataSize orcTinyStripeThreshold = new DataSize(8, MEGABYTE);
+    private boolean orcLazyReadSmallRanges = true;
+    private OrcOptimizedWriterStage orcOptimizedWriterStage = ENABLED;
+    private CompressionKind orcCompressionKind = ZSTD;
     private int deletionThreads = max(1, getRuntime().availableProcessors() / 2);
     private int recoveryThreads = 10;
-    private int compactionThreads = 5;
+    private int organizationThreads = 5;
+    private boolean organizationEnabled = true;
+    private Duration organizationDiscoveryInterval = new Duration(6, TimeUnit.HOURS);
+    private Duration organizationInterval = new Duration(7, TimeUnit.DAYS);
 
     private long maxShardRows = 1_000_000;
     private DataSize maxShardSize = new DataSize(256, MEGABYTE);
     private DataSize maxBufferSize = new DataSize(256, MEGABYTE);
+    private int oneSplitPerBucketThreshold;
+    private String shardDayBoundaryTimeZone = TimeZoneKey.UTC_KEY.getId();
+    private int maxAllowedFilesPerWriter = Integer.MAX_VALUE;
+    private boolean zstdJniDecompressionEnabled;
 
     @NotNull
-    public File getDataDirectory()
+    public URI getDataDirectory()
     {
         return dataDirectory;
     }
 
     @Config("storage.data-directory")
-    @ConfigDescription("Base directory to use for storing shard data")
-    public StorageManagerConfig setDataDirectory(File dataDirectory)
+    @ConfigDescription("Base URI to use for storing shard data")
+    public StorageManagerConfig setDataDirectory(URI dataURI)
     {
-        this.dataDirectory = dataDirectory;
+        this.dataDirectory = dataURI;
+        return this;
+    }
+
+    @NotNull
+    public String getFileSystemProvider()
+    {
+        return fileSystemProvider;
+    }
+
+    @Config("storage.file-system")
+    @ConfigDescription("File system used for storage (e.g. file, hdfs)")
+    public StorageManagerConfig setFileSystemProvider(String fileSystemProvider)
+    {
+        this.fileSystemProvider = fileSystemProvider;
+        return this;
+    }
+
+    @NotNull
+    public DataSize getMinAvailableSpace()
+    {
+        return minAvailableSpace;
+    }
+
+    @Config("storage.min-available-space")
+    @ConfigDescription("Minimum space that must be available on the data directory file system")
+    public StorageManagerConfig setMinAvailableSpace(DataSize minAvailableSpace)
+    {
+        this.minAvailableSpace = minAvailableSpace;
         return this;
     }
 
@@ -106,6 +156,63 @@ public class StorageManagerConfig
         return this;
     }
 
+    @NotNull
+    public DataSize getOrcTinyStripeThreshold()
+    {
+        return orcTinyStripeThreshold;
+    }
+
+    @Config("storage.orc.tiny-stripe-threshold")
+    public StorageManagerConfig setOrcTinyStripeThreshold(DataSize orcTinyStripeThreshold)
+    {
+        this.orcTinyStripeThreshold = orcTinyStripeThreshold;
+        return this;
+    }
+
+    @Deprecated
+    public boolean isOrcLazyReadSmallRanges()
+    {
+        return orcLazyReadSmallRanges;
+    }
+
+    // TODO remove config option once efficacy is proven
+    @Deprecated
+    @Config("storage.orc.lazy-read-small-ranges")
+    public StorageManagerConfig setOrcLazyReadSmallRanges(boolean orcLazyReadSmallRanges)
+    {
+        this.orcLazyReadSmallRanges = orcLazyReadSmallRanges;
+        return this;
+    }
+
+    public enum OrcOptimizedWriterStage
+    {
+        ENABLED, ENABLED_AND_VALIDATED
+    }
+
+    public OrcOptimizedWriterStage getOrcOptimizedWriterStage()
+    {
+        return orcOptimizedWriterStage;
+    }
+
+    @Config("storage.orc.optimized-writer-stage")
+    public StorageManagerConfig setOrcOptimizedWriterStage(OrcOptimizedWriterStage orcOptimizedWriterStage)
+    {
+        this.orcOptimizedWriterStage = orcOptimizedWriterStage;
+        return this;
+    }
+
+    public CompressionKind getOrcCompressionKind()
+    {
+        return orcCompressionKind;
+    }
+
+    @Config("storage.orc.compression-kind")
+    public StorageManagerConfig setOrcCompressionKind(CompressionKind orcCompressionKind)
+    {
+        this.orcCompressionKind = orcCompressionKind;
+        return this;
+    }
+
     @Min(1)
     public int getDeletionThreads()
     {
@@ -120,6 +227,7 @@ public class StorageManagerConfig
         return this;
     }
 
+    @MinDuration("1s")
     public Duration getShardRecoveryTimeout()
     {
         return shardRecoveryTimeout;
@@ -133,6 +241,7 @@ public class StorageManagerConfig
         return this;
     }
 
+    @MinDuration("1s")
     public Duration getMissingShardDiscoveryInterval()
     {
         return missingShardDiscoveryInterval;
@@ -146,6 +255,7 @@ public class StorageManagerConfig
         return this;
     }
 
+    @MinDuration("1s")
     public Duration getCompactionInterval()
     {
         return compactionInterval;
@@ -156,6 +266,36 @@ public class StorageManagerConfig
     public StorageManagerConfig setCompactionInterval(Duration compactionInterval)
     {
         this.compactionInterval = compactionInterval;
+        return this;
+    }
+
+    @NotNull
+    @MinDuration("1s")
+    public Duration getOrganizationInterval()
+    {
+        return organizationInterval;
+    }
+
+    @Config("storage.organization-interval")
+    @ConfigDescription("How long to wait between table organization iterations")
+    public StorageManagerConfig setOrganizationInterval(Duration organizationInterval)
+    {
+        this.organizationInterval = organizationInterval;
+        return this;
+    }
+
+    @NotNull
+    @MinDuration("1s")
+    public Duration getOrganizationDiscoveryInterval()
+    {
+        return organizationDiscoveryInterval;
+    }
+
+    @Config("storage.organization-discovery-interval")
+    @ConfigDescription("How long to wait between discovering tables that need to be organized")
+    public StorageManagerConfig setOrganizationDiscoveryInterval(Duration organizationDiscoveryInterval)
+    {
+        this.organizationDiscoveryInterval = organizationDiscoveryInterval;
         return this;
     }
 
@@ -187,18 +327,19 @@ public class StorageManagerConfig
         return this;
     }
 
-    @Config("storage.max-compaction-threads")
-    @ConfigDescription("Maximum number of threads to use for compaction")
-    public StorageManagerConfig setCompactionThreads(int compactionThreads)
+    @LegacyConfig("storage.max-compaction-threads")
+    @Config("storage.max-organization-threads")
+    @ConfigDescription("Maximum number of threads to use for organization")
+    public StorageManagerConfig setOrganizationThreads(int organizationThreads)
     {
-        this.compactionThreads = compactionThreads;
+        this.organizationThreads = organizationThreads;
         return this;
     }
 
     @Min(1)
-    public int getCompactionThreads()
+    public int getOrganizationThreads()
     {
-        return compactionThreads;
+        return organizationThreads;
     }
 
     @Min(1)
@@ -245,6 +386,20 @@ public class StorageManagerConfig
         return this;
     }
 
+    @Min(1)
+    public int getMaxAllowedFilesPerWriter()
+    {
+        return maxAllowedFilesPerWriter;
+    }
+
+    @Config("storage.max-allowed-files-per-writer")
+    @ConfigDescription("Maximum number of files that can be created per writer for a query. Default value is Integer.MAX_VALUE")
+    public StorageManagerConfig setMaxAllowedFilesPerWriter(int maxAllowedFilesPerWriter)
+    {
+        this.maxAllowedFilesPerWriter = maxAllowedFilesPerWriter;
+        return this;
+    }
+
     public boolean isCompactionEnabled()
     {
         return compactionEnabled;
@@ -254,6 +409,56 @@ public class StorageManagerConfig
     public StorageManagerConfig setCompactionEnabled(boolean compactionEnabled)
     {
         this.compactionEnabled = compactionEnabled;
+        return this;
+    }
+
+    public boolean isOrganizationEnabled()
+    {
+        return organizationEnabled;
+    }
+
+    @Config("storage.organization-enabled")
+    public StorageManagerConfig setOrganizationEnabled(boolean organizationEnabled)
+    {
+        this.organizationEnabled = organizationEnabled;
+        return this;
+    }
+
+    public int getOneSplitPerBucketThreshold()
+    {
+        return oneSplitPerBucketThreshold;
+    }
+
+    @Config("storage.one-split-per-bucket-threshold")
+    @ConfigDescription("Experimental: Maximum bucket count at which to produce multiple splits per bucket")
+    public StorageManagerConfig setOneSplitPerBucketThreshold(int oneSplitPerBucketThreshold)
+    {
+        this.oneSplitPerBucketThreshold = oneSplitPerBucketThreshold;
+        return this;
+    }
+
+    public DateTimeZone getShardDayBoundaryTimeZone()
+    {
+        return DateTimeZone.forTimeZone(TimeZone.getTimeZone(ZoneId.of(shardDayBoundaryTimeZone, ZoneId.SHORT_IDS)));
+    }
+
+    @Config("storage.shard-day-boundary-time-zone")
+    @ConfigDescription("Time zone to use for computing day boundary for shards")
+    public StorageManagerConfig setShardDayBoundaryTimeZone(String timeZone)
+    {
+        this.shardDayBoundaryTimeZone = timeZone;
+        return this;
+    }
+
+    public boolean isZstdJniDecompressionEnabled()
+    {
+        return zstdJniDecompressionEnabled;
+    }
+
+    @Config("storage.zstd-jni-decompression-enabled")
+    public StorageManagerConfig setZstdJniDecompressionEnabled(boolean zstdJniDecompressionEnabled)
+    {
+        this.zstdJniDecompressionEnabled = zstdJniDecompressionEnabled;
         return this;
     }
 }

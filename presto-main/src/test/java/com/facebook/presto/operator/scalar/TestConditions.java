@@ -15,12 +15,13 @@ package com.facebook.presto.operator.scalar;
 
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.VarcharType.createVarcharType;
 import static com.facebook.presto.spi.StandardErrorCode.DIVISION_BY_ZERO;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static com.facebook.presto.spi.type.VarcharType.createVarcharType;
 
 public class TestConditions
         extends AbstractTestFunctions
@@ -68,12 +69,11 @@ public class TestConditions
         assertFunction("'monkey' not like null", BOOLEAN, null);
         assertFunction("'monkey' not like 'monkey' escape null", BOOLEAN, null);
 
-        assertInvalidFunction("'monkey' like 'monkey' escape 'foo'", "Escape must be empty or a single character");
+        assertInvalidFunction("'monkey' like 'monkey' escape 'foo'", "Escape string must be a single character");
     }
 
     @Test
     public void testDistinctFrom()
-            throws Exception
     {
         assertFunction("NULL IS DISTINCT FROM NULL", BOOLEAN, false);
         assertFunction("NULL IS DISTINCT FROM 1", BOOLEAN, true);
@@ -87,6 +87,7 @@ public class TestConditions
         assertFunction("1 IS NOT DISTINCT FROM 1", BOOLEAN, true);
         assertFunction("1 IS NOT DISTINCT FROM 2", BOOLEAN, false);
     }
+
     @Test
     public void testBetween()
     {
@@ -100,6 +101,11 @@ public class TestConditions
         assertFunction("null between 2 and 4", BOOLEAN, null);
         assertFunction("3 between null and 4", BOOLEAN, null);
         assertFunction("3 between 2 and null", BOOLEAN, null);
+
+        assertFunction("3 between 3 and 4000000000", BOOLEAN, true);
+        assertFunction("5 between 3 and 4000000000", BOOLEAN, true);
+        assertFunction("3 between BIGINT '3' and 4", BOOLEAN, true);
+        assertFunction("BIGINT '3' between 3 and 4", BOOLEAN, true);
 
         assertFunction("'c' between 'b' and 'd'", BOOLEAN, true);
         assertFunction("'c' between 'c' and 'c'", BOOLEAN, true);
@@ -165,11 +171,24 @@ public class TestConditions
         assertFunction("case " +
                         "when true then 33 " +
                         "end",
+                INTEGER,
+                33);
+
+        assertFunction("case " +
+                        "when true then BIGINT '33' " +
+                        "end",
                 BIGINT,
                 33L);
 
         assertFunction("case " +
                         "when false then 1 " +
+                        "else 33 " +
+                        "end",
+                INTEGER,
+                33);
+
+        assertFunction("case " +
+                        "when false then 10000000000 " +
                         "else 33 " +
                         "end",
                 BIGINT,
@@ -181,13 +200,31 @@ public class TestConditions
                         "when true then 33 " +
                         "else 1 " +
                         "end",
+                INTEGER,
+                33);
+
+        assertFunction("case " +
+                        "when false then BIGINT '1' " +
+                        "when false then 1 " +
+                        "when true then 33 " +
+                        "else 1 " +
+                        "end",
+                BIGINT,
+                33L);
+
+        assertFunction("case " +
+                        "when false then 10000000000 " +
+                        "when false then 1 " +
+                        "when true then 33 " +
+                        "else 1 " +
+                        "end",
                 BIGINT,
                 33L);
 
         assertFunction("case " +
                         "when false then 1 " +
                         "end",
-                BIGINT,
+                INTEGER,
                 null);
 
         assertFunction("case " +
@@ -201,12 +238,69 @@ public class TestConditions
                         "when null then 1 " +
                         "when true then 33 " +
                         "end",
+                INTEGER,
+                33);
+
+        assertFunction("case " +
+                        "when null then 10000000000 " +
+                        "when true then 33 " +
+                        "end",
                 BIGINT,
                 33L);
 
         assertFunction("case " +
-                        "when false then 1.0 " +
+                        "when false then 1.0E0 " +
                         "when true then 33 " +
+                        "end",
+                DOUBLE,
+                33.0);
+
+        assertDecimalFunction("case " +
+                        "when false then DECIMAL '2.2' " +
+                        "when true then DECIMAL '2.2' " +
+                        "end",
+                decimal("2.2"));
+
+        assertDecimalFunction("case " +
+                        "when false then DECIMAL '1234567890.0987654321' " +
+                        "when true then DECIMAL '3.3' " +
+                        "end",
+                decimal("0000000003.3000000000"));
+
+        assertDecimalFunction("case " +
+                        "when false then 1 " +
+                        "when true then DECIMAL '2.2' " +
+                        "end",
+                decimal("0000000002.2"));
+
+        assertDecimalFunction("case " +
+                        "when false then 2.2 " +
+                        "when true then 2.2 " +
+                        "end",
+                decimal("2.2"));
+
+        assertDecimalFunction("case " +
+                        "when false then 1234567890.0987654321 " +
+                        "when true then 3.3 " +
+                        "end",
+                decimal("0000000003.3000000000"));
+
+        assertDecimalFunction("case " +
+                        "when false then 1 " +
+                        "when true then 2.2 " +
+                        "end",
+                decimal("0000000002.2"));
+
+        assertFunction("case " +
+                        "when false then DECIMAL '1.1' " +
+                        "when true then 33.0E0 " +
+                        "end",
+                DOUBLE,
+                33.0);
+
+        assertFunction("case " +
+                        "when false then 1.1 " +
+                        "when true then 33.0E0 " +
                         "end",
                 DOUBLE,
                 33.0);
@@ -225,11 +319,24 @@ public class TestConditions
         assertFunction("case true " +
                         "when true then 33 " +
                         "end",
+                INTEGER,
+                33);
+
+        assertFunction("case true " +
+                        "when true then BIGINT '33' " +
+                        "end",
                 BIGINT,
                 33L);
 
         assertFunction("case true " +
                         "when false then 1 " +
+                        "else 33 " +
+                        "end",
+                INTEGER,
+                33);
+
+        assertFunction("case true " +
+                        "when false then 10000000000 " +
                         "else 33 " +
                         "end",
                 BIGINT,
@@ -241,13 +348,13 @@ public class TestConditions
                         "when true then 33 " +
                         "else 1 " +
                         "end",
-                BIGINT,
-                33L);
+                INTEGER,
+                33);
 
         assertFunction("case true " +
                         "when false then 1 " +
                         "end",
-                BIGINT,
+                INTEGER,
                 null);
 
         assertFunction("case true " +
@@ -258,22 +365,79 @@ public class TestConditions
                 null);
 
         assertFunction("case true " +
-                        "when null then 1 " +
+                        "when null then 10000000000 " +
                         "when true then 33 " +
                         "end",
                 BIGINT,
                 33L);
 
+        assertFunction("case true " +
+                        "when null then 1 " +
+                        "when true then 33 " +
+                        "end",
+                INTEGER,
+                33);
+
         assertFunction("case null " +
                         "when true then 1 " +
                         "else 33 " +
                         "end",
-                BIGINT,
+                INTEGER,
                 33);
 
         assertFunction("case true " +
-                        "when false then 1.0 " +
+                        "when false then 1.0E0 " +
                         "when true then 33 " +
+                        "end",
+                DOUBLE,
+                33.0);
+
+        assertDecimalFunction("case true " +
+                        "when false then DECIMAL '2.2' " +
+                        "when true then DECIMAL '2.2' " +
+                        "end",
+                decimal("2.2"));
+
+        assertDecimalFunction("case true " +
+                        "when false then DECIMAL '1234567890.0987654321' " +
+                        "when true then DECIMAL '3.3' " +
+                        "end",
+                decimal("0000000003.3000000000"));
+
+        assertDecimalFunction("case true " +
+                        "when false then 1 " +
+                        "when true then DECIMAL '2.2' " +
+                        "end",
+                decimal("0000000002.2"));
+
+        assertFunction("case true " +
+                        "when false then DECIMAL '1.1' " +
+                        "when true then 33.0E0 " +
+                        "end",
+                DOUBLE,
+                33.0);
+
+        assertDecimalFunction("case true " +
+                        "when false then 2.2 " +
+                        "when true then 2.2 " +
+                        "end",
+                decimal("2.2"));
+
+        assertDecimalFunction("case true " +
+                        "when false then 1234567890.0987654321 " +
+                        "when true then 3.3 " +
+                        "end",
+                decimal("0000000003.3000000000"));
+
+        assertDecimalFunction("case true " +
+                        "when false then 1 " +
+                        "when true then 2.2 " +
+                        "end",
+                decimal("0000000002.2"));
+
+        assertFunction("case true " +
+                        "when false then 1.1 " +
+                        "when true then 33.0E0 " +
                         "end",
                 DOUBLE,
                 33.0);

@@ -13,15 +13,19 @@ package com.facebook.presto.operator.scalar;
  * limitations under the License.
  */
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.type.SqlType;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.spi.function.OperatorDependency;
+import com.facebook.presto.spi.function.ScalarOperator;
+import com.facebook.presto.spi.function.SqlNullable;
+import com.facebook.presto.spi.function.SqlType;
+import com.facebook.presto.spi.function.TypeParameter;
 
 import java.lang.invoke.MethodHandle;
 
-import static com.facebook.presto.metadata.OperatorType.EQUAL;
-import static com.facebook.presto.metadata.OperatorType.NOT_EQUAL;
+import static com.facebook.presto.common.function.OperatorType.EQUAL;
+import static com.facebook.presto.common.function.OperatorType.NOT_EQUAL;
 
 @ScalarOperator(NOT_EQUAL)
 public final class ArrayNotEqualOperator
@@ -30,12 +34,17 @@ public final class ArrayNotEqualOperator
 
     @TypeParameter("E")
     @SqlType(StandardTypes.BOOLEAN)
-    public static boolean notEqual(
-            @OperatorDependency(operator = EQUAL, returnType = StandardTypes.BOOLEAN, argumentTypes = {"E", "E"}) MethodHandle equalsFunction,
+    @SqlNullable
+    public static Boolean notEqual(
+            @OperatorDependency(operator = EQUAL, argumentTypes = {"E", "E"}) MethodHandle equalsFunction,
             @TypeParameter("E") Type type,
             @SqlType("array(E)") Block left,
             @SqlType("array(E)") Block right)
     {
-        return !ArrayEqualOperator.equals(equalsFunction, type, left, right);
+        Boolean result = ArrayEqualOperator.equals(equalsFunction, type, left, right);
+        if (result == null) {
+            return null;
+        }
+        return !result;
     }
 }

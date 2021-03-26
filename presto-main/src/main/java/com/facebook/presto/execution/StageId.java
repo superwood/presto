@@ -13,37 +13,48 @@
  */
 package com.facebook.presto.execution;
 
+import com.facebook.drift.annotations.ThriftConstructor;
+import com.facebook.drift.annotations.ThriftField;
+import com.facebook.drift.annotations.ThriftStruct;
+import com.facebook.presto.spi.QueryId;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 import java.util.List;
 import java.util.Objects;
 
-import static com.facebook.presto.execution.QueryId.validateId;
+import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
+@ThriftStruct
 public class StageId
 {
     @JsonCreator
     public static StageId valueOf(String stageId)
     {
         List<String> ids = QueryId.parseDottedId(stageId, 2, "stageId");
-        return new StageId(new QueryId(ids.get(0)), ids.get(1));
+        return valueOf(ids);
+    }
+
+    public static StageId valueOf(List<String> ids)
+    {
+        checkArgument(ids.size() == 2, "Expected two ids but got: %s", ids);
+        return new StageId(new QueryId(ids.get(0)), Integer.parseInt(ids.get(1)));
     }
 
     private final QueryId queryId;
-    private final String id;
+    private final int id;
 
-    public StageId(QueryId queryId, String id)
+    public StageId(QueryId queryId, int id)
     {
         this.queryId = requireNonNull(queryId, "queryId is null");
-        this.id = validateId(id);
+        this.id = id;
     }
 
-    public StageId(String queryId, String id)
+    @ThriftConstructor
+    public StageId(String queryId, int id)
     {
-        this.queryId = new QueryId(queryId);
-        this.id = validateId(id);
+        this(QueryId.valueOf(queryId), id);
     }
 
     public QueryId getQueryId()
@@ -51,7 +62,14 @@ public class StageId
         return queryId;
     }
 
-    public String getId()
+    @ThriftField(value = 1, name = "queryId")
+    public String getQueryIdString()
+    {
+        return queryId.toString();
+    }
+
+    @ThriftField(2)
+    public int getId()
     {
         return id;
     }

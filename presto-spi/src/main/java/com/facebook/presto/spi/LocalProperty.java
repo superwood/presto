@@ -13,14 +13,30 @@
  */
 package com.facebook.presto.spi;
 
-import java.util.HashSet;
+import com.fasterxml.jackson.annotation.JsonSubTypes;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
+
+import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 
+@JsonTypeInfo(
+        use = JsonTypeInfo.Id.NAME,
+        include = JsonTypeInfo.As.PROPERTY,
+        property = "@type")
+@JsonSubTypes({
+        @JsonSubTypes.Type(value = ConstantProperty.class, name = "constant"),
+        @JsonSubTypes.Type(value = SortingProperty.class, name = "sorting"),
+        @JsonSubTypes.Type(value = GroupingProperty.class, name = "grouping")})
 public interface LocalProperty<E>
 {
     <T> Optional<LocalProperty<T>> translate(Function<E, Optional<T>> translator);
+
+    /**
+     * Returns true if reordering breaks this LocalProperty
+     */
+    boolean isOrderSensitive();
 
     /**
      * Return true if the actual LocalProperty can be used to simplify this LocalProperty
@@ -32,7 +48,7 @@ public interface LocalProperty<E>
      */
     default Optional<LocalProperty<E>> withConstants(Set<E> constants)
     {
-        Set<E> set = new HashSet<>(getColumns());
+        Set<E> set = new LinkedHashSet<>(getColumns());
         set.removeAll(constants);
 
         if (set.isEmpty()) {

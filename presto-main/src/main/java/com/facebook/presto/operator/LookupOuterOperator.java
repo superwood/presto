@@ -13,28 +13,20 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
-import com.google.common.base.Function;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.execution.Lifespan;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.google.common.collect.ImmutableList;
-import com.google.common.primitives.Ints;
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
 
-import javax.annotation.concurrent.GuardedBy;
-
+import java.util.HashSet;
 import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Set;
 
-import static com.facebook.presto.util.Types.checkType;
+import static com.facebook.airlift.concurrent.MoreFutures.tryGetFutureValue;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.util.concurrent.Futures.transform;
-import static io.airlift.concurrent.MoreFutures.tryGetFutureValue;
 import static java.util.Objects.requireNonNull;
 
 public class LookupOuterOperator
@@ -43,28 +35,32 @@ public class LookupOuterOperator
     public static class LookupOuterOperatorFactory
             implements OperatorFactory
     {
+        private enum State
+        {
+            NOT_CREATED, CREATED, CLOSED
+        }
+
         private final int operatorId;
         private final PlanNodeId planNodeId;
-        private final OuterLookupSourceSupplier lookupSourceSupplier;
-        private final List<Type> probeTypes;
-        private final List<Type> types;
+        private final List<Type> probeOutputTypes;
+        private final List<Type> buildOutputTypes;
+        private final JoinBridgeManager<?> joinBridgeManager;
+
+        private final Set<Lifespan> createdLifespans = new HashSet<>();
         private boolean closed;
 
         public LookupOuterOperatorFactory(
                 int operatorId,
                 PlanNodeId planNodeId,
-                OuterLookupSourceSupplier lookupSourceSupplier,
-                List<Type> probeTypes)
+                List<Type> probeOutputTypes,
+                List<Type> buildOutputTypes,
+                JoinBridgeManager<?> joinBridgeManager)
         {
             this.operatorId = operatorId;
             this.planNodeId = requireNonNull(planNodeId, "planNodeId is null");
-            this.lookupSourceSupplier = requireNonNull(lookupSourceSupplier, "lookupSourceSupplier is null");
-            this.probeTypes = ImmutableList.copyOf(requireNonNull(probeTypes, "probeTypes is null"));
-
-            this.types = ImmutableList.<Type>builder()
-                    .addAll(probeTypes)
-                    .addAll(lookupSourceSupplier.getTypes())
-                    .build();
+            this.probeOutputTypes = ImmutableList.copyOf(requireNonNull(probeOutputTypes, "probeOutputTypes is null"));
+            this.buildOutputTypes = ImmutableList.copyOf(requireNonNull(buildOutputTypes, "buildOutputTypes is null"));
+            this.joinBridgeManager = joinBridgeManager;
         }
 
         public int getOperatorId()
@@ -73,70 +69,77 @@ public class LookupOuterOperator
         }
 
         @Override
-        public List<Type> getTypes()
-        {
-            return types;
-        }
-
-        @Override
         public Operator createOperator(DriverContext driverContext)
         {
-            checkState(!closed, "Factory is already closed");
+            checkState(!closed, "LookupOuterOperatorFactory is closed");
+            Lifespan lifespan = driverContext.getLifespan();
+            if (createdLifespans.contains(lifespan)) {
+                throw new IllegalStateException("Only one outer operator can be created per Lifespan");
+            }
+            createdLifespans.add(lifespan);
+
+            ListenableFuture<OuterPositionIterator> outerPositionsFuture = joinBridgeManager.getOuterPositionsFuture(lifespan);
             OperatorContext operatorContext = driverContext.addOperatorContext(operatorId, planNodeId, LookupOuterOperator.class.getSimpleName());
-            return new LookupOuterOperator(operatorContext, lookupSourceSupplier, probeTypes);
+            joinBridgeManager.outerOperatorCreated(lifespan);
+            return new LookupOuterOperator(operatorContext, outerPositionsFuture, probeOutputTypes, buildOutputTypes, () -> joinBridgeManager.outerOperatorClosed(lifespan));
         }
 
         @Override
-        public void close()
+        public void noMoreOperators(Lifespan lifespan)
         {
+            joinBridgeManager.outerOperatorFactoryClosed(lifespan);
+        }
+
+        @Override
+        public void noMoreOperators()
+        {
+            if (closed) {
+                return;
+            }
             closed = true;
         }
 
         @Override
         public OperatorFactory duplicate()
         {
-            return new LookupOuterOperatorFactory(operatorId, planNodeId, lookupSourceSupplier, probeTypes);
+            throw new UnsupportedOperationException("Source operator factories can not be duplicated");
         }
     }
 
     private final OperatorContext operatorContext;
     private final ListenableFuture<OuterPositionIterator> outerPositionsFuture;
 
-    private final List<Type> types;
-    private final List<Type> probeTypes;
+    private final List<Type> probeOutputTypes;
+    private final Runnable onClose;
 
     private final PageBuilder pageBuilder;
 
     private OuterPositionIterator outerPositions;
+    private boolean closed;
 
     public LookupOuterOperator(
             OperatorContext operatorContext,
-            OuterLookupSourceSupplier lookupSourceSupplier,
-            List<Type> probeTypes)
+            ListenableFuture<OuterPositionIterator> outerPositionsFuture,
+            List<Type> probeOutputTypes,
+            List<Type> buildOutputTypes,
+            Runnable onClose)
     {
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
+        this.outerPositionsFuture = requireNonNull(outerPositionsFuture, "outerPositionsFuture is null");
 
-        requireNonNull(lookupSourceSupplier, "lookupSourceSupplier is null");
-        this.outerPositionsFuture = lookupSourceSupplier.getOuterPositions(operatorContext);
-
-        this.types = ImmutableList.<Type>builder()
-                .addAll(probeTypes)
-                .addAll(lookupSourceSupplier.getTypes())
+        List<Type> types = ImmutableList.<Type>builder()
+                .addAll(requireNonNull(probeOutputTypes, "probeOutputTypes is null"))
+                .addAll(requireNonNull(buildOutputTypes, "buildOutputTypes is null"))
                 .build();
-        this.probeTypes = ImmutableList.copyOf(requireNonNull(probeTypes, "probeTypes is null"));
+        this.probeOutputTypes = ImmutableList.copyOf(probeOutputTypes);
         this.pageBuilder = new PageBuilder(types);
+        this.onClose = requireNonNull(onClose, "onClose is null");
     }
 
     @Override
     public OperatorContext getOperatorContext()
     {
         return operatorContext;
-    }
-
-    @Override
-    public List<Type> getTypes()
-    {
-        return types;
     }
 
     @Override
@@ -148,12 +151,14 @@ public class LookupOuterOperator
     @Override
     public void finish()
     {
+        // this is a source operator, so we can just terminate the output now
+        close();
     }
 
     @Override
     public boolean isFinished()
     {
-        return outerPositions != null && !outerPositions.hasNext() && pageBuilder.isEmpty();
+        return closed;
     }
 
     @Override
@@ -178,281 +183,43 @@ public class LookupOuterOperator
             }
         }
 
-        while (!pageBuilder.isFull() && outerPositions.hasNext()) {
-            long buildSideOuterJoinPosition = outerPositions.next();
+        boolean outputPositionsFinished = false;
+        while (!pageBuilder.isFull()) {
+            // write build columns
+            outputPositionsFinished = !outerPositions.appendToNext(pageBuilder, probeOutputTypes.size());
+            if (outputPositionsFinished) {
+                break;
+            }
             pageBuilder.declarePosition();
 
             // write nulls into probe columns
             // todo use RLE blocks
-            for (int probeChannel = 0; probeChannel < probeTypes.size(); probeChannel++) {
+            for (int probeChannel = 0; probeChannel < probeOutputTypes.size(); probeChannel++) {
                 pageBuilder.getBlockBuilder(probeChannel).appendNull();
             }
-
-            // write build columns
-            outerPositions.appendTo(buildSideOuterJoinPosition, pageBuilder, probeTypes.size());
         }
 
         // only flush full pages unless we are done
-        if (pageBuilder.isFull() || (!outerPositions.hasNext() && !pageBuilder.isEmpty())) {
-            Page page = pageBuilder.build();
+        Page page = null;
+        if (pageBuilder.isFull() || (outputPositionsFinished && !pageBuilder.isEmpty())) {
+            page = pageBuilder.build();
             pageBuilder.reset();
-            return page;
         }
 
-        return null;
+        if (outputPositionsFinished) {
+            close();
+        }
+        return page;
     }
 
     @Override
     public void close()
     {
-        Futures.addCallback(outerPositionsFuture, new FutureCallback<OuterPositionIterator>()
-        {
-            @Override
-            public void onSuccess(OuterPositionIterator outerPositions)
-            {
-                outerPositions.close();
-            }
-
-            @Override
-            public void onFailure(Throwable t)
-            {
-            }
-        });
-
+        if (closed) {
+            return;
+        }
+        closed = true;
         pageBuilder.reset();
-    }
-
-    public static class OuterLookupSourceSupplier
-            implements LookupSourceSupplier
-    {
-        private final LookupSourceSupplier lookupSourceSupplier;
-        private final AtomicInteger referenceCount = new AtomicInteger(1);
-
-        private final SettableFuture<OuterPositionIterator> outerPositionsFuture = SettableFuture.create();
-
-        @GuardedBy("this")
-        private ListenableFuture<LookupSource> outerLookupFuture;
-
-        @GuardedBy("this")
-        private OuterPositionTracker positionTracker;
-
-        public OuterLookupSourceSupplier(LookupSourceSupplier lookupSourceSupplier)
-        {
-            this.lookupSourceSupplier = requireNonNull(lookupSourceSupplier, "lookupSourceSupplier is null");
-        }
-
-        @Override
-        public List<Type> getTypes()
-        {
-            return lookupSourceSupplier.getTypes();
-        }
-
-        @Override
-        public ListenableFuture<LookupSource> getLookupSource(OperatorContext operatorContext)
-        {
-            // wrapper lookup source to track used positions
-            return transform(lookupSourceSupplier.getLookupSource(operatorContext),
-                    (Function<LookupSource, LookupSource>) input -> new OuterLookupSource(getPositionTracker(input)));
-        }
-
-        public synchronized SettableFuture<OuterPositionIterator> getOuterPositions(OperatorContext operatorContext)
-        {
-            checkState(outerLookupFuture == null, "Outer positions can only be fetched once");
-            outerLookupFuture = getLookupSource(operatorContext);
-
-            updateOuterPositionState();
-
-            return outerPositionsFuture;
-        }
-
-        private synchronized OuterPositionTracker getPositionTracker(LookupSource lookupSource)
-        {
-            if (positionTracker == null) {
-                positionTracker = new OuterPositionTracker(checkType(lookupSource, SharedLookupSource.class, "lookupSource"));
-            }
-            return positionTracker;
-        }
-
-        @Override
-        public void retain()
-        {
-            referenceCount.incrementAndGet();
-        }
-
-        @Override
-        public void release()
-        {
-            if (referenceCount.decrementAndGet() == 0) {
-                updateOuterPositionState();
-            }
-        }
-
-        private synchronized void updateOuterPositionState()
-        {
-            // final release may happen before get outer position is called
-            if (referenceCount.get() != 0 || outerLookupFuture == null) {
-                return;
-            }
-
-            // in the case of no probe splits (i.e., an empty table), the lookup source may
-            // not have finished building yet.  When it does finish, set the positions future
-            // so the build-outer rows can be emitted.
-            Futures.addCallback(outerLookupFuture, new FutureCallback<LookupSource>()
-            {
-                @Override
-                public void onSuccess(LookupSource result)
-                {
-                    outerPositionsFuture.set(getPositionTracker(result).getOuterPositions());
-                }
-
-                @Override
-                public void onFailure(Throwable t)
-                {
-                    outerPositionsFuture.setException(t);
-                }
-            });
-        }
-    }
-
-    private static class OuterLookupSource
-            implements LookupSource
-    {
-        private final OuterPositionTracker positionTracker;
-        private final LookupSource lookupSource;
-
-        public OuterLookupSource(OuterPositionTracker positionTracker)
-        {
-            this.positionTracker = positionTracker;
-            this.lookupSource = positionTracker.getLookupSource();
-        }
-
-        @Override
-        public void appendTo(long position, PageBuilder pageBuilder, int outputChannelOffset)
-        {
-            lookupSource.appendTo(position, pageBuilder, outputChannelOffset);
-            positionTracker.visit(Ints.checkedCast(position));
-        }
-
-        @Override
-        public int getChannelCount()
-        {
-            return lookupSource.getChannelCount();
-        }
-
-        @Override
-        public int getJoinPositionCount()
-        {
-            return lookupSource.getJoinPositionCount();
-        }
-
-        @Override
-        public long getJoinPosition(int position, Page page)
-        {
-            return lookupSource.getJoinPosition(position, page);
-        }
-
-        @Override
-        public long getInMemorySizeInBytes()
-        {
-            return lookupSource.getInMemorySizeInBytes();
-        }
-
-        @Override
-        public long getNextJoinPosition(long currentPosition)
-        {
-            return lookupSource.getNextJoinPosition(currentPosition);
-        }
-
-        @Override
-        public long getJoinPosition(int position, Page page, int rawHash)
-        {
-            return lookupSource.getJoinPosition(position, page, rawHash);
-        }
-
-        @Override
-        public void close()
-        {
-            lookupSource.close();
-        }
-    }
-
-    private static class OuterPositionTracker
-    {
-        private final SharedLookupSource lookupSource;
-        private final boolean[] visitedPositions;
-        private boolean closed;
-
-        public OuterPositionTracker(SharedLookupSource lookupSource)
-        {
-            this.lookupSource = requireNonNull(lookupSource, "lookupSource is null");
-            this.visitedPositions = new boolean[lookupSource.getJoinPositionCount()];
-        }
-
-        public SharedLookupSource getLookupSource()
-        {
-            return lookupSource;
-        }
-
-        public synchronized void visit(int position)
-        {
-            checkState(!closed, "Position tracker is closed");
-            visitedPositions[position] = true;
-        }
-
-        public synchronized OuterPositionIterator getOuterPositions()
-        {
-            closed = true;
-            return new OuterPositionIterator(lookupSource, visitedPositions);
-        }
-    }
-
-    private static class OuterPositionIterator
-    {
-        private final SharedLookupSource lookupSource;
-        private final boolean[] visitedPositions;
-        private int currentPosition;
-        private boolean closed;
-
-        public OuterPositionIterator(SharedLookupSource lookupSource, boolean[] visitedPositions)
-        {
-            this.lookupSource = requireNonNull(lookupSource, "lookupSource is null");
-            this.visitedPositions = requireNonNull(visitedPositions, "visitedPositions is null");
-        }
-
-        public boolean hasNext()
-        {
-            while (currentPosition < visitedPositions.length) {
-                if (!visitedPositions[currentPosition]) {
-                    return true;
-                }
-                currentPosition++;
-            }
-            return false;
-        }
-
-        public int next()
-        {
-            if (!hasNext()) {
-                throw new NoSuchElementException();
-            }
-
-            int result = currentPosition;
-            currentPosition++;
-            return result;
-        }
-
-        public void appendTo(long position, PageBuilder pageBuilder, int outputChannelOffset)
-        {
-            lookupSource.appendTo(position, pageBuilder, outputChannelOffset);
-        }
-
-        public void close()
-        {
-            // memory can only be freed once
-            if (!closed) {
-                closed = true;
-                lookupSource.freeMemory();
-            }
-        }
+        onClose.run();
     }
 }

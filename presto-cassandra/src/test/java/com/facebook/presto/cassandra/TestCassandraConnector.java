@@ -14,8 +14,10 @@
 package com.facebook.presto.cassandra;
 
 import com.datastax.driver.core.utils.Bytes;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableHandle;
@@ -27,15 +29,17 @@ import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.SchemaNotFoundException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
+import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.connector.Connector;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.facebook.presto.spi.connector.ConnectorRecordSetProvider;
 import com.facebook.presto.spi.connector.ConnectorSplitManager;
+import com.facebook.presto.spi.connector.ConnectorSplitManager.SplitSchedulingContext;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.testing.TestingConnectorContext;
+import com.facebook.presto.testing.TestingConnectorSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import org.cassandraunit.utils.EmbeddedCassandraServerHelper;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
@@ -45,23 +49,23 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static com.facebook.presto.cassandra.CassandraTestingUtils.HOSTNAME;
-import static com.facebook.presto.cassandra.CassandraTestingUtils.KEYSPACE_NAME;
-import static com.facebook.presto.cassandra.CassandraTestingUtils.PORT;
-import static com.facebook.presto.cassandra.CassandraTestingUtils.TABLE_NAME;
-import static com.facebook.presto.cassandra.CassandraTestingUtils.initializeTestData;
-import static com.facebook.presto.cassandra.util.Types.checkType;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
+import static com.facebook.airlift.concurrent.MoreFutures.getFutureValue;
+import static com.facebook.airlift.testing.Assertions.assertInstanceOf;
+import static com.facebook.presto.cassandra.CassandraTestingUtils.TABLE_ALL_TYPES;
+import static com.facebook.presto.cassandra.CassandraTestingUtils.createTestTables;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.TimeZoneKey.UTC_KEY;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.Varchars.isVarcharType;
+import static com.facebook.presto.spi.connector.ConnectorSplitManager.SplitSchedulingStrategy.UNGROUPED_SCHEDULING;
+import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static io.airlift.concurrent.MoreFutures.getFutureValue;
-import static io.airlift.testing.Assertions.assertInstanceOf;
 import static java.util.Locale.ENGLISH;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNull;
@@ -73,6 +77,19 @@ public class TestCassandraConnector
 {
     protected static final String INVALID_DATABASE = "totally_invalid_database";
     private static final Date DATE = new Date();
+    private static final ConnectorSession SESSION = new TestingConnectorSession(
+            "user",
+            Optional.of("test"),
+            Optional.empty(),
+            UTC_KEY,
+            ENGLISH,
+            System.currentTimeMillis(),
+            new CassandraSessionProperties(new CassandraClientConfig()).getSessionProperties(),
+            ImmutableMap.of(),
+            true,
+            Optional.empty(),
+            Optional.empty(),
+            ImmutableMap.of());
     protected String database;
     protected SchemaTableName table;
     protected SchemaTableName tableUnpartitioned;
@@ -85,18 +102,18 @@ public class TestCassandraConnector
     public void setup()
             throws Exception
     {
-        EmbeddedCassandraServerHelper.startEmbeddedCassandra();
+        EmbeddedCassandra.start();
 
-        initializeTestData(DATE);
+        String keyspace = "test_connector";
+        createTestTables(EmbeddedCassandra.getSession(), keyspace, DATE);
 
         String connectorId = "cassandra-test";
-        CassandraConnectorFactory connectorFactory = new CassandraConnectorFactory(
-                connectorId,
-                ImmutableMap.<String, String>of());
+        CassandraConnectorFactory connectorFactory = new CassandraConnectorFactory(connectorId);
 
         Connector connector = connectorFactory.create(connectorId, ImmutableMap.of(
-                "cassandra.contact-points", HOSTNAME,
-                "cassandra.native-protocol-port", Integer.toString(PORT)));
+                "cassandra.contact-points", EmbeddedCassandra.getHost(),
+                "cassandra.native-protocol-port", Integer.toString(EmbeddedCassandra.getPort())),
+                new TestingConnectorContext());
 
         metadata = connector.getMetadata(CassandraTransactionHandle.INSTANCE);
         assertInstanceOf(metadata, CassandraMetadata.class);
@@ -107,15 +124,14 @@ public class TestCassandraConnector
         recordSetProvider = connector.getRecordSetProvider();
         assertInstanceOf(recordSetProvider, CassandraRecordSetProvider.class);
 
-        database = KEYSPACE_NAME.toLowerCase();
-        table = new SchemaTableName(database, TABLE_NAME.toLowerCase());
+        database = keyspace;
+        table = new SchemaTableName(database, TABLE_ALL_TYPES.toLowerCase(ENGLISH));
         tableUnpartitioned = new SchemaTableName(database, "presto_test_unpartitioned");
         invalidTable = new SchemaTableName(database, "totally_invalid_table_name");
     }
 
     @AfterMethod
     public void tearDown()
-            throws Exception
     {
     }
 
@@ -126,7 +142,6 @@ public class TestCassandraConnector
 
     @Test
     public void testGetDatabaseNames()
-            throws Exception
     {
         List<String> databases = metadata.listSchemaNames(SESSION);
         assertTrue(databases.contains(database.toLowerCase(ENGLISH)));
@@ -134,7 +149,6 @@ public class TestCassandraConnector
 
     @Test
     public void testGetTableNames()
-            throws Exception
     {
         List<SchemaTableName> tables = metadata.listTables(SESSION, database);
         assertTrue(tables.contains(table));
@@ -143,7 +157,6 @@ public class TestCassandraConnector
     // disabled until metadata manager is updated to handle invalid catalogs and schemas
     @Test(enabled = false, expectedExceptions = SchemaNotFoundException.class)
     public void testGetTableNamesException()
-            throws Exception
     {
         metadata.listTables(SESSION, INVALID_DATABASE);
     }
@@ -158,7 +171,6 @@ public class TestCassandraConnector
 
     @Test
     public void testGetRecords()
-            throws Exception
     {
         ConnectorTableHandle tableHandle = getTableHandle(table);
         ConnectorTableMetadata tableMetadata = metadata.getTableMetadata(SESSION, tableHandle);
@@ -169,7 +181,7 @@ public class TestCassandraConnector
 
         List<ConnectorTableLayoutResult> layouts = metadata.getTableLayouts(SESSION, tableHandle, Constraint.alwaysTrue(), Optional.empty());
         ConnectorTableLayoutHandle layout = getOnlyElement(layouts).getTableLayout().getHandle();
-        List<ConnectorSplit> splits = getAllSplits(splitManager.getSplits(transaction, SESSION, layout));
+        List<ConnectorSplit> splits = getAllSplits(splitManager.getSplits(transaction, SESSION, layout, new SplitSchedulingContext(UNGROUPED_SCHEDULING, false, WarningCollector.NOOP)));
 
         long rowNumber = 0;
         for (ConnectorSplit split : splits) {
@@ -222,6 +234,9 @@ public class TestCassandraConnector
                 if (BOOLEAN.equals(type)) {
                     cursor.getBoolean(columnIndex);
                 }
+                else if (INTEGER.equals(type)) {
+                    cursor.getLong(columnIndex);
+                }
                 else if (BIGINT.equals(type)) {
                     cursor.getLong(columnIndex);
                 }
@@ -231,7 +246,10 @@ public class TestCassandraConnector
                 else if (DOUBLE.equals(type)) {
                     cursor.getDouble(columnIndex);
                 }
-                else if (VARCHAR.equals(type) || VARBINARY.equals(type)) {
+                else if (REAL.equals(type)) {
+                    cursor.getLong(columnIndex);
+                }
+                else if (isVarcharType(type) || VARBINARY.equals(type)) {
                     try {
                         cursor.getSlice(columnIndex);
                     }
@@ -254,11 +272,10 @@ public class TestCassandraConnector
     }
 
     private static List<ConnectorSplit> getAllSplits(ConnectorSplitSource splitSource)
-            throws InterruptedException
     {
         ImmutableList.Builder<ConnectorSplit> splits = ImmutableList.builder();
         while (!splitSource.isFinished()) {
-            splits.addAll(getFutureValue(splitSource.getNextBatch(1000)));
+            splits.addAll(getFutureValue(splitSource.getNextBatch(NOT_PARTITIONED, 1000)).getSplits());
         }
         return splits.build();
     }
@@ -268,7 +285,7 @@ public class TestCassandraConnector
         ImmutableMap.Builder<String, Integer> index = ImmutableMap.builder();
         int i = 0;
         for (ColumnHandle columnHandle : columnHandles) {
-            String name = checkType(columnHandle, CassandraColumnHandle.class, "columnHandle").getName();
+            String name = ((CassandraColumnHandle) columnHandle).getName();
             index.put(name, i);
             i++;
         }

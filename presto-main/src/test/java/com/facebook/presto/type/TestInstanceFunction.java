@@ -13,33 +13,35 @@
  */
 package com.facebook.presto.type;
 
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.operator.scalar.AbstractTestFunctions;
-import com.facebook.presto.operator.scalar.ScalarFunction;
-import com.facebook.presto.spi.type.StandardTypes;
+import com.facebook.presto.spi.function.ScalarFunction;
+import com.facebook.presto.spi.function.SqlType;
+import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 
 public class TestInstanceFunction
         extends AbstractTestFunctions
 {
-    public TestInstanceFunction()
+    @BeforeClass
+    public void setUp()
     {
-        registerScalar(PrecomputedFunction.class);
+        registerParametricScalar(PrecomputedFunction.class);
     }
 
     @Test
     public void test()
-            throws Exception
     {
         assertFunction("precomputed()", BIGINT, 42L);
     }
 
+    @ScalarFunction("precomputed")
     public static final class PrecomputedFunction
     {
         private final int value = 42;
 
-        @ScalarFunction
         @SqlType(StandardTypes.BIGINT)
         public long precomputed()
         {

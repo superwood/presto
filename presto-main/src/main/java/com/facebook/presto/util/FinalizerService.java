@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.util;
 
+import com.facebook.airlift.log.Logger;
 import com.google.common.collect.Sets;
-import io.airlift.log.Logger;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
@@ -25,12 +25,12 @@ import java.lang.ref.PhantomReference;
 import java.lang.ref.ReferenceQueue;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.Executors.newSingleThreadExecutor;
 
 @ThreadSafe
 public class FinalizerService
@@ -39,7 +39,9 @@ public class FinalizerService
 
     private final Set<FinalizerReference> finalizers = Sets.newConcurrentHashSet();
     private final ReferenceQueue<Object> finalizerQueue = new ReferenceQueue<>();
-    private final ExecutorService executor = Executors.newCachedThreadPool(daemonThreadsNamed("FinalizerService-%s"));
+    @GuardedBy("this")
+    private ExecutorService executor;
+
     @GuardedBy("this")
     private Future<?> finalizerTask;
 
@@ -49,10 +51,13 @@ public class FinalizerService
         if (finalizerTask != null) {
             return;
         }
+        if (executor == null) {
+            executor = newSingleThreadExecutor(daemonThreadsNamed("FinalizerService"));
+        }
         if (executor.isShutdown()) {
             throw new IllegalStateException("Finalizer service has been destroyed");
         }
-        finalizerTask = executor.submit((Runnable) this::processFinalizerQueue);
+        finalizerTask = executor.submit(this::processFinalizerQueue);
     }
 
     @PreDestroy
@@ -62,12 +67,15 @@ public class FinalizerService
             finalizerTask.cancel(true);
             finalizerTask = null;
         }
-        executor.shutdownNow();
+        if (executor != null) {
+            executor.shutdownNow();
+            executor = null;
+        }
     }
 
     /**
      * When referent is freed by the garbage collector, run cleanup.
-     *
+     * <p>
      * Note: cleanup must not contain a reference to the referent object.
      */
     public void addFinalizer(Object referent, Runnable cleanup)

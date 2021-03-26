@@ -13,13 +13,14 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarcharType;
+import com.facebook.presto.common.type.Type;
 import io.airlift.slice.Slices;
 
 import java.util.concurrent.ThreadLocalRandom;
 
-import static com.facebook.presto.operator.aggregation.ApproximateCountDistinctAggregations.VARBINARY_APPROXIMATE_COUNT_DISTINCT_AGGREGATIONS;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 
 public class TestApproximateCountDistinctVarBinary
         extends AbstractTestApproximateCountDistinct
@@ -27,13 +28,14 @@ public class TestApproximateCountDistinctVarBinary
     @Override
     public InternalAggregationFunction getAggregationFunction()
     {
-        return VARBINARY_APPROXIMATE_COUNT_DISTINCT_AGGREGATIONS;
+        return FUNCTION_AND_TYPE_MANAGER.getAggregateFunctionImplementation(
+                FUNCTION_AND_TYPE_MANAGER.lookupFunction("approx_distinct", fromTypes(VARCHAR, DOUBLE)));
     }
 
     @Override
     public Type getValueType()
     {
-        return VarcharType.VARCHAR;
+        return VARCHAR;
     }
 
     @Override

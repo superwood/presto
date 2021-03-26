@@ -13,38 +13,66 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.Range;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.BigintType;
+import com.facebook.presto.common.type.BooleanType;
+import com.facebook.presto.common.type.CharType;
+import com.facebook.presto.common.type.DateType;
+import com.facebook.presto.common.type.DoubleType;
+import com.facebook.presto.common.type.IntegerType;
+import com.facebook.presto.common.type.RealType;
+import com.facebook.presto.common.type.SmallintType;
+import com.facebook.presto.common.type.TimeType;
+import com.facebook.presto.common.type.TimeWithTimeZoneType;
+import com.facebook.presto.common.type.TimestampType;
+import com.facebook.presto.common.type.TimestampWithTimeZoneType;
+import com.facebook.presto.common.type.TinyintType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VarcharType;
+import com.facebook.presto.plugin.jdbc.optimization.JdbcExpression;
 import com.facebook.presto.spi.ColumnHandle;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.Range;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.BigintType;
-import com.facebook.presto.spi.type.BooleanType;
-import com.facebook.presto.spi.type.DoubleType;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.ConnectorSession;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
+import io.airlift.slice.Slice;
+import org.joda.time.DateTimeZone;
 
 import java.sql.Connection;
+import java.sql.Date;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.sql.Time;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
+import static com.facebook.presto.common.type.DateTimeEncoding.unpackMillisUtc;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static com.google.common.collect.Iterables.transform;
+import static java.lang.Float.intBitsToFloat;
+import static java.util.Collections.nCopies;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.TimeUnit.DAYS;
+import static java.util.stream.Collectors.joining;
+import static org.joda.time.DateTimeZone.UTC;
 
 public class QueryBuilder
 {
+    // not all databases support booleans, so use 1=1 and 1=0 instead
+    private static final String ALWAYS_TRUE = "1=1";
+    private static final String ALWAYS_FALSE = "1=0";
+
     private final String quote;
 
     private static class TypeAndValue
     {
-        public final Type type;
-        public final Object value;
+        private final Type type;
+        private final Object value;
 
         public TypeAndValue(Type type, Object value)
         {
@@ -68,13 +96,27 @@ public class QueryBuilder
         this.quote = requireNonNull(quote, "quote is null");
     }
 
-    public PreparedStatement buildSql(Connection connection, String catalog, String schema, String table, List<JdbcColumnHandle> columns, TupleDomain<ColumnHandle> tupleDomain)
+    public PreparedStatement buildSql(
+            JdbcClient client,
+            ConnectorSession session,
+            Connection connection,
+            String catalog,
+            String schema,
+            String table,
+            List<JdbcColumnHandle> columns,
+            TupleDomain<ColumnHandle> tupleDomain,
+            Optional<JdbcExpression> additionalPredicate)
             throws SQLException
     {
         StringBuilder sql = new StringBuilder();
 
+        String columnNames = columns.stream()
+                .map(JdbcColumnHandle::getColumnName)
+                .map(this::quote)
+                .collect(joining(", "));
+
         sql.append("SELECT ");
-        Joiner.on(", ").appendTo(sql, transform(columns, column -> quote(column.getColumnName())));
+        sql.append(columnNames);
         if (columns.isEmpty()) {
             sql.append("null");
         }
@@ -91,23 +133,66 @@ public class QueryBuilder
         List<TypeAndValue> accumulator = new ArrayList<>();
 
         List<String> clauses = toConjuncts(columns, tupleDomain, accumulator);
+        if (additionalPredicate.isPresent()) {
+            clauses = ImmutableList.<String>builder()
+                    .addAll(clauses)
+                    .add(additionalPredicate.get().getExpression())
+                    .build();
+            accumulator.addAll(additionalPredicate.get().getBoundConstantValues().stream()
+                    .map(constantExpression -> new TypeAndValue(constantExpression.getType(), constantExpression.getValue()))
+                    .collect(ImmutableList.toImmutableList()));
+        }
         if (!clauses.isEmpty()) {
             sql.append(" WHERE ")
                     .append(Joiner.on(" AND ").join(clauses));
         }
-
-        PreparedStatement statement = connection.prepareStatement(sql.toString());
+        sql.append(String.format("/* %s : %s */", session.getUser(), session.getQueryId()));
+        PreparedStatement statement = client.getPreparedStatement(connection, sql.toString());
 
         for (int i = 0; i < accumulator.size(); i++) {
             TypeAndValue typeAndValue = accumulator.get(i);
             if (typeAndValue.getType().equals(BigintType.BIGINT)) {
-                statement.setLong(i + 1, (Long) typeAndValue.getValue());
+                statement.setLong(i + 1, (long) typeAndValue.getValue());
+            }
+            else if (typeAndValue.getType().equals(IntegerType.INTEGER)) {
+                statement.setInt(i + 1, ((Number) typeAndValue.getValue()).intValue());
+            }
+            else if (typeAndValue.getType().equals(SmallintType.SMALLINT)) {
+                statement.setShort(i + 1, ((Number) typeAndValue.getValue()).shortValue());
+            }
+            else if (typeAndValue.getType().equals(TinyintType.TINYINT)) {
+                statement.setByte(i + 1, ((Number) typeAndValue.getValue()).byteValue());
             }
             else if (typeAndValue.getType().equals(DoubleType.DOUBLE)) {
-                statement.setDouble(i + 1, (Double) typeAndValue.getValue());
+                statement.setDouble(i + 1, (double) typeAndValue.getValue());
+            }
+            else if (typeAndValue.getType().equals(RealType.REAL)) {
+                statement.setFloat(i + 1, intBitsToFloat(((Number) typeAndValue.getValue()).intValue()));
             }
             else if (typeAndValue.getType().equals(BooleanType.BOOLEAN)) {
-                statement.setBoolean(i + 1, (Boolean) typeAndValue.getValue());
+                statement.setBoolean(i + 1, (boolean) typeAndValue.getValue());
+            }
+            else if (typeAndValue.getType().equals(DateType.DATE)) {
+                long millis = DAYS.toMillis((long) typeAndValue.getValue());
+                statement.setDate(i + 1, new Date(UTC.getMillisKeepLocal(DateTimeZone.getDefault(), millis)));
+            }
+            else if (typeAndValue.getType().equals(TimeType.TIME)) {
+                statement.setTime(i + 1, new Time((long) typeAndValue.getValue()));
+            }
+            else if (typeAndValue.getType().equals(TimeWithTimeZoneType.TIME_WITH_TIME_ZONE)) {
+                statement.setTime(i + 1, new Time(unpackMillisUtc((long) typeAndValue.getValue())));
+            }
+            else if (typeAndValue.getType().equals(TimestampType.TIMESTAMP)) {
+                statement.setTimestamp(i + 1, new Timestamp((long) typeAndValue.getValue()));
+            }
+            else if (typeAndValue.getType().equals(TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE)) {
+                statement.setTimestamp(i + 1, new Timestamp(unpackMillisUtc((long) typeAndValue.getValue())));
+            }
+            else if (typeAndValue.getType() instanceof VarcharType) {
+                statement.setString(i + 1, ((Slice) typeAndValue.getValue()).toStringUtf8());
+            }
+            else if (typeAndValue.getType() instanceof CharType) {
+                statement.setString(i + 1, ((Slice) typeAndValue.getValue()).toStringUtf8());
             }
             else {
                 throw new UnsupportedOperationException("Can't handle type: " + typeAndValue.getType());
@@ -120,7 +205,20 @@ public class QueryBuilder
     private static boolean isAcceptedType(Type type)
     {
         Type validType = requireNonNull(type, "type is null");
-        return validType.equals(BigintType.BIGINT) || validType.equals(DoubleType.DOUBLE) || validType.equals(BooleanType.BOOLEAN);
+        return validType.equals(BigintType.BIGINT) ||
+                validType.equals(TinyintType.TINYINT) ||
+                validType.equals(SmallintType.SMALLINT) ||
+                validType.equals(IntegerType.INTEGER) ||
+                validType.equals(DoubleType.DOUBLE) ||
+                validType.equals(RealType.REAL) ||
+                validType.equals(BooleanType.BOOLEAN) ||
+                validType.equals(DateType.DATE) ||
+                validType.equals(TimeType.TIME) ||
+                validType.equals(TimeWithTimeZoneType.TIME_WITH_TIME_ZONE) ||
+                validType.equals(TimestampType.TIMESTAMP) ||
+                validType.equals(TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE) ||
+                validType instanceof VarcharType ||
+                validType instanceof CharType;
     }
 
     private List<String> toConjuncts(List<JdbcColumnHandle> columns, TupleDomain<ColumnHandle> tupleDomain, List<TypeAndValue> accumulator)
@@ -143,11 +241,11 @@ public class QueryBuilder
         checkArgument(domain.getType().isOrderable(), "Domain type must be orderable");
 
         if (domain.getValues().isNone()) {
-            return domain.isNullAllowed() ? quote(columnName) + " IS NULL" : "FALSE";
+            return domain.isNullAllowed() ? quote(columnName) + " IS NULL" : ALWAYS_FALSE;
         }
 
         if (domain.getValues().isAll()) {
-            return domain.isNullAllowed() ? "TRUE" : quote(columnName) + " IS NOT NULL";
+            return domain.isNullAllowed() ? ALWAYS_TRUE : quote(columnName) + " IS NOT NULL";
         }
 
         List<String> disjuncts = new ArrayList<>();
@@ -168,7 +266,7 @@ public class QueryBuilder
                             rangeConjuncts.add(toPredicate(columnName, ">=", range.getLow().getValue(), type, accumulator));
                             break;
                         case BELOW:
-                            throw new IllegalArgumentException("Low Marker should never use BELOW bound: " + range);
+                            throw new IllegalArgumentException("Low marker should never use BELOW bound");
                         default:
                             throw new AssertionError("Unhandled bound: " + range.getLow().getBound());
                     }
@@ -176,7 +274,7 @@ public class QueryBuilder
                 if (!range.getHigh().isUpperUnbounded()) {
                     switch (range.getHigh().getBound()) {
                         case ABOVE:
-                            throw new IllegalArgumentException("High Marker should never use ABOVE bound: " + range);
+                            throw new IllegalArgumentException("High marker should never use ABOVE bound");
                         case EXACTLY:
                             rangeConjuncts.add(toPredicate(columnName, "<=", range.getHigh().getValue(), type, accumulator));
                             break;
@@ -198,7 +296,11 @@ public class QueryBuilder
             disjuncts.add(toPredicate(columnName, "=", getOnlyElement(singleValues), type, accumulator));
         }
         else if (singleValues.size() > 1) {
-            disjuncts.add(quote(columnName) + " IN (" + Joiner.on(",").join(transform(singleValues, value -> bindValue(value, type, accumulator))) + ")");
+            for (Object value : singleValues) {
+                bindValue(value, type, accumulator);
+            }
+            String values = Joiner.on(",").join(nCopies(singleValues.size(), "?"));
+            disjuncts.add(quote(columnName) + " IN (" + values + ")");
         }
 
         // Add nullability disjuncts
@@ -212,7 +314,8 @@ public class QueryBuilder
 
     private String toPredicate(String columnName, String operator, Object value, Type type, List<TypeAndValue> accumulator)
     {
-        return quote(columnName) + " " + operator + " " + bindValue(value, type, accumulator);
+        bindValue(value, type, accumulator);
+        return quote(columnName) + " " + operator + " ?";
     }
 
     private String quote(String name)
@@ -221,10 +324,9 @@ public class QueryBuilder
         return quote + name + quote;
     }
 
-    private static String bindValue(Object value, Type type, List<TypeAndValue> accumulator)
+    private static void bindValue(Object value, Type type, List<TypeAndValue> accumulator)
     {
         checkArgument(isAcceptedType(type), "Can't handle type: %s", type);
         accumulator.add(new TypeAndValue(type, value));
-        return "?";
     }
 }

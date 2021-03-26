@@ -13,23 +13,27 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.type.ParameterKind;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeParameter;
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.ParameterKind;
+import com.facebook.presto.common.type.ParametricType;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeParameter;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 
+import java.lang.invoke.MethodHandle;
 import java.util.List;
 
+import static com.facebook.presto.common.block.MethodHandleUtil.compose;
+import static com.facebook.presto.common.block.MethodHandleUtil.nativeValueGetter;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.google.common.base.Preconditions.checkArgument;
 
 public final class MapParametricType
         implements ParametricType
 {
     public static final MapParametricType MAP = new MapParametricType();
-
-    private MapParametricType()
-    {
-    }
 
     @Override
     public String getName()
@@ -40,6 +44,11 @@ public final class MapParametricType
     @Override
     public Type createType(List<TypeParameter> parameters)
     {
+        throw new IllegalStateException("MapType creation requires map operator MethodHandle. Please use `createType(functionAndTypeManager, parameters)` instead");
+    }
+
+    public Type createType(FunctionAndTypeManager functionAndTypeManager, List<TypeParameter> parameters)
+    {
         checkArgument(parameters.size() == 2, "Expected two parameters, got %s", parameters);
         TypeParameter firstParameter = parameters.get(0);
         TypeParameter secondParameter = parameters.get(1);
@@ -47,6 +56,17 @@ public final class MapParametricType
                 firstParameter.getKind() == ParameterKind.TYPE && secondParameter.getKind() == ParameterKind.TYPE,
                 "Expected key and type to be types, got %s",
                 parameters);
-        return new MapType(firstParameter.getType(), secondParameter.getType());
+
+        Type keyType = firstParameter.getType();
+        Type valueType = secondParameter.getType();
+        MethodHandle keyNativeEquals = functionAndTypeManager.getBuiltInScalarFunctionImplementation(functionAndTypeManager.resolveOperator(OperatorType.EQUAL, fromTypes(keyType, keyType))).getMethodHandle();
+        MethodHandle keyBlockEquals = compose(keyNativeEquals, nativeValueGetter(keyType), nativeValueGetter(keyType));
+        MethodHandle keyNativeHashCode = functionAndTypeManager.getBuiltInScalarFunctionImplementation(functionAndTypeManager.resolveOperator(OperatorType.HASH_CODE, fromTypes(keyType))).getMethodHandle();
+        MethodHandle keyBlockHashCode = compose(keyNativeHashCode, nativeValueGetter(keyType));
+        return new MapType(
+                keyType,
+                valueType,
+                keyBlockEquals,
+                keyBlockHashCode);
     }
 }

@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.operator.aggregation.state;
 
+import com.facebook.presto.spi.function.AccumulatorState;
+
 public interface CovarianceState
         extends AccumulatorState
 {
@@ -20,15 +22,15 @@ public interface CovarianceState
 
     void setCount(long value);
 
-    double getSumXY();
+    double getMeanX();
 
-    void setSumXY(double value);
+    void setMeanX(double value);
 
-    double getSumX();
+    double getMeanY();
 
-    void setSumX(double value);
+    void setMeanY(double value);
 
-    double getSumY();
+    double getC2();
 
-    void setSumY(double value);
+    void setC2(double value);
 }

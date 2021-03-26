@@ -13,87 +13,115 @@
  */
 package com.facebook.presto.execution;
 
+import com.facebook.airlift.concurrent.SetThreadName;
 import com.facebook.presto.Session;
-import com.facebook.presto.TaskSource;
-import com.facebook.presto.event.query.QueryMonitor;
+import com.facebook.presto.common.block.BlockEncodingSerde;
+import com.facebook.presto.event.SplitMonitor;
+import com.facebook.presto.execution.buffer.OutputBuffer;
+import com.facebook.presto.execution.executor.TaskExecutor;
+import com.facebook.presto.execution.scheduler.TableWriteInfo;
 import com.facebook.presto.memory.QueryContext;
 import com.facebook.presto.operator.TaskContext;
-import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.operator.TaskExchangeClientManager;
+import com.facebook.presto.sql.gen.OrderingCompiler;
+import com.facebook.presto.sql.planner.HttpRemoteSourceFactory;
 import com.facebook.presto.sql.planner.LocalExecutionPlanner;
+import com.facebook.presto.sql.planner.LocalExecutionPlanner.LocalExecutionPlan;
 import com.facebook.presto.sql.planner.PlanFragment;
-import io.airlift.units.DataSize;
 
 import java.util.List;
 import java.util.concurrent.Executor;
 
 import static com.facebook.presto.execution.SqlTaskExecution.createSqlTaskExecution;
-import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
+import static com.google.common.base.Throwables.throwIfUnchecked;
 import static java.util.Objects.requireNonNull;
 
 public class SqlTaskExecutionFactory
 {
-    private static final String VERBOSE_STATS_PROPERTY = "verbose_stats";
     private final Executor taskNotificationExecutor;
 
     private final TaskExecutor taskExecutor;
 
     private final LocalExecutionPlanner planner;
-    private final QueryMonitor queryMonitor;
-    private final DataSize operatorPreAllocatedMemory;
-    private final boolean verboseStats;
+    private final BlockEncodingSerde blockEncodingSerde;
+    private final OrderingCompiler orderingCompiler;
+    private final SplitMonitor splitMonitor;
+    private final boolean perOperatorCpuTimerEnabled;
     private final boolean cpuTimerEnabled;
+    private final boolean perOperatorAllocationTrackingEnabled;
+    private final boolean allocationTrackingEnabled;
+    private final boolean legacyLifespanCompletionCondition;
 
     public SqlTaskExecutionFactory(
             Executor taskNotificationExecutor,
             TaskExecutor taskExecutor,
             LocalExecutionPlanner planner,
-            QueryMonitor queryMonitor,
+            BlockEncodingSerde blockEncodingSerde,
+            OrderingCompiler orderingCompiler,
+            SplitMonitor splitMonitor,
             TaskManagerConfig config)
     {
         this.taskNotificationExecutor = requireNonNull(taskNotificationExecutor, "taskNotificationExecutor is null");
         this.taskExecutor = requireNonNull(taskExecutor, "taskExecutor is null");
         this.planner = requireNonNull(planner, "planner is null");
-        this.queryMonitor = requireNonNull(queryMonitor, "queryMonitor is null");
+        this.blockEncodingSerde = requireNonNull(blockEncodingSerde, "blockEncodingSerde is null");
+        this.orderingCompiler = requireNonNull(orderingCompiler, "orderingCompiler is null");
+        this.splitMonitor = requireNonNull(splitMonitor, "splitMonitor is null");
         requireNonNull(config, "config is null");
-        this.operatorPreAllocatedMemory = config.getOperatorPreAllocatedMemory();
-        this.verboseStats = config.isVerboseStats();
+        this.perOperatorCpuTimerEnabled = config.isPerOperatorCpuTimerEnabled();
         this.cpuTimerEnabled = config.isTaskCpuTimerEnabled();
+        this.perOperatorAllocationTrackingEnabled = config.isPerOperatorAllocationTrackingEnabled();
+        this.allocationTrackingEnabled = config.isTaskAllocationTrackingEnabled();
+        this.legacyLifespanCompletionCondition = config.isLegacyLifespanCompletionCondition();
     }
 
-    public SqlTaskExecution create(Session session, QueryContext queryContext, TaskStateMachine taskStateMachine, SharedBuffer sharedBuffer, PlanFragment fragment, List<TaskSource> sources)
+    public SqlTaskExecution create(
+            Session session,
+            QueryContext queryContext,
+            TaskStateMachine taskStateMachine,
+            OutputBuffer outputBuffer,
+            TaskExchangeClientManager taskExchangeClientManager,
+            PlanFragment fragment,
+            List<TaskSource> sources,
+            TableWriteInfo tableWriteInfo)
     {
-        boolean verboseStats = getVerboseStats(session);
         TaskContext taskContext = queryContext.addTaskContext(
                 taskStateMachine,
                 session,
-                requireNonNull(operatorPreAllocatedMemory, "operatorPreAllocatedMemory is null"),
-                verboseStats,
-                cpuTimerEnabled);
+                perOperatorCpuTimerEnabled,
+                cpuTimerEnabled,
+                perOperatorAllocationTrackingEnabled,
+                allocationTrackingEnabled,
+                legacyLifespanCompletionCondition);
 
+        LocalExecutionPlan localExecutionPlan;
+        try (SetThreadName ignored = new SetThreadName("Task-%s", taskStateMachine.getTaskId())) {
+            try {
+                localExecutionPlan = planner.plan(
+                        taskContext,
+                        fragment.getRoot(),
+                        fragment.getPartitioningScheme(),
+                        fragment.getStageExecutionDescriptor(),
+                        fragment.getTableScanSchedulingOrder(),
+                        outputBuffer,
+                        new HttpRemoteSourceFactory(blockEncodingSerde, taskExchangeClientManager, orderingCompiler),
+                        tableWriteInfo);
+            }
+            catch (Throwable e) {
+                // planning failed
+                taskStateMachine.failed(e);
+                throwIfUnchecked(e);
+                throw new RuntimeException(e);
+            }
+        }
         return createSqlTaskExecution(
                 taskStateMachine,
                 taskContext,
-                sharedBuffer,
-                fragment,
+                outputBuffer,
                 sources,
-                planner,
+                localExecutionPlan,
                 taskExecutor,
                 taskNotificationExecutor,
-                queryMonitor);
-    }
-
-    private boolean getVerboseStats(Session session)
-    {
-        String verboseStats = session.getSystemProperties().get(VERBOSE_STATS_PROPERTY);
-        if (verboseStats == null) {
-            return this.verboseStats;
-        }
-
-        try {
-            return Boolean.valueOf(verboseStats.toUpperCase());
-        }
-        catch (IllegalArgumentException e) {
-            throw new PrestoException(NOT_SUPPORTED, "Invalid property '" + VERBOSE_STATS_PROPERTY + "=" + verboseStats + "'");
-        }
+                splitMonitor);
     }
 }

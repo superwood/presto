@@ -14,11 +14,12 @@
 package com.facebook.presto;
 
 import com.facebook.presto.block.BlockAssertions;
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.PageBuilderStatus;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.operator.PagesIndex;
 import com.facebook.presto.spi.PageSorter;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.PageBuilderStatus;
-import com.facebook.presto.spi.type.Type;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Measurement;
@@ -38,11 +39,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import static com.facebook.presto.spi.block.SortOrder.ASC_NULLS_FIRST;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.block.SortOrder.ASC_NULLS_FIRST;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static java.util.Collections.nCopies;
 
 @State(Scope.Thread)
@@ -55,7 +56,7 @@ public class BenchmarkPagesIndexPageSorter
     @Benchmark
     public int runBenchmark(BenchmarkData data)
     {
-        PageSorter pageSorter = new PagesIndexPageSorter();
+        PageSorter pageSorter = new PagesIndexPageSorter(new PagesIndex.TestingFactory(false));
         long[] addresses = pageSorter.sort(data.types, data.pages, data.sortChannels, nCopies(data.sortChannels.size(), ASC_NULLS_FIRST), 10_000);
         return addresses.length;
     }
@@ -92,10 +93,10 @@ public class BenchmarkPagesIndexPageSorter
     @State(Scope.Thread)
     public static class BenchmarkData
     {
-        @Param({ "2", "3", "4", "5" })
+        @Param({"2", "3", "4", "5"})
         private int numSortChannels;
 
-        @Param({ "BIGINT", "VARCHAR", "DOUBLE", "BOOLEAN" })
+        @Param({"BIGINT", "VARCHAR", "DOUBLE", "BOOLEAN"})
         private String sortChannelType;
 
         private List<Page> pages;

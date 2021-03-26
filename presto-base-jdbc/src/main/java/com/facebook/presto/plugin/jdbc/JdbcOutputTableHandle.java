@@ -13,17 +13,16 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.spi.ConnectorInsertTableHandle;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
-import com.facebook.presto.spi.type.Type;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 
 import javax.annotation.Nullable;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -31,7 +30,7 @@ import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 public class JdbcOutputTableHandle
-        implements ConnectorOutputTableHandle
+        implements ConnectorOutputTableHandle, ConnectorInsertTableHandle
 {
     private final String connectorId;
     private final String catalogName;
@@ -39,10 +38,7 @@ public class JdbcOutputTableHandle
     private final String tableName;
     private final List<String> columnNames;
     private final List<Type> columnTypes;
-    private final String tableOwner;
     private final String temporaryTableName;
-    private final String connectionUrl;
-    private final Map<String, String> connectionProperties;
 
     @JsonCreator
     public JdbcOutputTableHandle(
@@ -52,19 +48,13 @@ public class JdbcOutputTableHandle
             @JsonProperty("tableName") String tableName,
             @JsonProperty("columnNames") List<String> columnNames,
             @JsonProperty("columnTypes") List<Type> columnTypes,
-            @JsonProperty("tableOwner") String tableOwner,
-            @JsonProperty("temporaryTableName") String temporaryTableName,
-            @JsonProperty("connectionUrl") String connectionUrl,
-            @JsonProperty("connectionProperties") Map<String, String> connectionProperties)
+            @JsonProperty("temporaryTableName") String temporaryTableName)
     {
         this.connectorId = requireNonNull(connectorId, "connectorId is null");
         this.catalogName = catalogName;
         this.schemaName = schemaName;
         this.tableName = requireNonNull(tableName, "tableName is null");
-        this.tableOwner = requireNonNull(tableOwner, "tableOwner is null");
         this.temporaryTableName = requireNonNull(temporaryTableName, "temporaryTableName is null");
-        this.connectionUrl = requireNonNull(connectionUrl, "connectionUrl is null");
-        this.connectionProperties = ImmutableMap.copyOf(requireNonNull(connectionProperties, "connectionProperties is null"));
 
         requireNonNull(columnNames, "columnNames is null");
         requireNonNull(columnTypes, "columnTypes is null");
@@ -112,27 +102,9 @@ public class JdbcOutputTableHandle
     }
 
     @JsonProperty
-    public String getTableOwner()
-    {
-        return tableOwner;
-    }
-
-    @JsonProperty
     public String getTemporaryTableName()
     {
         return temporaryTableName;
-    }
-
-    @JsonProperty
-    public String getConnectionUrl()
-    {
-        return connectionUrl;
-    }
-
-    @JsonProperty
-    public Map<String, String> getConnectionProperties()
-    {
-        return connectionProperties;
     }
 
     @Override
@@ -151,10 +123,7 @@ public class JdbcOutputTableHandle
                 tableName,
                 columnNames,
                 columnTypes,
-                tableOwner,
-                temporaryTableName,
-                connectionUrl,
-                connectionProperties);
+                temporaryTableName);
     }
 
     @Override
@@ -173,9 +142,6 @@ public class JdbcOutputTableHandle
                 Objects.equals(this.tableName, other.tableName) &&
                 Objects.equals(this.columnNames, other.columnNames) &&
                 Objects.equals(this.columnTypes, other.columnTypes) &&
-                Objects.equals(this.tableOwner, other.tableOwner) &&
-                Objects.equals(this.temporaryTableName, other.temporaryTableName) &&
-                Objects.equals(this.connectionUrl, other.connectionUrl) &&
-                Objects.equals(this.connectionProperties, other.connectionProperties);
+                Objects.equals(this.temporaryTableName, other.temporaryTableName);
     }
 }

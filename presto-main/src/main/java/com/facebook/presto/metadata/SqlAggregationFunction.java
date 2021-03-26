@@ -13,64 +13,94 @@
  */
 package com.facebook.presto.metadata;
 
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.operator.aggregation.AggregationFromAnnotationsParser;
 import com.facebook.presto.operator.aggregation.InternalAggregationFunction;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.util.ImmutableCollectors;
+import com.facebook.presto.spi.function.FunctionKind;
+import com.facebook.presto.spi.function.LongVariableConstraint;
+import com.facebook.presto.spi.function.Signature;
+import com.facebook.presto.spi.function.SqlFunctionVisibility;
+import com.facebook.presto.spi.function.TypeVariableConstraint;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
 
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
-import static com.facebook.presto.metadata.FunctionKind.AGGREGATE;
-import static com.facebook.presto.metadata.FunctionKind.APPROXIMATE_AGGREGATE;
+import static com.facebook.presto.metadata.BuiltInTypeAndFunctionNamespaceManager.DEFAULT_NAMESPACE;
+import static com.facebook.presto.spi.function.FunctionKind.AGGREGATE;
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.PUBLIC;
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
 
 public abstract class SqlAggregationFunction
-        implements SqlFunction
+        extends BuiltInFunction
 {
     private final Signature signature;
+    private final SqlFunctionVisibility visibility;
 
-    public static SqlAggregationFunction create(String name, String description, InternalAggregationFunction function)
+    public static List<SqlAggregationFunction> createFunctionByAnnotations(Class<?> aggregationDefinition)
     {
-        return new SimpleSqlAggregationFunction(name, description, function);
+        return ImmutableList.of(AggregationFromAnnotationsParser.parseFunctionDefinition(aggregationDefinition));
+    }
+
+    public static List<SqlAggregationFunction> createFunctionsByAnnotations(Class<?> aggregationDefinition)
+    {
+        return AggregationFromAnnotationsParser.parseFunctionDefinitions(aggregationDefinition)
+                .stream()
+                .map(x -> (SqlAggregationFunction) x)
+                .collect(toImmutableList());
     }
 
     protected SqlAggregationFunction(
             String name,
-            List<TypeParameterRequirement> typeParameterRequirements,
-            String returnType,
-            List<String> argumentTypes)
+            List<TypeVariableConstraint> typeVariableConstraints,
+            List<LongVariableConstraint> longVariableConstraints,
+            TypeSignature returnType,
+            List<TypeSignature> argumentTypes)
     {
-        this(name, typeParameterRequirements, returnType, argumentTypes, AGGREGATE, ImmutableSet.of());
+        this(name, typeVariableConstraints, longVariableConstraints, returnType, argumentTypes, AGGREGATE);
     }
 
     protected SqlAggregationFunction(
             String name,
-            List<TypeParameterRequirement> typeParameterRequirements,
-            String returnType,
-            List<String> argumentTypes,
-            FunctionKind kind,
-            Set<String> literalParameters)
+            List<TypeVariableConstraint> typeVariableConstraints,
+            List<LongVariableConstraint> longVariableConstraints,
+            TypeSignature returnType,
+            List<TypeSignature> argumentTypes,
+            FunctionKind kind)
+    {
+        this(createSignature(name, typeVariableConstraints, longVariableConstraints, returnType, argumentTypes, kind), PUBLIC);
+    }
+
+    protected SqlAggregationFunction(Signature signature, SqlFunctionVisibility visibility)
+    {
+        this.signature = requireNonNull(signature, "signature is null");
+        this.visibility = visibility;
+    }
+
+    private static Signature createSignature(
+            String name,
+            List<TypeVariableConstraint> typeVariableConstraints,
+            List<LongVariableConstraint> longVariableConstraints,
+            TypeSignature returnType,
+            List<TypeSignature> argumentTypes,
+            FunctionKind kind)
     {
         requireNonNull(name, "name is null");
-        requireNonNull(typeParameterRequirements, "typeParameters is null");
+        requireNonNull(typeVariableConstraints, "typeVariableConstraints is null");
+        requireNonNull(longVariableConstraints, "longVariableConstraints is null");
         requireNonNull(returnType, "returnType is null");
         requireNonNull(argumentTypes, "argumentTypes is null");
-        requireNonNull(literalParameters, "argumentTypes is null");
-        checkArgument(kind == AGGREGATE || kind == APPROXIMATE_AGGREGATE, "kind must be an aggregate");
-        this.signature = new Signature(
-                name,
+        checkArgument(kind == AGGREGATE, "kind must be an aggregate");
+        return new Signature(
+                QualifiedObjectName.valueOf(DEFAULT_NAMESPACE, name),
                 kind,
-                ImmutableList.copyOf(typeParameterRequirements),
+                ImmutableList.copyOf(typeVariableConstraints),
+                ImmutableList.copyOf(longVariableConstraints),
                 returnType,
                 ImmutableList.copyOf(argumentTypes),
-                false,
-                literalParameters);
+                false);
     }
 
     @Override
@@ -80,9 +110,9 @@ public abstract class SqlAggregationFunction
     }
 
     @Override
-    public boolean isHidden()
+    public SqlFunctionVisibility getVisibility()
     {
-        return false;
+        return visibility;
     }
 
     @Override
@@ -91,42 +121,5 @@ public abstract class SqlAggregationFunction
         return true;
     }
 
-    public abstract InternalAggregationFunction specialize(Map<String, Type> types, int arity, TypeManager typeManager, FunctionRegistry functionRegistry);
-
-    public static class SimpleSqlAggregationFunction
-            extends SqlAggregationFunction
-    {
-        private final InternalAggregationFunction function;
-        private final String description;
-
-        public SimpleSqlAggregationFunction(
-                String name,
-                String description,
-                InternalAggregationFunction function)
-        {
-            super(name,
-                    ImmutableList.<TypeParameterRequirement>of(),
-                    function.getFinalType().getTypeSignature().toString(),
-                    function.getParameterTypes().stream()
-                            .map(Type::getTypeSignature)
-                            .map(TypeSignature::toString)
-                            .collect(ImmutableCollectors.toImmutableList()),
-                    function.isApproximate() ? APPROXIMATE_AGGREGATE : AGGREGATE,
-                    ImmutableSet.of());
-            this.description = description;
-            this.function = requireNonNull(function, "function is null");
-        }
-
-        @Override
-        public String getDescription()
-        {
-            return description;
-        }
-
-        @Override
-        public InternalAggregationFunction specialize(Map<String, Type> types, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
-        {
-            return function;
-        }
-    }
+    public abstract InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, FunctionAndTypeManager functionAndTypeManager);
 }

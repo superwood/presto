@@ -13,24 +13,21 @@
  */
 package com.facebook.presto.raptor;
 
-import com.facebook.presto.PagesIndexPageSorter;
-import com.facebook.presto.block.BlockEncodingManager;
-import com.facebook.presto.metadata.InMemoryNodeManager;
 import com.facebook.presto.spi.Plugin;
 import com.facebook.presto.spi.connector.ConnectorFactory;
-import com.facebook.presto.type.TypeRegistry;
+import com.facebook.presto.testing.TestingConnectorContext;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Files;
-import io.airlift.testing.FileUtils;
 import org.testng.annotations.Test;
 
 import java.io.File;
-import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
 
+import static com.facebook.airlift.testing.Assertions.assertInstanceOf;
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static io.airlift.testing.Assertions.assertInstanceOf;
+import static com.google.common.io.MoreFiles.deleteRecursively;
+import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 
 public class TestRaptorPlugin
 {
@@ -40,16 +37,7 @@ public class TestRaptorPlugin
     {
         RaptorPlugin plugin = loadPlugin(RaptorPlugin.class);
 
-        plugin.setNodeManager(new InMemoryNodeManager());
-
-        TypeRegistry typeRegistry = new TypeRegistry();
-        plugin.setTypeManager(typeRegistry);
-        plugin.setBlockEncodingSerde(new BlockEncodingManager(typeRegistry));
-
-        plugin.setPageSorter(new PagesIndexPageSorter());
-
-        List<ConnectorFactory> factories = plugin.getServices(ConnectorFactory.class);
-        ConnectorFactory factory = getOnlyElement(factories);
+        ConnectorFactory factory = getOnlyElement(plugin.getConnectorFactories());
         assertInstanceOf(factory, RaptorConnectorFactory.class);
 
         File tmpDir = Files.createTempDir();
@@ -57,13 +45,13 @@ public class TestRaptorPlugin
             Map<String, String> config = ImmutableMap.<String, String>builder()
                     .put("metadata.db.type", "h2")
                     .put("metadata.db.filename", tmpDir.getAbsolutePath())
-                    .put("storage.data-directory", tmpDir.getAbsolutePath())
+                    .put("storage.data-directory", tmpDir.toURI().toString())
                     .build();
 
-            factory.create("test", config);
+            factory.create("test", config, new TestingConnectorContext());
         }
         finally {
-            FileUtils.deleteRecursively(tmpDir);
+            deleteRecursively(tmpDir.toPath(), ALLOW_INSECURE);
         }
     }
 

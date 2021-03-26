@@ -13,63 +13,75 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.memory.LocalMemoryContext;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.LazyBlock;
+import com.facebook.presto.common.block.LazyBlockLoader;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.metadata.Split;
+import com.facebook.presto.operator.project.CursorProcessor;
+import com.facebook.presto.operator.project.CursorProcessorOutput;
+import com.facebook.presto.operator.project.MergingPageOutput;
+import com.facebook.presto.operator.project.PageProcessor;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorPageSource;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.RecordPageSource;
+import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.UpdatablePageSource;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.plan.PlanNodeId;
+import com.facebook.presto.split.EmptySplit;
+import com.facebook.presto.split.EmptySplitPageSource;
 import com.facebook.presto.split.PageSourceProvider;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
+import io.airlift.units.DataSize;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
-import static com.facebook.presto.SystemSessionProperties.isColumnarProcessingDictionaryEnabled;
-import static com.facebook.presto.SystemSessionProperties.isColumnarProcessingEnabled;
+import static com.facebook.airlift.concurrent.MoreFutures.toListenableFuture;
+import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
 
 public class ScanFilterAndProjectOperator
         implements SourceOperator, Closeable
 {
-    private static final int ROWS_PER_PAGE = 16384;
-
     private final OperatorContext operatorContext;
     private final PlanNodeId planNodeId;
     private final PageSourceProvider pageSourceProvider;
-    private final List<Type> types;
+    private final TableHandle table;
     private final List<ColumnHandle> columns;
     private final PageBuilder pageBuilder;
     private final CursorProcessor cursorProcessor;
     private final PageProcessor pageProcessor;
     private final LocalMemoryContext pageSourceMemoryContext;
-    private final LocalMemoryContext pageBuilderMemoryContext;
+    private final LocalMemoryContext pageProcessorMemoryContext;
+    private final LocalMemoryContext outputMemoryContext;
     private final SettableFuture<?> blocked = SettableFuture.create();
-    private final boolean columnarProcessingEnabled;
-    private final boolean columnarProcessingDictionaryEnabled;
+    private final Optional<Supplier<TupleDomain<ColumnHandle>>> dynamicFilterSupplier;
+    private final MergingPageOutput mergingOutput;
 
     private RecordCursor cursor;
     private ConnectorPageSource pageSource;
 
     private Split split;
-    private Page currentPage;
-    private int currentPosition;
 
     private boolean finishing;
 
     private long completedBytes;
+    private long completedPositions;
     private long readTimeNanos;
 
     protected ScanFilterAndProjectOperator(
@@ -78,22 +90,26 @@ public class ScanFilterAndProjectOperator
             PageSourceProvider pageSourceProvider,
             CursorProcessor cursorProcessor,
             PageProcessor pageProcessor,
+            TableHandle table,
             Iterable<ColumnHandle> columns,
-            Iterable<Type> types)
+            Iterable<Type> types,
+            Optional<Supplier<TupleDomain<ColumnHandle>>> dynamicFilterSupplier,
+            MergingPageOutput mergingOutput)
     {
         this.cursorProcessor = requireNonNull(cursorProcessor, "cursorProcessor is null");
         this.pageProcessor = requireNonNull(pageProcessor, "pageProcessor is null");
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
         this.planNodeId = requireNonNull(sourceId, "sourceId is null");
         this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
-        this.types = ImmutableList.copyOf(requireNonNull(types, "types is null"));
+        this.table = requireNonNull(table, "table is null");
         this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
-        this.pageSourceMemoryContext = operatorContext.getSystemMemoryContext().newLocalMemoryContext();
-        this.pageBuilderMemoryContext = operatorContext.getSystemMemoryContext().newLocalMemoryContext();
-        this.columnarProcessingEnabled = isColumnarProcessingEnabled(operatorContext.getSession());
-        this.columnarProcessingDictionaryEnabled = isColumnarProcessingDictionaryEnabled(operatorContext.getSession());
+        this.pageSourceMemoryContext = operatorContext.newLocalSystemMemoryContext(ScanFilterAndProjectOperator.class.getSimpleName());
+        this.pageProcessorMemoryContext = newSimpleAggregatedMemoryContext().newLocalMemoryContext(ScanFilterAndProjectOperator.class.getSimpleName());
+        this.outputMemoryContext = operatorContext.newLocalSystemMemoryContext(ScanFilterAndProjectOperator.class.getSimpleName());
+        this.dynamicFilterSupplier = requireNonNull(dynamicFilterSupplier, "dynamicFilterSupplier is null");
+        this.mergingOutput = requireNonNull(mergingOutput, "mergingOutput is null");
 
-        this.pageBuilder = new PageBuilder(getTypes());
+        this.pageBuilder = new PageBuilder(ImmutableList.copyOf(requireNonNull(types, "types is null")));
     }
 
     @Override
@@ -122,9 +138,13 @@ public class ScanFilterAndProjectOperator
 
         Object splitInfo = split.getInfo();
         if (splitInfo != null) {
-            operatorContext.setInfoSupplier(() -> splitInfo);
+            operatorContext.setInfoSupplier(() -> new SplitOperatorInfo(splitInfo));
         }
         blocked.set(null);
+
+        if (split.getConnectorSplit() instanceof EmptySplit) {
+            pageSource = new EmptySplitPageSource();
+        }
 
         return () -> {
             if (pageSource instanceof UpdatablePageSource) {
@@ -139,14 +159,9 @@ public class ScanFilterAndProjectOperator
     {
         if (split == null) {
             finishing = true;
+            mergingOutput.finish();
         }
         blocked.set(null);
-    }
-
-    @Override
-    public final List<Type> getTypes()
-    {
-        return types;
     }
 
     @Override
@@ -164,33 +179,33 @@ public class ScanFilterAndProjectOperator
                 pageSource.close();
             }
             catch (IOException e) {
-                throw Throwables.propagate(e);
+                throw new UncheckedIOException(e);
             }
         }
         else if (cursor != null) {
             cursor.close();
         }
         finishing = true;
+        mergingOutput.finish();
     }
 
     @Override
     public final boolean isFinished()
     {
-        if (!finishing) {
-            createSourceIfNecessary();
-        }
-
-        if (pageSource != null && pageSource.isFinished() && currentPage == null) {
-            finishing = true;
-        }
-
-        return finishing && pageBuilder.isEmpty();
+        return finishing && pageBuilder.isEmpty() && mergingOutput.isFinished();
     }
 
     @Override
     public ListenableFuture<?> isBlocked()
     {
-        return blocked;
+        if (!blocked.isDone()) {
+            return blocked;
+        }
+        if (pageSource != null) {
+            CompletableFuture<?> pageSourceBlocked = pageSource.isBlocked();
+            return pageSourceBlocked.isDone() ? NOT_BLOCKED : toListenableFuture(pageSourceBlocked);
+        }
+        return NOT_BLOCKED;
     }
 
     @Override
@@ -208,83 +223,12 @@ public class ScanFilterAndProjectOperator
     @Override
     public Page getOutput()
     {
-        if (!finishing) {
-            createSourceIfNecessary();
-
-            if (cursor != null) {
-                int rowsProcessed = cursorProcessor.process(operatorContext.getSession().toConnectorSession(), cursor, ROWS_PER_PAGE, pageBuilder);
-
-                pageSourceMemoryContext.setBytes(cursor.getSystemMemoryUsage());
-
-                long bytesProcessed = cursor.getCompletedBytes() - completedBytes;
-                long elapsedNanos = cursor.getReadTimeNanos() - readTimeNanos;
-                operatorContext.recordGeneratedInput(bytesProcessed, rowsProcessed, elapsedNanos);
-                completedBytes = cursor.getCompletedBytes();
-                readTimeNanos = cursor.getReadTimeNanos();
-
-                if (rowsProcessed == 0) {
-                    finishing = true;
-                }
-            }
-            else {
-                if (currentPage == null) {
-                    currentPage = pageSource.getNextPage();
-
-                    if (currentPage != null) {
-                        // update operator stats
-                        long endCompletedBytes = pageSource.getCompletedBytes();
-                        long endReadTimeNanos = pageSource.getReadTimeNanos();
-                        operatorContext.recordGeneratedInput(endCompletedBytes - completedBytes, currentPage.getPositionCount(), endReadTimeNanos - readTimeNanos);
-                        completedBytes = endCompletedBytes;
-                        readTimeNanos = endReadTimeNanos;
-                    }
-
-                    currentPosition = 0;
-                }
-
-                if (currentPage != null) {
-                    if (columnarProcessingDictionaryEnabled) {
-                        Page page = pageProcessor.processColumnarDictionary(operatorContext.getSession().toConnectorSession(), currentPage, getTypes());
-                        currentPage = null;
-                        currentPosition = 0;
-                        return page;
-                    }
-                    else if (columnarProcessingEnabled) {
-                        Page page = pageProcessor.processColumnar(operatorContext.getSession().toConnectorSession(), currentPage, getTypes());
-                        currentPage = null;
-                        currentPosition = 0;
-                        return page;
-                    }
-                    else {
-                        currentPosition = pageProcessor.process(operatorContext.getSession().toConnectorSession(), currentPage, currentPosition, currentPage.getPositionCount(), pageBuilder);
-                        if (currentPosition == currentPage.getPositionCount()) {
-                            currentPage = null;
-                            currentPosition = 0;
-                        }
-                    }
-                }
-
-                pageSourceMemoryContext.setBytes(pageSource.getSystemMemoryUsage());
-            }
-        }
-
-        // only return a full page if buffer is full or we are finishing
-        if (pageBuilder.isEmpty() || (!finishing && !pageBuilder.isFull())) {
-            pageBuilderMemoryContext.setBytes(pageBuilder.getRetainedSizeInBytes());
+        if (split == null) {
             return null;
         }
 
-        Page page = pageBuilder.build();
-        pageBuilder.reset();
-
-        pageBuilderMemoryContext.setBytes(pageBuilder.getRetainedSizeInBytes());
-        return page;
-    }
-
-    private void createSourceIfNecessary()
-    {
-        if ((split != null) && (pageSource == null) && (cursor == null)) {
-            ConnectorPageSource source = pageSourceProvider.createPageSource(operatorContext.getSession(), split, columns);
+        if (!finishing && pageSource == null && cursor == null) {
+            ConnectorPageSource source = pageSourceProvider.createPageSource(operatorContext.getSession(), split, dynamicFilterSupplier.map(table::withDynamicFilter).orElse(table), columns);
             if (source instanceof RecordPageSource) {
                 cursor = ((RecordPageSource) source).getCursor();
             }
@@ -292,6 +236,145 @@ public class ScanFilterAndProjectOperator
                 pageSource = source;
             }
         }
+
+        if (pageSource != null) {
+            return processPageSource();
+        }
+        else {
+            return processColumnSource();
+        }
+    }
+
+    private Page processColumnSource()
+    {
+        DriverYieldSignal yieldSignal = operatorContext.getDriverContext().getYieldSignal();
+        if (!finishing && !yieldSignal.isSet()) {
+            CursorProcessorOutput output = cursorProcessor.process(operatorContext.getSession().getSqlFunctionProperties(), yieldSignal, cursor, pageBuilder);
+            pageSourceMemoryContext.setBytes(cursor.getSystemMemoryUsage());
+
+            recordCursorInputStats(output.getProcessedRows());
+            if (output.isNoMoreRows()) {
+                finishing = true;
+                mergingOutput.finish();
+            }
+        }
+
+        // only return a page if buffer is full or we are finishing
+        Page page = null;
+        if (!pageBuilder.isEmpty() && (finishing || pageBuilder.isFull())) {
+            page = pageBuilder.build();
+            pageBuilder.reset();
+        }
+        outputMemoryContext.setBytes(pageBuilder.getRetainedSizeInBytes());
+        return page;
+    }
+
+    private Page processPageSource()
+    {
+        DriverYieldSignal yieldSignal = operatorContext.getDriverContext().getYieldSignal();
+        if (!finishing && mergingOutput.needsInput() && !yieldSignal.isSet()) {
+            Page page = pageSource.getNextPage();
+
+            finishing = pageSource.isFinished();
+            pageSourceMemoryContext.setBytes(pageSource.getSystemMemoryUsage());
+
+            if (page != null) {
+                // update operator stats
+                page = recordProcessedInput(page);
+
+                Iterator<Optional<Page>> output = pageProcessor.process(operatorContext.getSession().getSqlFunctionProperties(), yieldSignal, pageProcessorMemoryContext, page);
+                mergingOutput.addInput(output);
+            }
+
+            if (finishing) {
+                mergingOutput.finish();
+            }
+        }
+
+        Page result = mergingOutput.getOutput();
+        outputMemoryContext.setBytes(mergingOutput.getRetainedSizeInBytes() + pageProcessorMemoryContext.getBytes());
+        return result;
+    }
+
+    private final class RecordingLazyBlockLoader
+            implements LazyBlockLoader<LazyBlock>
+    {
+        private LazyBlock delegateLazyBlock;
+
+        private RecordingLazyBlockLoader(LazyBlock delegateLazyBlock)
+        {
+            this.delegateLazyBlock = requireNonNull(delegateLazyBlock, "delegateLazyBlock is null");
+        }
+
+        @Override
+        public void load(LazyBlock block)
+        {
+            checkState(delegateLazyBlock != null, "delegateLazyBlock already loaded");
+            Block loadedBlock = delegateLazyBlock.getLoadedBlock();
+            delegateLazyBlock = null;
+            // Position count already recorded for lazy blocks, input bytes are not
+            recordInputStats();
+            block.setBlock(loadedBlock);
+        }
+    }
+
+    private void recordCursorInputStats(long positionCount)
+    {
+        checkState(cursor != null, "cursor is null");
+        long endCompletedBytes = cursor.getCompletedBytes();
+        long endReadTimeNanos = cursor.getReadTimeNanos();
+        long inputBytes = endCompletedBytes - completedBytes;
+        operatorContext.recordProcessedInput(inputBytes, positionCount);
+        operatorContext.recordRawInputWithTiming(inputBytes, positionCount, endReadTimeNanos - readTimeNanos);
+        completedBytes = endCompletedBytes;
+        readTimeNanos = endReadTimeNanos;
+    }
+
+    private void recordInputStats()
+    {
+        checkState(pageSource != null, "pageSource is null");
+        long endCompletedBytes = pageSource.getCompletedBytes();
+        long endCompletedPositions = pageSource.getCompletedPositions();
+        long endReadTimeNanos = pageSource.getReadTimeNanos();
+        long inputBytes = endCompletedBytes - completedBytes;
+        long positionCount = endCompletedPositions - completedPositions;
+        operatorContext.recordProcessedInput(inputBytes, positionCount);
+        operatorContext.recordRawInputWithTiming(inputBytes, positionCount, endReadTimeNanos - readTimeNanos);
+        completedBytes = endCompletedBytes;
+        completedPositions = endCompletedPositions;
+        readTimeNanos = endReadTimeNanos;
+    }
+
+    private Page recordProcessedInput(Page page)
+    {
+        long blockSizeSum = 0L;
+        Block[] blocks = null;
+        for (int i = 0; i < page.getChannelCount(); ++i) {
+            Block block = page.getBlock(i);
+            // account processed bytes from lazy blocks only when they are loaded
+            if (block instanceof LazyBlock && !((LazyBlock) block).isLoaded()) {
+                if (blocks == null) {
+                    blocks = copyOfPageBlocks(page);
+                }
+                blocks[i] = new LazyBlock(page.getPositionCount(), new RecordingLazyBlockLoader((LazyBlock) block));
+            }
+            else {
+                blockSizeSum += block.getSizeInBytes();
+            }
+        }
+        // stats update
+        recordInputStats();
+
+        return (blocks == null) ? page : new Page(page.getPositionCount(), blocks);
+    }
+
+    private static Block[] copyOfPageBlocks(Page page)
+    {
+        Block[] blocks = new Block[page.getChannelCount()];
+        for (int i = 0; i < blocks.length; i++) {
+            blocks[i] = page.getBlock(i);
+        }
+        return blocks;
     }
 
     public static class ScanFilterAndProjectOperatorFactory
@@ -299,12 +382,16 @@ public class ScanFilterAndProjectOperator
     {
         private final int operatorId;
         private final PlanNodeId planNodeId;
-        private final CursorProcessor cursorProcessor;
+        private final Supplier<CursorProcessor> cursorProcessor;
         private final Supplier<PageProcessor> pageProcessor;
         private final PlanNodeId sourceId;
         private final PageSourceProvider pageSourceProvider;
+        private final TableHandle table;
         private final List<ColumnHandle> columns;
         private final List<Type> types;
+        private final Optional<Supplier<TupleDomain<ColumnHandle>>> dynamicFilterSupplier;
+        private final DataSize minOutputPageSize;
+        private final int minOutputPageRowCount;
         private boolean closed;
 
         public ScanFilterAndProjectOperatorFactory(
@@ -312,10 +399,14 @@ public class ScanFilterAndProjectOperator
                 PlanNodeId planNodeId,
                 PlanNodeId sourceId,
                 PageSourceProvider pageSourceProvider,
-                CursorProcessor cursorProcessor,
+                Supplier<CursorProcessor> cursorProcessor,
                 Supplier<PageProcessor> pageProcessor,
+                TableHandle table,
                 Iterable<ColumnHandle> columns,
-                List<Type> types)
+                List<Type> types,
+                Optional<Supplier<TupleDomain<ColumnHandle>>> dynamicFilterSupplier,
+                DataSize minOutputPageSize,
+                int minOutputPageRowCount)
         {
             this.operatorId = operatorId;
             this.planNodeId = requireNonNull(planNodeId, "planNodeId is null");
@@ -323,20 +414,18 @@ public class ScanFilterAndProjectOperator
             this.pageProcessor = requireNonNull(pageProcessor, "pageProcessor is null");
             this.sourceId = requireNonNull(sourceId, "sourceId is null");
             this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
+            this.table = requireNonNull(table, "table is null");
             this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
             this.types = requireNonNull(types, "types is null");
+            this.dynamicFilterSupplier = requireNonNull(dynamicFilterSupplier, "dynamicFilterSupplier is null");
+            this.minOutputPageSize = requireNonNull(minOutputPageSize, "minOutputPageSize is null");
+            this.minOutputPageRowCount = minOutputPageRowCount;
         }
 
         @Override
         public PlanNodeId getSourceId()
         {
             return sourceId;
-        }
-
-        @Override
-        public List<Type> getTypes()
-        {
-            return types;
         }
 
         @Override
@@ -348,14 +437,17 @@ public class ScanFilterAndProjectOperator
                     operatorContext,
                     sourceId,
                     pageSourceProvider,
-                    cursorProcessor,
+                    cursorProcessor.get(),
                     pageProcessor.get(),
+                    table,
                     columns,
-                    types);
+                    types,
+                    dynamicFilterSupplier,
+                    new MergingPageOutput(types, minOutputPageSize.toBytes(), minOutputPageRowCount));
         }
 
         @Override
-        public void close()
+        public void noMoreOperators()
         {
             closed = true;
         }

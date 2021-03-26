@@ -13,18 +13,14 @@
  */
 package com.facebook.presto.kafka;
 
-import com.facebook.presto.spi.NodeManager;
 import com.facebook.presto.spi.Plugin;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.connector.ConnectorFactory;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
+import com.google.inject.Module;
+import com.google.inject.util.Modules;
 
-import javax.inject.Inject;
-
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -37,27 +33,17 @@ import static java.util.Objects.requireNonNull;
 public class KafkaPlugin
         implements Plugin
 {
-    private TypeManager typeManager;
-    private NodeManager nodeManager;
+    private final Module extension;
     private Optional<Supplier<Map<SchemaTableName, KafkaTopicDescription>>> tableDescriptionSupplier = Optional.empty();
-    private Map<String, String> optionalConfig = ImmutableMap.of();
 
-    @Override
-    public synchronized void setOptionalConfig(Map<String, String> optionalConfig)
+    public KafkaPlugin()
     {
-        this.optionalConfig = ImmutableMap.copyOf(requireNonNull(optionalConfig, "optionalConfig is null"));
+        this(Modules.EMPTY_MODULE);
     }
 
-    @Inject
-    public synchronized void setTypeManager(TypeManager typeManager)
+    public KafkaPlugin(Module extension)
     {
-        this.typeManager = requireNonNull(typeManager, "typeManager is null");
-    }
-
-    @Inject
-    public synchronized void setNodeManager(NodeManager nodeManager)
-    {
-        this.nodeManager = requireNonNull(nodeManager, "node is null");
+        this.extension = requireNonNull(extension, "extension is null");
     }
 
     @VisibleForTesting
@@ -67,11 +53,8 @@ public class KafkaPlugin
     }
 
     @Override
-    public synchronized <T> List<T> getServices(Class<T> type)
+    public synchronized Iterable<ConnectorFactory> getConnectorFactories()
     {
-        if (type == ConnectorFactory.class) {
-            return ImmutableList.of(type.cast(new KafkaConnectorFactory(typeManager, nodeManager, tableDescriptionSupplier, optionalConfig)));
-        }
-        return ImmutableList.of();
+        return ImmutableList.of(new KafkaConnectorFactory(extension, tableDescriptionSupplier));
     }
 }

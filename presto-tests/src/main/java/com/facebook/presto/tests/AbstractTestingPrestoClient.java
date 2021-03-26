@@ -13,87 +13,99 @@
  */
 package com.facebook.presto.tests;
 
+import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.Session;
 import com.facebook.presto.client.ClientSession;
 import com.facebook.presto.client.Column;
 import com.facebook.presto.client.QueryError;
-import com.facebook.presto.client.QueryResults;
+import com.facebook.presto.client.QueryStatusInfo;
 import com.facebook.presto.client.StatementClient;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.metadata.MetadataUtil;
-import com.facebook.presto.metadata.QualifiedObjectName;
 import com.facebook.presto.metadata.QualifiedTablePrefix;
 import com.facebook.presto.server.testing.TestingPrestoServer;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.QueryId;
+import com.facebook.presto.spi.function.SqlFunctionId;
+import com.facebook.presto.spi.function.SqlInvokedFunction;
+import com.facebook.presto.spi.session.ResourceEstimates;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
-import io.airlift.http.client.HttpClient;
-import io.airlift.http.client.HttpClientConfig;
-import io.airlift.http.client.jetty.JettyHttpClient;
-import io.airlift.json.JsonCodec;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.units.Duration;
+import okhttp3.OkHttpClient;
 import org.intellij.lang.annotations.Language;
 
 import java.io.Closeable;
+import java.net.URI;
 import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.airlift.json.JsonCodec.jsonCodec;
+import static com.facebook.presto.client.StatementClientFactory.newStatementClient;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.spi.session.ResourceEstimates.CPU_TIME;
+import static com.facebook.presto.spi.session.ResourceEstimates.EXECUTION_TIME;
+import static com.facebook.presto.spi.session.ResourceEstimates.PEAK_MEMORY;
 import static com.facebook.presto.transaction.TransactionBuilder.transaction;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.Iterables.transform;
-import static io.airlift.json.JsonCodec.jsonCodec;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.collectingAndThen;
+import static java.util.stream.Collectors.toMap;
 
 public abstract class AbstractTestingPrestoClient<T>
         implements Closeable
 {
-    private static final JsonCodec<QueryResults> QUERY_RESULTS_CODEC = jsonCodec(QueryResults.class);
+    private static final JsonCodec<SqlFunctionId> SQL_FUNCTION_ID_JSON_CODEC = jsonCodec(SqlFunctionId.class);
+    private static final JsonCodec<SqlInvokedFunction> SQL_INVOKED_FUNCTION_JSON_CODEC = jsonCodec(SqlInvokedFunction.class);
 
     private final TestingPrestoServer prestoServer;
     private final Session defaultSession;
 
-    private final HttpClient httpClient;
+    private final OkHttpClient httpClient = new OkHttpClient();
 
     protected AbstractTestingPrestoClient(TestingPrestoServer prestoServer,
             Session defaultSession)
     {
         this.prestoServer = requireNonNull(prestoServer, "prestoServer is null");
         this.defaultSession = requireNonNull(defaultSession, "defaultSession is null");
-
-        this.httpClient = new JettyHttpClient(
-                new HttpClientConfig()
-                        .setConnectTimeout(new Duration(1, TimeUnit.DAYS))
-                        .setIdleTimeout(new Duration(10, TimeUnit.DAYS)));
     }
 
     @Override
     public void close()
     {
-        this.httpClient.close();
+        httpClient.dispatcher().executorService().shutdown();
+        httpClient.connectionPool().evictAll();
     }
 
     protected abstract ResultsSession<T> getResultSession(Session session);
 
-    public T execute(@Language("SQL") String sql)
+    public ResultWithQueryId<T> execute(@Language("SQL") String sql)
     {
         return execute(defaultSession, sql);
     }
 
-    public T execute(Session session, @Language("SQL") String sql)
+    public ResultWithQueryId<T> execute(Session session, @Language("SQL") String sql)
     {
         ResultsSession<T> resultsSession = getResultSession(session);
 
-        ClientSession clientSession = session.toClientSession(prestoServer.getBaseUrl(), true, new Duration(2, TimeUnit.MINUTES));
+        ClientSession clientSession = toClientSession(session, prestoServer.getBaseUrl(), new Duration(2, TimeUnit.MINUTES));
 
-        try (StatementClient client = new StatementClient(httpClient, QUERY_RESULTS_CODEC, clientSession, sql)) {
-            while (client.isValid()) {
-                QueryResults results = client.current();
-
-                resultsSession.addResults(results);
+        try (StatementClient client = newStatementClient(httpClient, clientSession, sql)) {
+            while (client.isRunning()) {
+                resultsSession.addResults(client.currentStatusInfo(), client.currentData());
                 client.advance();
             }
 
-            if (!client.isFailed()) {
-                QueryResults results = client.finalResults();
+            checkState(client.isFinished());
+            QueryError error = client.finalStatusInfo().getError();
+
+            if (error == null) {
+                QueryStatusInfo results = client.finalStatusInfo();
                 if (results.getUpdateType() != null) {
                     resultsSession.setUpdateType(results.getUpdateType());
                 }
@@ -101,13 +113,15 @@ public abstract class AbstractTestingPrestoClient<T>
                     resultsSession.setUpdateCount(results.getUpdateCount());
                 }
 
-                return resultsSession.build(client.getSetSessionProperties(), client.getResetSessionProperties());
+                resultsSession.setWarnings(results.getWarnings());
+
+                T result = resultsSession.build(client.getSetSessionProperties(), client.getResetSessionProperties());
+                return new ResultWithQueryId<>(new QueryId(results.getId()), result);
             }
 
-            QueryError error = client.finalResults().getError();
-            assert error != null;
             if (error.getFailureInfo() != null) {
-                throw error.getFailureInfo().toException();
+                RuntimeException remoteException = error.getFailureInfo().toException();
+                throw new RuntimeException(Optional.ofNullable(remoteException.getMessage()).orElseGet(remoteException::toString), remoteException);
             }
             throw new RuntimeException("Query failed: " + error.getMessage());
 
@@ -117,9 +131,52 @@ public abstract class AbstractTestingPrestoClient<T>
         }
     }
 
+    private static ClientSession toClientSession(Session session, URI server, Duration clientRequestTimeout)
+    {
+        ImmutableMap.Builder<String, String> properties = ImmutableMap.builder();
+        properties.putAll(session.getSystemProperties());
+        for (Entry<String, Map<String, String>> connectorProperties : session.getUnprocessedCatalogProperties().entrySet()) {
+            for (Entry<String, String> entry : connectorProperties.getValue().entrySet()) {
+                properties.put(connectorProperties.getKey() + "." + entry.getKey(), entry.getValue());
+            }
+        }
+
+        ImmutableMap.Builder<String, String> resourceEstimates = ImmutableMap.builder();
+        ResourceEstimates estimates = session.getResourceEstimates();
+        estimates.getExecutionTime().ifPresent(e -> resourceEstimates.put(EXECUTION_TIME, e.toString()));
+        estimates.getCpuTime().ifPresent(e -> resourceEstimates.put(CPU_TIME, e.toString()));
+        estimates.getPeakMemory().ifPresent(e -> resourceEstimates.put(PEAK_MEMORY, e.toString()));
+
+        Map<String, String> serializedSessionFunctions = session.getSessionFunctions().entrySet().stream()
+                .collect(collectingAndThen(
+                        toMap(e -> SQL_FUNCTION_ID_JSON_CODEC.toJson(e.getKey()), e -> SQL_INVOKED_FUNCTION_JSON_CODEC.toJson(e.getValue())),
+                        ImmutableMap::copyOf));
+
+        return new ClientSession(
+                server,
+                session.getIdentity().getUser(),
+                session.getSource().orElse(null),
+                session.getTraceToken(),
+                session.getClientTags(),
+                session.getClientInfo().orElse(null),
+                session.getCatalog().orElse(null),
+                session.getSchema().orElse(null),
+                session.getTimeZoneKey().getId(),
+                session.getLocale(),
+                resourceEstimates.build(),
+                properties.build(),
+                session.getPreparedStatements(),
+                session.getIdentity().getRoles(),
+                session.getIdentity().getExtraCredentials(),
+                session.getTransactionId().map(Object::toString).orElse(null),
+                clientRequestTimeout,
+                true,
+                serializedSessionFunctions);
+    }
+
     public List<QualifiedObjectName> listTables(Session session, String catalog, String schema)
     {
-        return transaction(prestoServer.getTransactionManager())
+        return transaction(prestoServer.getTransactionManager(), prestoServer.getAccessControl())
                 .readOnly()
                 .execute(session, transactionSession -> {
                     return prestoServer.getMetadata().listTables(transactionSession, new QualifiedTablePrefix(catalog, schema));
@@ -128,7 +185,7 @@ public abstract class AbstractTestingPrestoClient<T>
 
     public boolean tableExists(Session session, String table)
     {
-        return transaction(prestoServer.getTransactionManager())
+        return transaction(prestoServer.getTransactionManager(), prestoServer.getAccessControl())
                 .readOnly()
                 .execute(session, transactionSession -> {
                     return MetadataUtil.tableExists(prestoServer.getMetadata(), transactionSession, table);

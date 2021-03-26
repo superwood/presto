@@ -13,17 +13,16 @@
  */
 package com.facebook.presto.connector.system.jdbc;
 
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.InMemoryRecordSet;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.predicate.TupleDomain;
 
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static com.facebook.presto.metadata.MetadataUtil.TableMetadataBuilder.tableMetadataBuilder;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 
 public class UdtJdbcTable
         extends JdbcTable
@@ -31,13 +30,13 @@ public class UdtJdbcTable
     public static final SchemaTableName NAME = new SchemaTableName("jdbc", "udts");
 
     public static final ConnectorTableMetadata METADATA = tableMetadataBuilder(NAME)
-            .column("type_cat", VARCHAR)
-            .column("type_schem", VARCHAR)
-            .column("type_name", VARCHAR)
-            .column("class_name", VARCHAR)
-            .column("data_type", BIGINT)
-            .column("remarks", VARCHAR)
-            .column("base_type", BIGINT)
+            .column("type_cat", createUnboundedVarcharType())
+            .column("type_schem", createUnboundedVarcharType())
+            .column("type_name", createUnboundedVarcharType())
+            .column("class_name", createUnboundedVarcharType())
+            .column("data_type", createUnboundedVarcharType())
+            .column("remarks", createUnboundedVarcharType())
+            .column("base_type", createUnboundedVarcharType())
             .build();
 
     @Override

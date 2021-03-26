@@ -13,52 +13,33 @@
  */
 package com.facebook.presto.tests.tpch;
 
-import com.facebook.presto.Session;
+import com.facebook.airlift.log.Logger;
+import com.facebook.airlift.log.Logging;
 import com.facebook.presto.tests.DistributedQueryRunner;
-import com.facebook.presto.tpch.TpchPlugin;
-import com.facebook.presto.tpch.testing.SampledTpchPlugin;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.log.Logger;
-import io.airlift.log.Logging;
 
 import java.util.Map;
-
-import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 
 public final class TpchQueryRunner
 {
     private TpchQueryRunner() {}
 
-    public static DistributedQueryRunner createQueryRunner()
-            throws Exception
-    {
-        return createQueryRunner(ImmutableMap.of());
-    }
-
     public static DistributedQueryRunner createQueryRunner(Map<String, String> extraProperties)
             throws Exception
     {
-        Session session = testSessionBuilder()
-                .setSource("test")
-                .setCatalog("tpch")
-                .setSchema("tiny")
+        return TpchQueryRunnerBuilder.builder()
+                .setExtraProperties(extraProperties)
                 .build();
+    }
 
-        DistributedQueryRunner queryRunner = new DistributedQueryRunner(session, 4, extraProperties);
-
-        try {
-            queryRunner.installPlugin(new TpchPlugin());
-            queryRunner.createCatalog("tpch", "tpch");
-
-            queryRunner.installPlugin(new SampledTpchPlugin());
-            queryRunner.createCatalog("tpch_sampled", "tpch_sampled");
-
-            return queryRunner;
-        }
-        catch (Exception e) {
-            queryRunner.close();
-            throw e;
-        }
+    public static DistributedQueryRunner createQueryRunner(Map<String, String> extraProperties, int coordinatorCount)
+            throws Exception
+    {
+        return TpchQueryRunnerBuilder.builder()
+                .setExtraProperties(extraProperties)
+                .setResourceManagerEnabled(true)
+                .setCoordinatorCount(coordinatorCount)
+                .build();
     }
 
     public static void main(String[] args)

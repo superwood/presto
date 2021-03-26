@@ -13,15 +13,35 @@
  */
 package com.facebook.presto.tests.utils;
 
-import com.teradata.tempto.query.QueryExecutor;
+import io.prestodb.tempto.query.QueryExecutor;
 
-import static com.teradata.tempto.context.ThreadLocalTestContextHolder.testContext;
+import static io.prestodb.tempto.context.ThreadLocalTestContextHolder.testContext;
 
 public class QueryExecutors
 {
     public static QueryExecutor onPresto()
     {
         return testContext().getDependency(QueryExecutor.class, "presto");
+    }
+
+    public static QueryExecutor connectToPresto(String prestoConfig)
+    {
+        return testContext().getDependency(QueryExecutor.class, prestoConfig);
+    }
+
+    public static QueryExecutor onHive()
+    {
+        return testContext().getDependency(QueryExecutor.class, "hive");
+    }
+
+    public static QueryExecutor onSqlServer()
+    {
+        return testContext().getDependency(QueryExecutor.class, "sqlserver");
+    }
+
+    public static QueryExecutor onMySql()
+    {
+        return testContext().getDependency(QueryExecutor.class, "mysql");
     }
 
     private QueryExecutors() {}

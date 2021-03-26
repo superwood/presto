@@ -14,31 +14,33 @@
 package com.facebook.presto.operator.aggregation;
 
 import com.facebook.presto.bytecode.DynamicClassLoader;
-import com.facebook.presto.metadata.FunctionRegistry;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.metadata.BoundVariables;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.SqlAggregationFunction;
+import com.facebook.presto.operator.aggregation.AggregationMetadata.AccumulatorStateDescriptor;
 import com.facebook.presto.operator.aggregation.state.NullableLongState;
 import com.facebook.presto.operator.aggregation.state.StateCompiler;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 
 import java.lang.invoke.MethodHandle;
 import java.util.List;
-import java.util.Map;
 
-import static com.facebook.presto.metadata.Signature.comparableTypeParameter;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.operator.aggregation.AggregationMetadata.ParameterMetadata;
 import static com.facebook.presto.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.BLOCK_INDEX;
 import static com.facebook.presto.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.NULLABLE_BLOCK_INPUT_CHANNEL;
 import static com.facebook.presto.operator.aggregation.AggregationMetadata.ParameterMetadata.ParameterType.STATE;
 import static com.facebook.presto.operator.aggregation.AggregationUtils.generateAggregationName;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.spi.function.Signature.comparableTypeParameter;
 import static com.facebook.presto.util.Reflection.methodHandle;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.slice.Slices.wrappedLongArray;
 
 public class ChecksumAggregationFunction
@@ -54,7 +56,11 @@ public class ChecksumAggregationFunction
 
     public ChecksumAggregationFunction()
     {
-        super(NAME, ImmutableList.of(comparableTypeParameter("T")), StandardTypes.VARBINARY, ImmutableList.of("T"));
+        super(NAME,
+                ImmutableList.of(comparableTypeParameter("T")),
+                ImmutableList.of(),
+                parseTypeSignature(StandardTypes.VARBINARY),
+                ImmutableList.of(parseTypeSignature("T")));
     }
 
     @Override
@@ -64,9 +70,9 @@ public class ChecksumAggregationFunction
     }
 
     @Override
-    public InternalAggregationFunction specialize(Map<String, Type> types, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public InternalAggregationFunction specialize(BoundVariables boundVariables, int arity, FunctionAndTypeManager functionAndTypeManager)
     {
-        Type valueType = types.get("T");
+        Type valueType = boundVariables.getTypeVariable("T");
         return generateAggregation(valueType);
     }
 
@@ -77,21 +83,19 @@ public class ChecksumAggregationFunction
         List<Type> inputTypes = ImmutableList.of(type);
 
         AggregationMetadata metadata = new AggregationMetadata(
-                generateAggregationName(NAME, type, inputTypes),
+                generateAggregationName(NAME, type.getTypeSignature(), inputTypes.stream().map(Type::getTypeSignature).collect(toImmutableList())),
                 createInputParameterMetadata(type),
                 INPUT_FUNCTION.bindTo(type),
-                null,
-                null,
                 COMBINE_FUNCTION,
                 OUTPUT_FUNCTION,
-                NullableLongState.class,
-                new StateCompiler().generateStateSerializer(NullableLongState.class, classLoader),
-                new StateCompiler().generateStateFactory(NullableLongState.class, classLoader),
-                VARBINARY,
-                false);
+                ImmutableList.of(new AccumulatorStateDescriptor(
+                        NullableLongState.class,
+                        StateCompiler.generateStateSerializer(NullableLongState.class, classLoader),
+                        StateCompiler.generateStateFactory(NullableLongState.class, classLoader))),
+                VARBINARY);
 
-        GenericAccumulatorFactoryBinder factory = new AccumulatorCompiler().generateAccumulatorFactoryBinder(metadata, classLoader);
-        return new InternalAggregationFunction(NAME, inputTypes, BIGINT, VARBINARY, true, false, factory);
+        GenericAccumulatorFactoryBinder factory = AccumulatorCompiler.generateAccumulatorFactoryBinder(metadata, classLoader);
+        return new InternalAggregationFunction(NAME, inputTypes, ImmutableList.of(BIGINT), VARBINARY, true, false, factory);
     }
 
     private static List<ParameterMetadata> createInputParameterMetadata(Type type)

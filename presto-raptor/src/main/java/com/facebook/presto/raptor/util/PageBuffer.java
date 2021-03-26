@@ -13,18 +13,18 @@
  */
 package com.facebook.presto.raptor.util;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.SortOrder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.raptor.storage.StoragePageSink;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PageSorter;
-import com.facebook.presto.spi.block.SortOrder;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
-import com.google.common.primitives.Ints;
 
 import java.util.ArrayList;
 import java.util.List;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
 public class PageBuffer
@@ -97,7 +97,7 @@ public class PageBuffer
 
     private void appendSorted()
     {
-        long[] addresses = pageSorter.sort(columnTypes, pages, sortFields, sortOrders, Ints.checkedCast(rowCount));
+        long[] addresses = pageSorter.sort(columnTypes, pages, sortFields, sortOrders, toIntExact(rowCount));
 
         int[] pageIndex = new int[addresses.length];
         int[] positionIndex = new int[addresses.length];

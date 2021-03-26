@@ -14,66 +14,86 @@
 package com.facebook.presto.sql.planner.optimizations;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.metadata.Signature;
 import com.facebook.presto.spi.ColumnHandle;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.DependencyExtractor;
-import com.facebook.presto.sql.planner.PartitionFunctionBinding;
-import com.facebook.presto.sql.planner.PartitionFunctionBinding.PartitionFunctionArgumentBinding;
-import com.facebook.presto.sql.planner.PlanNodeIdAllocator;
-import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.planner.SymbolAllocator;
-import com.facebook.presto.sql.planner.plan.AggregationNode;
+import com.facebook.presto.spi.WarningCollector;
+import com.facebook.presto.spi.plan.AggregationNode;
+import com.facebook.presto.spi.plan.AggregationNode.Aggregation;
+import com.facebook.presto.spi.plan.Assignments;
+import com.facebook.presto.spi.plan.DistinctLimitNode;
+import com.facebook.presto.spi.plan.ExceptNode;
+import com.facebook.presto.spi.plan.FilterNode;
+import com.facebook.presto.spi.plan.IntersectNode;
+import com.facebook.presto.spi.plan.LimitNode;
+import com.facebook.presto.spi.plan.MarkDistinctNode;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
+import com.facebook.presto.spi.plan.ProjectNode;
+import com.facebook.presto.spi.plan.SetOperationNode;
+import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.plan.TopNNode;
+import com.facebook.presto.spi.plan.UnionNode;
+import com.facebook.presto.spi.plan.ValuesNode;
+import com.facebook.presto.spi.relation.RowExpression;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
+import com.facebook.presto.sql.planner.PartitioningScheme;
+import com.facebook.presto.sql.planner.PlanVariableAllocator;
+import com.facebook.presto.sql.planner.TypeProvider;
+import com.facebook.presto.sql.planner.VariablesExtractor;
+import com.facebook.presto.sql.planner.plan.ApplyNode;
+import com.facebook.presto.sql.planner.plan.AssignUniqueId;
 import com.facebook.presto.sql.planner.plan.DeleteNode;
-import com.facebook.presto.sql.planner.plan.DistinctLimitNode;
 import com.facebook.presto.sql.planner.plan.ExchangeNode;
-import com.facebook.presto.sql.planner.plan.FilterNode;
+import com.facebook.presto.sql.planner.plan.ExplainAnalyzeNode;
 import com.facebook.presto.sql.planner.plan.GroupIdNode;
 import com.facebook.presto.sql.planner.plan.IndexJoinNode;
 import com.facebook.presto.sql.planner.plan.IndexSourceNode;
 import com.facebook.presto.sql.planner.plan.JoinNode;
-import com.facebook.presto.sql.planner.plan.LimitNode;
-import com.facebook.presto.sql.planner.plan.MarkDistinctNode;
+import com.facebook.presto.sql.planner.plan.LateralJoinNode;
 import com.facebook.presto.sql.planner.plan.OutputNode;
-import com.facebook.presto.sql.planner.plan.PlanNode;
-import com.facebook.presto.sql.planner.plan.ProjectNode;
 import com.facebook.presto.sql.planner.plan.RowNumberNode;
 import com.facebook.presto.sql.planner.plan.SemiJoinNode;
 import com.facebook.presto.sql.planner.plan.SimplePlanRewriter;
 import com.facebook.presto.sql.planner.plan.SortNode;
+import com.facebook.presto.sql.planner.plan.SpatialJoinNode;
+import com.facebook.presto.sql.planner.plan.StatisticAggregations;
+import com.facebook.presto.sql.planner.plan.StatisticsWriterNode;
 import com.facebook.presto.sql.planner.plan.TableFinishNode;
-import com.facebook.presto.sql.planner.plan.TableScanNode;
+import com.facebook.presto.sql.planner.plan.TableWriterMergeNode;
 import com.facebook.presto.sql.planner.plan.TableWriterNode;
-import com.facebook.presto.sql.planner.plan.TopNNode;
 import com.facebook.presto.sql.planner.plan.TopNRowNumberNode;
-import com.facebook.presto.sql.planner.plan.UnionNode;
 import com.facebook.presto.sql.planner.plan.UnnestNode;
-import com.facebook.presto.sql.planner.plan.ValuesNode;
 import com.facebook.presto.sql.planner.plan.WindowNode;
-import com.facebook.presto.sql.tree.Expression;
-import com.facebook.presto.sql.tree.FunctionCall;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.ListMultimap;
-import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
-import static com.facebook.presto.util.ImmutableCollectors.toImmutableList;
-import static com.facebook.presto.util.ImmutableCollectors.toImmutableSet;
-import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.base.Predicates.in;
+import static com.facebook.presto.sql.planner.optimizations.AggregationNodeUtils.extractAggregationUniqueVariables;
+import static com.facebook.presto.sql.planner.optimizations.ApplyNodeUtil.verifySubquerySupported;
+import static com.facebook.presto.sql.planner.optimizations.QueryCardinalityUtil.isScalar;
+import static com.facebook.presto.sql.planner.optimizations.SetOperationNodeUtils.fromListMultimap;
+import static com.facebook.presto.sql.relational.OriginalExpressionUtils.castToExpression;
+import static com.facebook.presto.sql.relational.OriginalExpressionUtils.isExpression;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.concat;
+import static com.google.common.collect.Sets.intersection;
 import static java.util.Objects.requireNonNull;
+import static java.util.function.Function.identity;
 
 /**
  * Removes all computation that does is not referenced transitively from the root of the plan
@@ -87,68 +107,72 @@ import static java.util.Objects.requireNonNull;
  * {@code Output[$0] -> Project[$0 := $1 + $2] -> ...}
  */
 public class PruneUnreferencedOutputs
-        extends PlanOptimizer
+        implements PlanOptimizer
 {
     @Override
-    public PlanNode optimize(PlanNode plan, Session session, Map<Symbol, Type> types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)
+    public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, PlanVariableAllocator variableAllocator, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector)
     {
         requireNonNull(plan, "plan is null");
         requireNonNull(session, "session is null");
         requireNonNull(types, "types is null");
-        requireNonNull(symbolAllocator, "symbolAllocator is null");
+        requireNonNull(variableAllocator, "variableAllocator is null");
         requireNonNull(idAllocator, "idAllocator is null");
 
-        return SimplePlanRewriter.rewriteWith(new Rewriter(types), plan, ImmutableSet.<Symbol>of());
+        return SimplePlanRewriter.rewriteWith(new Rewriter(variableAllocator), plan, ImmutableSet.of());
     }
 
     private static class Rewriter
-            extends SimplePlanRewriter<Set<Symbol>>
+            extends SimplePlanRewriter<Set<VariableReferenceExpression>>
     {
-        private final Map<Symbol, Type> types;
+        private final PlanVariableAllocator variableAllocator;
 
-        public Rewriter(Map<Symbol, Type> types)
+        public Rewriter(PlanVariableAllocator variableAllocator)
         {
-            this.types = types;
+            this.variableAllocator = requireNonNull(variableAllocator, "variableAllocator is null");
         }
 
         @Override
-        public PlanNode visitExchange(ExchangeNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitExplainAnalyze(ExplainAnalyzeNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            Set<Symbol> expectedOutputSymbols = Sets.newHashSet(context.get());
-            node.getPartitionFunction().getHashColumn().ifPresent(expectedOutputSymbols::add);
-            node.getPartitionFunction().getPartitionFunctionArguments().stream()
-                    .filter(PartitionFunctionArgumentBinding::isVariable)
-                    .map(PartitionFunctionArgumentBinding::getColumn)
-                    .forEach(expectedOutputSymbols::add);
+            return context.defaultRewrite(node, ImmutableSet.copyOf(node.getSource().getOutputVariables()));
+        }
 
-            List<List<Symbol>> inputsBySource = new ArrayList<>(node.getInputs().size());
+        @Override
+        public PlanNode visitExchange(ExchangeNode node, RewriteContext<Set<VariableReferenceExpression>> context)
+        {
+            Set<VariableReferenceExpression> expectedOutputVariables = Sets.newHashSet(context.get());
+            node.getPartitioningScheme().getHashColumn().ifPresent(expectedOutputVariables::add);
+            node.getPartitioningScheme().getPartitioning().getVariableReferences()
+                    .forEach(expectedOutputVariables::add);
+            node.getOrderingScheme().ifPresent(orderingScheme -> expectedOutputVariables.addAll(orderingScheme.getOrderByVariables()));
+
+            List<List<VariableReferenceExpression>> inputsBySource = new ArrayList<>(node.getInputs().size());
             for (int i = 0; i < node.getInputs().size(); i++) {
                 inputsBySource.add(new ArrayList<>());
             }
 
-            List<Symbol> newOutputSymbols = new ArrayList<>(node.getOutputSymbols().size());
-            for (int i = 0; i < node.getOutputSymbols().size(); i++) {
-                Symbol outputSymbol = node.getOutputSymbols().get(i);
-                if (expectedOutputSymbols.contains(outputSymbol)) {
-                    newOutputSymbols.add(outputSymbol);
+            List<VariableReferenceExpression> newOutputVariables = new ArrayList<>(node.getOutputVariables().size());
+            for (int i = 0; i < node.getOutputVariables().size(); i++) {
+                VariableReferenceExpression outputVariable = node.getOutputVariables().get(i);
+                if (expectedOutputVariables.contains(outputVariable)) {
+                    newOutputVariables.add(outputVariable);
                     for (int source = 0; source < node.getInputs().size(); source++) {
                         inputsBySource.get(source).add(node.getInputs().get(source).get(i));
                     }
                 }
             }
 
-            // newOutputSymbols contains all partition and hash symbols so simply swap the output layout
-            PartitionFunctionBinding partitionFunctionBinding = new PartitionFunctionBinding(
-                    node.getPartitionFunction().getPartitioningHandle(),
-                    newOutputSymbols,
-                    node.getPartitionFunction().getPartitionFunctionArguments(),
-                    node.getPartitionFunction().getHashColumn(),
-                    node.getPartitionFunction().isReplicateNulls(),
-                    node.getPartitionFunction().getBucketToPartition());
+            // newOutputVariables contains all partition, sort and hash variables so simply swap the output layout
+            PartitioningScheme partitioningScheme = new PartitioningScheme(
+                    node.getPartitioningScheme().getPartitioning(),
+                    newOutputVariables,
+                    node.getPartitioningScheme().getHashColumn(),
+                    node.getPartitioningScheme().isReplicateNullsAndAny(),
+                    node.getPartitioningScheme().getBucketToPartition());
 
-            ImmutableList.Builder<PlanNode> rewrittenSources = ImmutableList.<PlanNode>builder();
+            ImmutableList.Builder<PlanNode> rewrittenSources = ImmutableList.builder();
             for (int i = 0; i < node.getSources().size(); i++) {
-                ImmutableSet.Builder<Symbol> expectedInputs = ImmutableSet.<Symbol>builder()
+                ImmutableSet.Builder<VariableReferenceExpression> expectedInputs = ImmutableSet.<VariableReferenceExpression>builder()
                         .addAll(inputsBySource.get(i));
 
                 rewrittenSources.add(context.rewrite(
@@ -159,51 +183,98 @@ public class PruneUnreferencedOutputs
             return new ExchangeNode(
                     node.getId(),
                     node.getType(),
-                    partitionFunctionBinding,
+                    node.getScope(),
+                    partitioningScheme,
                     rewrittenSources.build(),
-                    inputsBySource);
+                    inputsBySource,
+                    node.isEnsureSourceOrdering(),
+                    node.getOrderingScheme());
         }
 
         @Override
-        public PlanNode visitJoin(JoinNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitJoin(JoinNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            ImmutableSet.Builder<Symbol> leftInputsBuilder = ImmutableSet.builder();
+            Set<VariableReferenceExpression> expectedFilterInputs = new HashSet<>();
+            if (node.getFilter().isPresent()) {
+                if (isExpression(node.getFilter().get())) {
+                    expectedFilterInputs = ImmutableSet.<VariableReferenceExpression>builder()
+                            .addAll(VariablesExtractor.extractUnique(castToExpression(node.getFilter().get()), variableAllocator.getTypes()))
+                            .addAll(context.get())
+                            .build();
+                }
+                else {
+                    expectedFilterInputs = ImmutableSet.<VariableReferenceExpression>builder()
+                            .addAll(VariablesExtractor.extractUnique(node.getFilter().get()))
+                            .addAll(context.get())
+                            .build();
+                }
+            }
+
+            ImmutableSet.Builder<VariableReferenceExpression> leftInputsBuilder = ImmutableSet.builder();
             leftInputsBuilder.addAll(context.get()).addAll(Iterables.transform(node.getCriteria(), JoinNode.EquiJoinClause::getLeft));
-            if (node.getLeftHashSymbol().isPresent()) {
-                leftInputsBuilder.add(node.getLeftHashSymbol().get());
+            if (node.getLeftHashVariable().isPresent()) {
+                leftInputsBuilder.add(node.getLeftHashVariable().get());
             }
-            Set<Symbol> leftInputs = leftInputsBuilder.build();
+            leftInputsBuilder.addAll(expectedFilterInputs);
+            Set<VariableReferenceExpression> leftInputs = leftInputsBuilder.build();
 
-            ImmutableSet.Builder<Symbol> rightInputsBuilder = ImmutableSet.builder();
+            ImmutableSet.Builder<VariableReferenceExpression> rightInputsBuilder = ImmutableSet.builder();
             rightInputsBuilder.addAll(context.get()).addAll(Iterables.transform(node.getCriteria(), JoinNode.EquiJoinClause::getRight));
-            if (node.getRightHashSymbol().isPresent()) {
-                rightInputsBuilder.add(node.getRightHashSymbol().get());
+            if (node.getRightHashVariable().isPresent()) {
+                rightInputsBuilder.add(node.getRightHashVariable().get());
             }
-
-            Set<Symbol> rightInputs = rightInputsBuilder.build();
+            rightInputsBuilder.addAll(expectedFilterInputs);
+            Set<VariableReferenceExpression> rightInputs = rightInputsBuilder.build();
 
             PlanNode left = context.rewrite(node.getLeft(), leftInputs);
             PlanNode right = context.rewrite(node.getRight(), rightInputs);
 
-            return new JoinNode(node.getId(), node.getType(), left, right, node.getCriteria(), node.getLeftHashSymbol(), node.getRightHashSymbol());
+            List<VariableReferenceExpression> outputVariables;
+            if (node.isCrossJoin()) {
+                // do not prune nested joins output since it is not supported
+                // TODO: remove this "if" branch when output symbols selection is supported by nested loop join
+                outputVariables = ImmutableList.<VariableReferenceExpression>builder()
+                        .addAll(left.getOutputVariables())
+                        .addAll(right.getOutputVariables())
+                        .build();
+            }
+            else {
+                outputVariables = node.getOutputVariables().stream()
+                        .filter(variable -> context.get().contains(variable))
+                        .distinct()
+                        .collect(toImmutableList());
+            }
+
+            return new JoinNode(
+                    node.getId(),
+                    node.getType(),
+                    left,
+                    right,
+                    node.getCriteria(),
+                    outputVariables,
+                    node.getFilter(),
+                    node.getLeftHashVariable(),
+                    node.getRightHashVariable(),
+                    node.getDistributionType(),
+                    node.getDynamicFilters());
         }
 
         @Override
-        public PlanNode visitSemiJoin(SemiJoinNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitSemiJoin(SemiJoinNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            ImmutableSet.Builder<Symbol> sourceInputsBuilder = ImmutableSet.builder();
-            sourceInputsBuilder.addAll(context.get()).add(node.getSourceJoinSymbol());
-            if (node.getSourceHashSymbol().isPresent()) {
-                sourceInputsBuilder.add(node.getSourceHashSymbol().get());
+            ImmutableSet.Builder<VariableReferenceExpression> sourceInputsBuilder = ImmutableSet.builder();
+            sourceInputsBuilder.addAll(context.get()).add(node.getSourceJoinVariable());
+            if (node.getSourceHashVariable().isPresent()) {
+                sourceInputsBuilder.add(node.getSourceHashVariable().get());
             }
-            Set<Symbol> sourceInputs = sourceInputsBuilder.build();
+            Set<VariableReferenceExpression> sourceInputs = sourceInputsBuilder.build();
 
-            ImmutableSet.Builder<Symbol> filteringSourceInputBuilder = ImmutableSet.builder();
-            filteringSourceInputBuilder.add(node.getFilteringSourceJoinSymbol());
-            if (node.getFilteringSourceHashSymbol().isPresent()) {
-                filteringSourceInputBuilder.add(node.getFilteringSourceHashSymbol().get());
+            ImmutableSet.Builder<VariableReferenceExpression> filteringSourceInputBuilder = ImmutableSet.builder();
+            filteringSourceInputBuilder.add(node.getFilteringSourceJoinVariable());
+            if (node.getFilteringSourceHashVariable().isPresent()) {
+                filteringSourceInputBuilder.add(node.getFilteringSourceHashVariable().get());
             }
-            Set<Symbol> filteringSourceInputs = filteringSourceInputBuilder.build();
+            Set<VariableReferenceExpression> filteringSourceInputs = filteringSourceInputBuilder.build();
 
             PlanNode source = context.rewrite(node.getSource(), sourceInputs);
             PlanNode filteringSource = context.rewrite(node.getFilteringSource(), filteringSourceInputs);
@@ -211,183 +282,208 @@ public class PruneUnreferencedOutputs
             return new SemiJoinNode(node.getId(),
                     source,
                     filteringSource,
-                    node.getSourceJoinSymbol(),
-                    node.getFilteringSourceJoinSymbol(),
+                    node.getSourceJoinVariable(),
+                    node.getFilteringSourceJoinVariable(),
                     node.getSemiJoinOutput(),
-                    node.getSourceHashSymbol(),
-                    node.getFilteringSourceHashSymbol());
+                    node.getSourceHashVariable(),
+                    node.getFilteringSourceHashVariable(),
+                    node.getDistributionType(),
+                    node.getDynamicFilters());
         }
 
         @Override
-        public PlanNode visitIndexJoin(IndexJoinNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitSpatialJoin(SpatialJoinNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            ImmutableSet.Builder<Symbol> probeInputsBuilder = ImmutableSet.builder();
+            Set<VariableReferenceExpression> filterSymbols;
+            if (isExpression(node.getFilter())) {
+                filterSymbols = VariablesExtractor.extractUnique(castToExpression(node.getFilter()), variableAllocator.getTypes());
+            }
+            else {
+                filterSymbols = VariablesExtractor.extractUnique(node.getFilter());
+            }
+            Set<VariableReferenceExpression> requiredInputs = ImmutableSet.<VariableReferenceExpression>builder()
+                    .addAll(filterSymbols)
+                    .addAll(context.get())
+                    .build();
+
+            ImmutableSet.Builder<VariableReferenceExpression> leftInputs = ImmutableSet.builder();
+            node.getLeftPartitionVariable().map(leftInputs::add);
+
+            ImmutableSet.Builder<VariableReferenceExpression> rightInputs = ImmutableSet.builder();
+            node.getRightPartitionVariable().map(rightInputs::add);
+
+            PlanNode left = context.rewrite(node.getLeft(), leftInputs.addAll(requiredInputs).build());
+            PlanNode right = context.rewrite(node.getRight(), rightInputs.addAll(requiredInputs).build());
+
+            List<VariableReferenceExpression> outputVariables = node.getOutputVariables().stream()
+                    .filter(context.get()::contains)
+                    .distinct()
+                    .collect(toImmutableList());
+
+            return new SpatialJoinNode(node.getId(), node.getType(), left, right, outputVariables, node.getFilter(), node.getLeftPartitionVariable(), node.getRightPartitionVariable(), node.getKdbTree());
+        }
+
+        @Override
+        public PlanNode visitIndexJoin(IndexJoinNode node, RewriteContext<Set<VariableReferenceExpression>> context)
+        {
+            ImmutableSet.Builder<VariableReferenceExpression> probeInputsBuilder = ImmutableSet.builder();
             probeInputsBuilder.addAll(context.get())
                     .addAll(Iterables.transform(node.getCriteria(), IndexJoinNode.EquiJoinClause::getProbe));
-            if (node.getProbeHashSymbol().isPresent()) {
-                probeInputsBuilder.add(node.getProbeHashSymbol().get());
+            if (node.getProbeHashVariable().isPresent()) {
+                probeInputsBuilder.add(node.getProbeHashVariable().get());
             }
-            Set<Symbol> probeInputs = probeInputsBuilder.build();
+            Set<VariableReferenceExpression> probeInputs = probeInputsBuilder.build();
 
-            ImmutableSet.Builder<Symbol> indexInputBuilder = ImmutableSet.builder();
+            ImmutableSet.Builder<VariableReferenceExpression> indexInputBuilder = ImmutableSet.builder();
             indexInputBuilder.addAll(context.get())
                     .addAll(Iterables.transform(node.getCriteria(), IndexJoinNode.EquiJoinClause::getIndex));
-            if (node.getIndexHashSymbol().isPresent()) {
-                indexInputBuilder.add(node.getIndexHashSymbol().get());
+            if (node.getIndexHashVariable().isPresent()) {
+                indexInputBuilder.add(node.getIndexHashVariable().get());
             }
-            Set<Symbol> indexInputs = indexInputBuilder.build();
+            Set<VariableReferenceExpression> indexInputs = indexInputBuilder.build();
 
             PlanNode probeSource = context.rewrite(node.getProbeSource(), probeInputs);
             PlanNode indexSource = context.rewrite(node.getIndexSource(), indexInputs);
 
-            return new IndexJoinNode(node.getId(), node.getType(), probeSource, indexSource, node.getCriteria(), node.getProbeHashSymbol(), node.getIndexHashSymbol());
+            return new IndexJoinNode(node.getId(), node.getType(), probeSource, indexSource, node.getCriteria(), node.getProbeHashVariable(), node.getIndexHashVariable());
         }
 
         @Override
-        public PlanNode visitIndexSource(IndexSourceNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitIndexSource(IndexSourceNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            List<Symbol> newOutputSymbols = node.getOutputSymbols().stream()
+            List<VariableReferenceExpression> newOutputVariables = node.getOutputVariables().stream()
                     .filter(context.get()::contains)
                     .collect(toImmutableList());
 
-            Set<Symbol> newLookupSymbols = node.getLookupSymbols().stream()
+            Set<VariableReferenceExpression> newLookupVariables = node.getLookupVariables().stream()
                     .filter(context.get()::contains)
                     .collect(toImmutableSet());
 
-            Set<Symbol> requiredAssignmentSymbols = context.get();
-            if (!node.getEffectiveTupleDomain().isNone()) {
-                Set<Symbol> requiredSymbols = Maps.filterValues(node.getAssignments(), in(node.getEffectiveTupleDomain().getDomains().get().keySet())).keySet();
-                requiredAssignmentSymbols = Sets.union(context.get(), requiredSymbols);
-            }
-            Map<Symbol, ColumnHandle> newAssignments = Maps.filterKeys(node.getAssignments(), in(requiredAssignmentSymbols));
+            Map<VariableReferenceExpression, ColumnHandle> newAssignments = newOutputVariables.stream()
+                    .collect(toImmutableMap(identity(), node.getAssignments()::get));
 
-            return new IndexSourceNode(node.getId(), node.getIndexHandle(), node.getTableHandle(), newLookupSymbols, newOutputSymbols, newAssignments, node.getEffectiveTupleDomain());
+            return new IndexSourceNode(node.getId(), node.getIndexHandle(), node.getTableHandle(), newLookupVariables, newOutputVariables, newAssignments, node.getCurrentConstraint());
         }
 
         @Override
-        public PlanNode visitAggregation(AggregationNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitAggregation(AggregationNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            ImmutableSet.Builder<Symbol> expectedInputs = ImmutableSet.<Symbol>builder()
-                    .addAll(node.getGroupBy());
-            if (node.getHashSymbol().isPresent()) {
-                expectedInputs.add(node.getHashSymbol().get());
+            ImmutableSet.Builder<VariableReferenceExpression> expectedInputs = ImmutableSet.<VariableReferenceExpression>builder()
+                    .addAll(node.getGroupingKeys());
+            if (node.getHashVariable().isPresent()) {
+                expectedInputs.add(node.getHashVariable().get());
             }
 
-            ImmutableMap.Builder<Symbol, Signature> functions = ImmutableMap.builder();
-            ImmutableMap.Builder<Symbol, FunctionCall> functionCalls = ImmutableMap.builder();
-            ImmutableMap.Builder<Symbol, Symbol> masks = ImmutableMap.builder();
-            for (Map.Entry<Symbol, FunctionCall> entry : node.getAggregations().entrySet()) {
-                Symbol symbol = entry.getKey();
+            ImmutableMap.Builder<VariableReferenceExpression, Aggregation> aggregations = ImmutableMap.builder();
+            for (Map.Entry<VariableReferenceExpression, Aggregation> entry : node.getAggregations().entrySet()) {
+                VariableReferenceExpression variable = entry.getKey();
 
-                if (context.get().contains(symbol)) {
-                    FunctionCall call = entry.getValue();
-                    expectedInputs.addAll(DependencyExtractor.extractUnique(call));
-                    if (node.getMasks().containsKey(symbol)) {
-                        expectedInputs.add(node.getMasks().get(symbol));
-                        masks.put(symbol, node.getMasks().get(symbol));
-                    }
-
-                    functionCalls.put(symbol, call);
-                    functions.put(symbol, node.getFunctions().get(symbol));
+                if (context.get().contains(variable)) {
+                    Aggregation aggregation = entry.getValue();
+                    expectedInputs.addAll(extractAggregationUniqueVariables(aggregation, variableAllocator.getTypes()));
+                    aggregation.getMask().ifPresent(expectedInputs::add);
+                    aggregations.put(variable, aggregation);
                 }
-            }
-            if (node.getSampleWeight().isPresent()) {
-                expectedInputs.add(node.getSampleWeight().get());
             }
 
             PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
 
             return new AggregationNode(node.getId(),
                     source,
-                    node.getGroupBy(),
-                    functionCalls.build(),
-                    functions.build(),
-                    masks.build(),
+                    aggregations.build(),
+                    node.getGroupingSets(),
+                    ImmutableList.of(),
                     node.getStep(),
-                    node.getSampleWeight(),
-                    node.getConfidence(),
-                    node.getHashSymbol());
+                    node.getHashVariable(),
+                    node.getGroupIdVariable());
         }
 
         @Override
-        public PlanNode visitWindow(WindowNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitWindow(WindowNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            ImmutableSet.Builder<Symbol> expectedInputs = ImmutableSet.<Symbol>builder()
+            ImmutableSet.Builder<VariableReferenceExpression> expectedInputs = ImmutableSet.<VariableReferenceExpression>builder()
                     .addAll(context.get())
-                    .addAll(node.getPartitionBy())
-                    .addAll(node.getOrderBy());
+                    .addAll(node.getPartitionBy());
 
-            if (node.getFrame().getStartValue().isPresent()) {
-                expectedInputs.add(node.getFrame().getStartValue().get());
-            }
-            if (node.getFrame().getEndValue().isPresent()) {
-                expectedInputs.add(node.getFrame().getEndValue().get());
-            }
+            node.getOrderingScheme().ifPresent(orderingScheme ->
+                    orderingScheme.getOrderByVariables()
+                            .forEach(expectedInputs::add));
 
-            if (node.getHashSymbol().isPresent()) {
-                expectedInputs.add(node.getHashSymbol().get());
-            }
-
-            ImmutableMap.Builder<Symbol, Signature> functions = ImmutableMap.builder();
-            ImmutableMap.Builder<Symbol, FunctionCall> functionCalls = ImmutableMap.builder();
-            for (Map.Entry<Symbol, FunctionCall> entry : node.getWindowFunctions().entrySet()) {
-                Symbol symbol = entry.getKey();
-
-                if (context.get().contains(symbol)) {
-                    FunctionCall call = entry.getValue();
-                    expectedInputs.addAll(DependencyExtractor.extractUnique(call));
-
-                    functionCalls.put(symbol, call);
-                    functions.put(symbol, node.getSignatures().get(symbol));
+            for (WindowNode.Frame frame : node.getFrames()) {
+                if (frame.getStartValue().isPresent()) {
+                    expectedInputs.add(frame.getStartValue().get());
+                }
+                if (frame.getEndValue().isPresent()) {
+                    expectedInputs.add(frame.getEndValue().get());
                 }
             }
 
-            PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
+            if (node.getHashVariable().isPresent()) {
+                expectedInputs.add(node.getHashVariable().get());
+            }
 
+            ImmutableMap.Builder<VariableReferenceExpression, WindowNode.Function> functionsBuilder = ImmutableMap.builder();
+            for (Map.Entry<VariableReferenceExpression, WindowNode.Function> entry : node.getWindowFunctions().entrySet()) {
+                VariableReferenceExpression variable = entry.getKey();
+                WindowNode.Function function = entry.getValue();
+                if (context.get().contains(variable)) {
+                    expectedInputs.addAll(WindowNodeUtil.extractWindowFunctionUniqueVariables(function, variableAllocator.getTypes()));
+                    functionsBuilder.put(variable, entry.getValue());
+                }
+            }
+
+            Map<VariableReferenceExpression, WindowNode.Function> functions = functionsBuilder.build();
+            if (functions.size() == 0) {
+                // As the window plan node is getting skipped, use the inputs needed by the parent of the Window plan node
+                return context.rewrite(node.getSource(), context.get());
+            }
+
+            PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
             return new WindowNode(
                     node.getId(),
                     source,
-                    node.getPartitionBy(),
-                    node.getOrderBy(),
-                    node.getOrderings(),
-                    node.getFrame(),
-                    functionCalls.build(),
-                    functions.build(),
-                    node.getHashSymbol(),
+                    node.getSpecification(),
+                    functions,
+                    node.getHashVariable(),
                     node.getPrePartitionedInputs(),
                     node.getPreSortedOrderPrefix());
         }
 
         @Override
-        public PlanNode visitTableScan(TableScanNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitTableScan(TableScanNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            Set<Symbol> requiredTableScanOutputs = context.get().stream()
-                    .filter(node.getOutputSymbols()::contains)
-                    .collect(toImmutableSet());
-
-            List<Symbol> newOutputSymbols = node.getOutputSymbols().stream()
-                    .filter(requiredTableScanOutputs::contains)
+            List<VariableReferenceExpression> newOutputs = node.getOutputVariables().stream()
+                    .filter(context.get()::contains)
                     .collect(toImmutableList());
 
-            Map<Symbol, ColumnHandle> newAssignments = Maps.filterKeys(node.getAssignments(), in(requiredTableScanOutputs));
+            Map<VariableReferenceExpression, ColumnHandle> newAssignments = newOutputs.stream()
+                    .collect(Collectors.toMap(identity(), node.getAssignments()::get));
 
             return new TableScanNode(
                     node.getId(),
                     node.getTable(),
-                    newOutputSymbols,
+                    newOutputs,
                     newAssignments,
-                    node.getLayout(),
                     node.getCurrentConstraint(),
-                    node.getOriginalConstraint());
+                    node.getEnforcedConstraint());
         }
 
         @Override
-        public PlanNode visitFilter(FilterNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitFilter(FilterNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            Set<Symbol> expectedInputs = ImmutableSet.<Symbol>builder()
-                    .addAll(DependencyExtractor.extractUnique(node.getPredicate()))
-                    .addAll(context.get())
-                    .build();
+            Set<VariableReferenceExpression> expectedInputs;
+            if (isExpression(node.getPredicate())) {
+                expectedInputs = ImmutableSet.<VariableReferenceExpression>builder()
+                        .addAll(VariablesExtractor.extractUnique(castToExpression(node.getPredicate()), variableAllocator.getTypes()))
+                        .addAll(context.get())
+                        .build();
+            }
+            else {
+                expectedInputs = ImmutableSet.<VariableReferenceExpression>builder()
+                        .addAll(VariablesExtractor.extractUnique(node.getPredicate()))
+                        .addAll(context.get())
+                        .build();
+            }
 
             PlanNode source = context.rewrite(node.getSource(), expectedInputs);
 
@@ -395,265 +491,434 @@ public class PruneUnreferencedOutputs
         }
 
         @Override
-        public PlanNode visitGroupId(GroupIdNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitGroupId(GroupIdNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            checkState(node.getDistinctGroupingColumns().stream().allMatch(column -> context.get().contains(column)));
+            ImmutableSet.Builder<VariableReferenceExpression> expectedInputs = ImmutableSet.builder();
 
-            PlanNode source = context.rewrite(node.getSource(), ImmutableSet.copyOf(context.get()));
-            List<Symbol> requiredSymbols = context.get().stream()
-                    .filter(symbol -> !symbol.equals(node.getGroupIdSymbol()))
-                    .collect(toImmutableList());
+            List<VariableReferenceExpression> newAggregationArguments = node.getAggregationArguments().stream()
+                    .filter(context.get()::contains)
+                    .collect(Collectors.toList());
+            expectedInputs.addAll(newAggregationArguments);
 
-            return new GroupIdNode(node.getId(), source, requiredSymbols, node.getGroupingSets(), node.getGroupIdSymbol());
+            ImmutableList.Builder<List<VariableReferenceExpression>> newGroupingSets = ImmutableList.builder();
+            Map<VariableReferenceExpression, VariableReferenceExpression> newGroupingMapping = new HashMap<>();
+
+            for (List<VariableReferenceExpression> groupingSet : node.getGroupingSets()) {
+                ImmutableList.Builder<VariableReferenceExpression> newGroupingSet = ImmutableList.builder();
+
+                for (VariableReferenceExpression output : groupingSet) {
+                    if (context.get().contains(output)) {
+                        newGroupingSet.add(output);
+                        newGroupingMapping.putIfAbsent(output, node.getGroupingColumns().get(output));
+                        expectedInputs.add(node.getGroupingColumns().get(output));
+                    }
+                }
+                newGroupingSets.add(newGroupingSet.build());
+            }
+
+            PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
+            return new GroupIdNode(node.getId(), source, newGroupingSets.build(), newGroupingMapping, newAggregationArguments, node.getGroupIdVariable());
         }
 
         @Override
-        public PlanNode visitMarkDistinct(MarkDistinctNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitMarkDistinct(MarkDistinctNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            if (!context.get().contains(node.getMarkerSymbol())) {
+            if (!context.get().contains(node.getMarkerVariable())) {
                 return context.rewrite(node.getSource(), context.get());
             }
 
-            ImmutableSet.Builder<Symbol> expectedInputs = ImmutableSet.<Symbol>builder()
-                    .addAll(node.getDistinctSymbols())
-                    .addAll(context.get());
+            ImmutableSet.Builder<VariableReferenceExpression> expectedInputs = ImmutableSet.<VariableReferenceExpression>builder()
+                    .addAll(node.getDistinctVariables())
+                    .addAll(context.get().stream()
+                            .filter(variable -> !variable.equals(node.getMarkerVariable()))
+                            .collect(toImmutableList()));
 
-            if (node.getHashSymbol().isPresent()) {
-                expectedInputs.add(node.getHashSymbol().get());
+            if (node.getHashVariable().isPresent()) {
+                expectedInputs.add(node.getHashVariable().get());
             }
             PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
 
-            return new MarkDistinctNode(node.getId(), source, node.getMarkerSymbol(), node.getDistinctSymbols(), node.getHashSymbol());
+            return new MarkDistinctNode(node.getId(), source, node.getMarkerVariable(), node.getDistinctVariables(), node.getHashVariable());
         }
 
         @Override
-        public PlanNode visitUnnest(UnnestNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitUnnest(UnnestNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            List<Symbol> replicateSymbols = node.getReplicateSymbols().stream()
+            List<VariableReferenceExpression> replicateVariables = node.getReplicateVariables().stream()
                     .filter(context.get()::contains)
                     .collect(toImmutableList());
 
-            Optional<Symbol> ordinalitySymbol = node.getOrdinalitySymbol();
-            if (ordinalitySymbol.isPresent() && !context.get().contains(ordinalitySymbol.get())) {
-                ordinalitySymbol = Optional.empty();
+            Optional<VariableReferenceExpression> ordinalityVariable = node.getOrdinalityVariable();
+            if (ordinalityVariable.isPresent() && !context.get().contains(ordinalityVariable.get())) {
+                ordinalityVariable = Optional.empty();
             }
-            Map<Symbol, List<Symbol>> unnestSymbols = node.getUnnestSymbols();
-            ImmutableSet.Builder<Symbol> expectedInputs = ImmutableSet.<Symbol>builder()
-                    .addAll(replicateSymbols)
-                    .addAll(unnestSymbols.keySet());
+            Map<VariableReferenceExpression, List<VariableReferenceExpression>> unnestVariables = node.getUnnestVariables();
+            ImmutableSet.Builder<VariableReferenceExpression> expectedInputs = ImmutableSet.<VariableReferenceExpression>builder()
+                    .addAll(replicateVariables)
+                    .addAll(unnestVariables.keySet());
 
             PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
-            return new UnnestNode(node.getId(), source, replicateSymbols, unnestSymbols, ordinalitySymbol);
+            return new UnnestNode(node.getId(), source, replicateVariables, unnestVariables, ordinalityVariable);
         }
 
         @Override
-        public PlanNode visitProject(ProjectNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitProject(ProjectNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            ImmutableSet.Builder<Symbol> expectedInputs = ImmutableSet.builder();
+            ImmutableSet.Builder<VariableReferenceExpression> expectedInputs = ImmutableSet.builder();
 
-            ImmutableMap.Builder<Symbol, Expression> builder = ImmutableMap.builder();
-            for (int i = 0; i < node.getOutputSymbols().size(); i++) {
-                Symbol output = node.getOutputSymbols().get(i);
-                Expression expression = node.getAssignments().get(output);
-
-                if (context.get().contains(output)) {
-                    expectedInputs.addAll(DependencyExtractor.extractUnique(expression));
-                    builder.put(output, expression);
+            Assignments.Builder builder = Assignments.builder();
+            node.getAssignments().forEach((variable, expression) -> {
+                if (context.get().contains(variable)) {
+                    if (isExpression(expression)) {
+                        expectedInputs.addAll(VariablesExtractor.extractUnique(castToExpression(expression), variableAllocator.getTypes()));
+                    }
+                    else {
+                        expectedInputs.addAll(VariablesExtractor.extractUnique(expression));
+                    }
+                    builder.put(variable, expression);
                 }
-            }
+            });
 
             PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
 
-            return new ProjectNode(node.getId(), source, builder.build());
+            return new ProjectNode(node.getId(), source, builder.build(), node.getLocality());
         }
 
         @Override
-        public PlanNode visitOutput(OutputNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitOutput(OutputNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            Set<Symbol> expectedInputs = ImmutableSet.copyOf(node.getOutputSymbols());
+            Set<VariableReferenceExpression> expectedInputs = ImmutableSet.copyOf(node.getOutputVariables());
             PlanNode source = context.rewrite(node.getSource(), expectedInputs);
-            return new OutputNode(node.getId(), source, node.getColumnNames(), node.getOutputSymbols());
+            return new OutputNode(node.getId(), source, node.getColumnNames(), node.getOutputVariables());
         }
 
         @Override
-        public PlanNode visitLimit(LimitNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitLimit(LimitNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            ImmutableSet.Builder<Symbol> expectedInputs = ImmutableSet.<Symbol>builder()
+            ImmutableSet.Builder<VariableReferenceExpression> expectedInputs = ImmutableSet.<VariableReferenceExpression>builder()
                     .addAll(context.get());
             PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
-            return new LimitNode(node.getId(), source, node.getCount());
+            return new LimitNode(node.getId(), source, node.getCount(), node.getStep());
         }
 
         @Override
-        public PlanNode visitDistinctLimit(DistinctLimitNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitDistinctLimit(DistinctLimitNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            Set<Symbol> expectedInputs;
-            if (node.getHashSymbol().isPresent()) {
-                expectedInputs = ImmutableSet.copyOf(concat(node.getOutputSymbols(), ImmutableList.of(node.getHashSymbol().get())));
+            Set<VariableReferenceExpression> expectedInputs;
+            if (node.getHashVariable().isPresent()) {
+                expectedInputs = ImmutableSet.copyOf(concat(node.getDistinctVariables(), ImmutableList.of(node.getHashVariable().get())));
             }
             else {
-                expectedInputs = ImmutableSet.copyOf(node.getOutputSymbols());
+                expectedInputs = ImmutableSet.copyOf(node.getDistinctVariables());
             }
             PlanNode source = context.rewrite(node.getSource(), expectedInputs);
-            return new DistinctLimitNode(node.getId(), source, node.getLimit(), node.getHashSymbol());
+            return new DistinctLimitNode(node.getId(), source, node.getLimit(), node.isPartial(), node.getDistinctVariables(), node.getHashVariable());
         }
 
         @Override
-        public PlanNode visitTopN(TopNNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitTopN(TopNNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            ImmutableSet.Builder<Symbol> expectedInputs = ImmutableSet.<Symbol>builder()
+            ImmutableSet.Builder<VariableReferenceExpression> expectedInputs = ImmutableSet.<VariableReferenceExpression>builder()
                     .addAll(context.get())
-                    .addAll(node.getOrderBy());
+                    .addAll(node.getOrderingScheme().getOrderByVariables());
 
             PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
 
-            return new TopNNode(node.getId(), source, node.getCount(), node.getOrderBy(), node.getOrderings(), node.isPartial());
+            return new TopNNode(node.getId(), source, node.getCount(), node.getOrderingScheme(), node.getStep());
         }
 
         @Override
-        public PlanNode visitRowNumber(RowNumberNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitRowNumber(RowNumberNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            ImmutableSet.Builder<Symbol> inputsBuilder = ImmutableSet.builder();
-            ImmutableSet.Builder<Symbol> expectedInputs = inputsBuilder
+            ImmutableSet.Builder<VariableReferenceExpression> inputsBuilder = ImmutableSet.builder();
+            ImmutableSet.Builder<VariableReferenceExpression> expectedInputs = inputsBuilder
                     .addAll(context.get())
                     .addAll(node.getPartitionBy());
 
-            if (node.getHashSymbol().isPresent()) {
-                inputsBuilder.add(node.getHashSymbol().get());
+            if (node.getHashVariable().isPresent()) {
+                inputsBuilder.add(node.getHashVariable().get());
             }
             PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
 
-            return new RowNumberNode(node.getId(), source, node.getPartitionBy(), node.getRowNumberSymbol(), node.getMaxRowCountPerPartition(), node.getHashSymbol());
+            return new RowNumberNode(node.getId(), source, node.getPartitionBy(), node.getRowNumberVariable(), node.getMaxRowCountPerPartition(), node.getHashVariable());
         }
 
         @Override
-        public PlanNode visitTopNRowNumber(TopNRowNumberNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitTopNRowNumber(TopNRowNumberNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            ImmutableSet.Builder<Symbol> expectedInputs = ImmutableSet.<Symbol>builder()
+            ImmutableSet.Builder<VariableReferenceExpression> expectedInputs = ImmutableSet.<VariableReferenceExpression>builder()
                     .addAll(context.get())
                     .addAll(node.getPartitionBy())
-                    .addAll(node.getOrderBy());
+                    .addAll(node.getOrderingScheme().getOrderByVariables());
 
-            if (node.getHashSymbol().isPresent()) {
-                expectedInputs.add(node.getHashSymbol().get());
+            if (node.getHashVariable().isPresent()) {
+                expectedInputs.add(node.getHashVariable().get());
             }
             PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
 
             return new TopNRowNumberNode(node.getId(),
                     source,
-                    node.getPartitionBy(),
-                    node.getOrderBy(),
-                    node.getOrderings(),
-                    node.getRowNumberSymbol(),
+                    node.getSpecification(),
+                    node.getRowNumberVariable(),
                     node.getMaxRowCountPerPartition(),
                     node.isPartial(),
-                    node.getHashSymbol());
+                    node.getHashVariable());
         }
 
         @Override
-        public PlanNode visitSort(SortNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitSort(SortNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            Set<Symbol> expectedInputs = ImmutableSet.copyOf(concat(context.get(), node.getOrderBy()));
+            Set<VariableReferenceExpression> expectedInputs = ImmutableSet.copyOf(concat(context.get(), node.getOrderingScheme().getOrderByVariables()));
 
             PlanNode source = context.rewrite(node.getSource(), expectedInputs);
 
-            return new SortNode(node.getId(), source, node.getOrderBy(), node.getOrderings());
+            return new SortNode(node.getId(), source, node.getOrderingScheme(), node.isPartial());
         }
 
         @Override
-        public PlanNode visitTableWriter(TableWriterNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitTableWriter(TableWriterNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            ImmutableSet.Builder<Symbol> expectedInputs = ImmutableSet.<Symbol>builder()
+            ImmutableSet.Builder<VariableReferenceExpression> expectedInputs = ImmutableSet.<VariableReferenceExpression>builder()
                     .addAll(node.getColumns());
-            if (node.getSampleWeightSymbol().isPresent()) {
-                expectedInputs.add(node.getSampleWeightSymbol().get());
+            if (node.getTablePartitioningScheme().isPresent()) {
+                PartitioningScheme partitioningScheme = node.getTablePartitioningScheme().get();
+                partitioningScheme.getPartitioning().getVariableReferences().forEach(expectedInputs::add);
+                partitioningScheme.getHashColumn().ifPresent(expectedInputs::add);
             }
-            if (node.getPartitionFunction().isPresent()) {
-                PartitionFunctionBinding functionBinding = node.getPartitionFunction().get();
-                functionBinding.getPartitionFunctionArguments().stream()
-                        .filter(PartitionFunctionArgumentBinding::isVariable)
-                        .map(PartitionFunctionArgumentBinding::getColumn)
-                        .forEach(expectedInputs::add);
-                functionBinding.getHashColumn().ifPresent(expectedInputs::add);
+            if (node.getPreferredShufflePartitioningScheme().isPresent()) {
+                PartitioningScheme partitioningScheme = node.getPreferredShufflePartitioningScheme().get();
+                partitioningScheme.getPartitioning().getVariableReferences().forEach(expectedInputs::add);
+                partitioningScheme.getHashColumn().ifPresent(expectedInputs::add);
+            }
+            if (node.getStatisticsAggregation().isPresent()) {
+                StatisticAggregations aggregations = node.getStatisticsAggregation().get();
+                expectedInputs.addAll(aggregations.getGroupingVariables());
+                aggregations.getAggregations()
+                        .values()
+                        .forEach(aggregation -> expectedInputs.addAll(extractAggregationUniqueVariables(aggregation, variableAllocator.getTypes())));
             }
             PlanNode source = context.rewrite(node.getSource(), expectedInputs.build());
-
             return new TableWriterNode(
                     node.getId(),
                     source,
                     node.getTarget(),
+                    node.getRowCountVariable(),
+                    node.getFragmentVariable(),
+                    node.getTableCommitContextVariable(),
                     node.getColumns(),
                     node.getColumnNames(),
-                    node.getOutputSymbols(),
-                    node.getSampleWeightSymbol(),
-                    node.getPartitionFunction());
+                    node.getTablePartitioningScheme(),
+                    node.getPreferredShufflePartitioningScheme(),
+                    node.getStatisticsAggregation());
         }
 
         @Override
-        public PlanNode visitTableFinish(TableFinishNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitTableWriteMerge(TableWriterMergeNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            // Maintain the existing inputs needed for TableCommitNode
-            PlanNode source = context.rewrite(node.getSource(), ImmutableSet.copyOf(node.getSource().getOutputSymbols()));
-            return new TableFinishNode(node.getId(), source, node.getTarget(), node.getOutputSymbols());
+            PlanNode source = context.rewrite(node.getSource(), ImmutableSet.copyOf(node.getSource().getOutputVariables()));
+            return new TableWriterMergeNode(
+                    node.getId(),
+                    source,
+                    node.getRowCountVariable(),
+                    node.getFragmentVariable(),
+                    node.getTableCommitContextVariable(),
+                    node.getStatisticsAggregation());
         }
 
         @Override
-        public PlanNode visitDelete(DeleteNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitStatisticsWriterNode(StatisticsWriterNode node, RewriteContext<Set<VariableReferenceExpression>> context)
+        {
+            PlanNode source = context.rewrite(node.getSource(), ImmutableSet.copyOf(node.getSource().getOutputVariables()));
+            return new StatisticsWriterNode(
+                    node.getId(),
+                    source,
+                    node.getTableHandle(),
+                    node.getRowCountVariable(),
+                    node.isRowCountEnabled(),
+                    node.getDescriptor());
+        }
+
+        @Override
+        public PlanNode visitTableFinish(TableFinishNode node, RewriteContext<Set<VariableReferenceExpression>> context)
+        {
+            PlanNode source = context.rewrite(node.getSource(), ImmutableSet.copyOf(node.getSource().getOutputVariables()));
+            return new TableFinishNode(
+                    node.getId(),
+                    source,
+                    node.getTarget(),
+                    node.getRowCountVariable(),
+                    node.getStatisticsAggregation(),
+                    node.getStatisticsAggregationDescriptor());
+        }
+
+        @Override
+        public PlanNode visitDelete(DeleteNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
             PlanNode source = context.rewrite(node.getSource(), ImmutableSet.of(node.getRowId()));
-            return new DeleteNode(node.getId(), source, node.getTarget(), node.getRowId(), node.getOutputSymbols());
+            return new DeleteNode(node.getId(), source, node.getRowId(), node.getOutputVariables());
         }
 
         @Override
-        public PlanNode visitUnion(UnionNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitUnion(UnionNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            // Find out which output symbols we need to keep
-            ImmutableListMultimap.Builder<Symbol, Symbol> rewrittenSymbolMappingBuilder = ImmutableListMultimap.builder();
-            for (Symbol symbol : node.getOutputSymbols()) {
-                if (context.get().contains(symbol)) {
-                    rewrittenSymbolMappingBuilder.putAll(symbol, node.getSymbolMapping().get(symbol));
+            ListMultimap<VariableReferenceExpression, VariableReferenceExpression> rewrittenVariableMapping = rewriteSetOperationVariableMapping(node, context);
+            ImmutableList<PlanNode> rewrittenSubPlans = rewriteSetOperationSubPlans(node, context, rewrittenVariableMapping);
+            return new UnionNode(node.getId(), rewrittenSubPlans, ImmutableList.copyOf(rewrittenVariableMapping.keySet()), fromListMultimap(rewrittenVariableMapping));
+        }
+
+        @Override
+        public PlanNode visitIntersect(IntersectNode node, RewriteContext<Set<VariableReferenceExpression>> context)
+        {
+            ListMultimap<VariableReferenceExpression, VariableReferenceExpression> rewrittenVariableMapping = rewriteSetOperationVariableMapping(node, context);
+            ImmutableList<PlanNode> rewrittenSubPlans = rewriteSetOperationSubPlans(node, context, rewrittenVariableMapping);
+            return new IntersectNode(node.getId(), rewrittenSubPlans, ImmutableList.copyOf(rewrittenVariableMapping.keySet()), fromListMultimap(rewrittenVariableMapping));
+        }
+
+        @Override
+        public PlanNode visitExcept(ExceptNode node, RewriteContext<Set<VariableReferenceExpression>> context)
+        {
+            ListMultimap<VariableReferenceExpression, VariableReferenceExpression> rewrittenVariableMapping = rewriteSetOperationVariableMapping(node, context);
+            ImmutableList<PlanNode> rewrittenSubPlans = rewriteSetOperationSubPlans(node, context, rewrittenVariableMapping);
+            return new ExceptNode(node.getId(), rewrittenSubPlans, ImmutableList.copyOf(rewrittenVariableMapping.keySet()), fromListMultimap(rewrittenVariableMapping));
+        }
+
+        private ListMultimap<VariableReferenceExpression, VariableReferenceExpression> rewriteSetOperationVariableMapping(SetOperationNode node, RewriteContext<Set<VariableReferenceExpression>> context)
+        {
+            // Find out which output variables we need to keep
+            ImmutableListMultimap.Builder<VariableReferenceExpression, VariableReferenceExpression> rewrittenVariableMappingBuilder = ImmutableListMultimap.builder();
+            for (VariableReferenceExpression variable : node.getOutputVariables()) {
+                if (context.get().contains(variable)) {
+                    rewrittenVariableMappingBuilder.putAll(
+                            variable,
+                            node.getVariableMapping().get(variable));
                 }
             }
-            ListMultimap<Symbol, Symbol> rewrittenSymbolMapping = rewrittenSymbolMappingBuilder.build();
+            return rewrittenVariableMappingBuilder.build();
+        }
 
+        private ImmutableList<PlanNode> rewriteSetOperationSubPlans(SetOperationNode node, RewriteContext<Set<VariableReferenceExpression>> context, ListMultimap<VariableReferenceExpression, VariableReferenceExpression> rewrittenVariableMapping)
+        {
             // Find the corresponding input symbol to the remaining output symbols and prune the subplans
             ImmutableList.Builder<PlanNode> rewrittenSubPlans = ImmutableList.builder();
             for (int i = 0; i < node.getSources().size(); i++) {
-                ImmutableSet.Builder<Symbol> expectedInputSymbols = ImmutableSet.builder();
-                for (Collection<Symbol> symbols : rewrittenSymbolMapping.asMap().values()) {
-                    expectedInputSymbols.add(Iterables.get(symbols, i));
+                ImmutableSet.Builder<VariableReferenceExpression> expectedInputSymbols = ImmutableSet.builder();
+                for (Collection<VariableReferenceExpression> variables : rewrittenVariableMapping.asMap().values()) {
+                    expectedInputSymbols.add(Iterables.get(variables, i));
                 }
                 rewrittenSubPlans.add(context.rewrite(node.getSources().get(i), expectedInputSymbols.build()));
             }
-
-            return new UnionNode(node.getId(), rewrittenSubPlans.build(), rewrittenSymbolMapping, ImmutableList.copyOf(rewrittenSymbolMapping.keySet()));
+            return rewrittenSubPlans.build();
         }
 
         @Override
-        public PlanNode visitValues(ValuesNode node, RewriteContext<Set<Symbol>> context)
+        public PlanNode visitValues(ValuesNode node, RewriteContext<Set<VariableReferenceExpression>> context)
         {
-            ImmutableList.Builder<Symbol> rewrittenOutputSymbolsBuilder = ImmutableList.builder();
-            ImmutableList.Builder<ImmutableList.Builder<Expression>> rowBuildersBuilder = ImmutableList.builder();
+            ImmutableList.Builder<VariableReferenceExpression> rewrittenOutputVariablesBuilder = ImmutableList.builder();
+            ImmutableList.Builder<ImmutableList.Builder<RowExpression>> rowBuildersBuilder = ImmutableList.builder();
             // Initialize builder for each row
             for (int i = 0; i < node.getRows().size(); i++) {
                 rowBuildersBuilder.add(ImmutableList.builder());
             }
-            ImmutableList<ImmutableList.Builder<Expression>> rowBuilders = rowBuildersBuilder.build();
-            for (int i = 0; i < node.getOutputSymbols().size(); i++) {
-                Symbol outputSymbol = node.getOutputSymbols().get(i);
+            ImmutableList<ImmutableList.Builder<RowExpression>> rowBuilders = rowBuildersBuilder.build();
+            for (int i = 0; i < node.getOutputVariables().size(); i++) {
+                VariableReferenceExpression outputVariable = node.getOutputVariables().get(i);
                 // If output symbol is used
-                if (context.get().contains(outputSymbol)) {
-                    rewrittenOutputSymbolsBuilder.add(outputSymbol);
+                if (context.get().contains(outputVariable)) {
+                    rewrittenOutputVariablesBuilder.add(outputVariable);
                     // Add the value of the output symbol for each row
                     for (int j = 0; j < node.getRows().size(); j++) {
                         rowBuilders.get(j).add(node.getRows().get(j).get(i));
                     }
                 }
             }
-            List<List<Expression>> rewrittenRows = rowBuilders.stream()
-                    .map((rowBuilder) -> rowBuilder.build())
+            List<List<RowExpression>> rewrittenRows = rowBuilders.stream()
+                    .map(ImmutableList.Builder::build)
                     .collect(toImmutableList());
-            return new ValuesNode(node.getId(), rewrittenOutputSymbolsBuilder.build(), rewrittenRows);
+            return new ValuesNode(node.getId(), rewrittenOutputVariablesBuilder.build(), rewrittenRows);
+        }
+
+        @Override
+        public PlanNode visitApply(ApplyNode node, RewriteContext<Set<VariableReferenceExpression>> context)
+        {
+            // remove unused apply nodes
+            if (intersection(node.getSubqueryAssignments().getVariables(), context.get()).isEmpty()) {
+                return context.rewrite(node.getInput(), context.get());
+            }
+
+            // extract symbols required subquery plan
+            ImmutableSet.Builder<VariableReferenceExpression> subqueryAssignmentsVariablesBuilder = ImmutableSet.builder();
+            Assignments.Builder subqueryAssignments = Assignments.builder();
+            for (Map.Entry<VariableReferenceExpression, RowExpression> entry : node.getSubqueryAssignments().getMap().entrySet()) {
+                VariableReferenceExpression output = entry.getKey();
+                RowExpression expression = entry.getValue();
+                if (context.get().contains(output)) {
+                    if (isExpression(expression)) {
+                        subqueryAssignmentsVariablesBuilder.addAll(VariablesExtractor.extractUnique(castToExpression(expression), variableAllocator.getTypes()));
+                    }
+                    else {
+                        subqueryAssignmentsVariablesBuilder.addAll(VariablesExtractor.extractUnique(expression));
+                    }
+                    subqueryAssignments.put(output, expression);
+                }
+            }
+
+            Set<VariableReferenceExpression> subqueryAssignmentsVariables = subqueryAssignmentsVariablesBuilder.build();
+            PlanNode subquery = context.rewrite(node.getSubquery(), subqueryAssignmentsVariables);
+
+            // prune not used correlation symbols
+            Set<VariableReferenceExpression> subquerySymbols = VariablesExtractor.extractUnique(subquery, variableAllocator.getTypes());
+            List<VariableReferenceExpression> newCorrelation = node.getCorrelation().stream()
+                    .filter(subquerySymbols::contains)
+                    .collect(toImmutableList());
+
+            Set<VariableReferenceExpression> inputContext = ImmutableSet.<VariableReferenceExpression>builder()
+                    .addAll(context.get())
+                    .addAll(newCorrelation)
+                    .addAll(subqueryAssignmentsVariables) // need to include those: e.g: "expr" from "expr IN (SELECT 1)"
+                    .build();
+            PlanNode input = context.rewrite(node.getInput(), inputContext);
+            Assignments assignments = subqueryAssignments.build();
+            verifySubquerySupported(assignments);
+            return new ApplyNode(node.getId(), input, subquery, assignments, newCorrelation, node.getOriginSubqueryError());
+        }
+
+        @Override
+        public PlanNode visitAssignUniqueId(AssignUniqueId node, RewriteContext<Set<VariableReferenceExpression>> context)
+        {
+            if (!context.get().contains(node.getIdVariable())) {
+                return context.rewrite(node.getSource(), context.get());
+            }
+            return context.defaultRewrite(node, context.get());
+        }
+
+        @Override
+        public PlanNode visitLateralJoin(LateralJoinNode node, RewriteContext<Set<VariableReferenceExpression>> context)
+        {
+            PlanNode subquery = context.rewrite(node.getSubquery(), context.get());
+
+            // remove unused lateral nodes
+            if (intersection(ImmutableSet.copyOf(subquery.getOutputVariables()), context.get()).isEmpty() && isScalar(subquery)) {
+                return context.rewrite(node.getInput(), context.get());
+            }
+
+            // prune not used correlation symbols
+            Set<VariableReferenceExpression> subqueryVariables = VariablesExtractor.extractUnique(subquery, variableAllocator.getTypes());
+            List<VariableReferenceExpression> newCorrelation = node.getCorrelation().stream()
+                    .filter(subqueryVariables::contains)
+                    .collect(toImmutableList());
+
+            Set<VariableReferenceExpression> inputContext = ImmutableSet.<VariableReferenceExpression>builder()
+                    .addAll(context.get())
+                    .addAll(newCorrelation)
+                    .build();
+            PlanNode input = context.rewrite(node.getInput(), inputContext);
+
+            // remove unused lateral nodes
+            if (intersection(ImmutableSet.copyOf(input.getOutputVariables()), inputContext).isEmpty() && isScalar(input)) {
+                return subquery;
+            }
+
+            return new LateralJoinNode(node.getId(), input, subquery, newCorrelation, node.getType(), node.getOriginSubqueryError());
         }
     }
 }

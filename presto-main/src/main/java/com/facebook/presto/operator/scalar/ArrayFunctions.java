@@ -13,13 +13,14 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.type.ArrayType;
-import com.facebook.presto.type.SqlType;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.spi.function.ScalarFunction;
+import com.facebook.presto.spi.function.SqlType;
 
-import static com.facebook.presto.type.UnknownType.UNKNOWN;
+import static com.facebook.presto.common.type.UnknownType.UNKNOWN;
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.HIDDEN;
 
 public final class ArrayFunctions
 {
@@ -27,11 +28,11 @@ public final class ArrayFunctions
     {
     }
 
-    @ScalarFunction(hidden = true)
+    @ScalarFunction(visibility = HIDDEN)
     @SqlType("array(unknown)")
     public static Block arrayConstructor()
     {
-        BlockBuilder blockBuilder = new ArrayType(UNKNOWN).createBlockBuilder(new BlockBuilderStatus(), 0);
+        BlockBuilder blockBuilder = new ArrayType(UNKNOWN).createBlockBuilder(null, 0);
         return blockBuilder.build();
     }
 }

@@ -16,6 +16,8 @@ package com.facebook.presto.operator.scalar;
 import io.airlift.slice.Slice;
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.common.function.OperatorType.INDETERMINATE;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.operator.scalar.ColorFunctions.bar;
 import static com.facebook.presto.operator.scalar.ColorFunctions.color;
 import static com.facebook.presto.operator.scalar.ColorFunctions.getBlue;
@@ -25,13 +27,14 @@ import static com.facebook.presto.operator.scalar.ColorFunctions.parseRgb;
 import static com.facebook.presto.operator.scalar.ColorFunctions.render;
 import static com.facebook.presto.operator.scalar.ColorFunctions.rgb;
 import static io.airlift.slice.Slices.utf8Slice;
+import static java.lang.String.format;
 import static org.testng.Assert.assertEquals;
 
 public class TestColorFunctions
+        extends AbstractTestFunctions
 {
     @Test
     public void testParseRgb()
-            throws Exception
     {
         assertEquals(parseRgb(toSlice("#000")), 0x00_00_00);
         assertEquals(parseRgb(toSlice("#FFF")), 0xFF_FF_FF);
@@ -47,7 +50,6 @@ public class TestColorFunctions
 
     @Test
     public void testGetComponent()
-            throws Exception
     {
         assertEquals(getRed(parseRgb(toSlice("#789"))), 0x77);
         assertEquals(getGreen(parseRgb(toSlice("#789"))), 0x88);
@@ -56,7 +58,6 @@ public class TestColorFunctions
 
     @Test
     public void testToRgb()
-            throws Exception
     {
         assertEquals(rgb(0xFF, 0, 0), 0xFF_00_00);
         assertEquals(rgb(0, 0xFF, 0), 0x00_FF_00);
@@ -65,7 +66,6 @@ public class TestColorFunctions
 
     @Test
     public void testColor()
-            throws Exception
     {
         assertEquals(color(toSlice("black")), -1);
         assertEquals(color(toSlice("red")), -2);
@@ -83,7 +83,6 @@ public class TestColorFunctions
 
     @Test
     public void testBar()
-            throws Exception
     {
         assertEquals(bar(0.6, 5, color(toSlice("#f0f")), color(toSlice("#00f"))),
                 toSlice("\u001B[38;5;201m\u2588\u001B[38;5;165m\u2588\u001B[38;5;129m\u2588\u001B[0m  "));
@@ -97,7 +96,6 @@ public class TestColorFunctions
 
     @Test
     public void testRenderBoolean()
-            throws Exception
     {
         assertEquals(render(true), toSlice("\u001b[38;5;2m✓\u001b[0m"));
         assertEquals(render(false), toSlice("\u001b[38;5;1m✗\u001b[0m"));
@@ -105,7 +103,6 @@ public class TestColorFunctions
 
     @Test
     public void testRenderString()
-            throws Exception
     {
         assertEquals(render(toSlice("hello"), color(toSlice("red"))), toSlice("\u001b[38;5;1mhello\u001b[0m"));
 
@@ -116,7 +113,6 @@ public class TestColorFunctions
 
     @Test
     public void testRenderLong()
-            throws Exception
     {
         assertEquals(render(1234, color(toSlice("red"))), toSlice("\u001b[38;5;1m1234\u001b[0m"));
 
@@ -127,9 +123,9 @@ public class TestColorFunctions
 
     @Test
     public void testRenderDouble()
-            throws Exception
     {
         assertEquals(render(1234.5678, color(toSlice("red"))), toSlice("\u001b[38;5;1m1234.5678\u001b[0m"));
+        assertEquals(render(1234.5678f, color(toSlice("red"))), toSlice(format("\u001b[38;5;1m%s\u001b[0m", (double) 1234.5678f)));
 
         assertEquals(render(1234.5678, color(toSlice("#f00"))), toSlice("\u001b[38;5;196m1234.5678\u001b[0m"));
         assertEquals(render(1234.5678, color(toSlice("#0f0"))), toSlice("\u001b[38;5;46m1234.5678\u001b[0m"));
@@ -138,9 +134,9 @@ public class TestColorFunctions
 
     @Test
     public void testInterpolate()
-            throws Exception
     {
         assertEquals(color(0, 0, 255, color(toSlice("#000")), color(toSlice("#fff"))), 0x00_00_00);
+        assertEquals(color(0.0f, 0.0f, 255.0f, color(toSlice("#000")), color(toSlice("#fff"))), 0x00_00_00);
         assertEquals(color(128, 0, 255, color(toSlice("#000")), color(toSlice("#fff"))), 0x80_80_80);
         assertEquals(color(255, 0, 255, color(toSlice("#000")), color(toSlice("#fff"))), 0xFF_FF_FF);
 
@@ -153,6 +149,16 @@ public class TestColorFunctions
         assertEquals(color(0.5, color(toSlice("#000")), color(toSlice("#fff"))), 0x80_80_80);
         assertEquals(color(1.0, color(toSlice("#000")), color(toSlice("#fff"))), 0xFF_FF_FF);
         assertEquals(color(42, color(toSlice("#000")), color(toSlice("#fff"))), 0xFF_FF_FF);
+        assertEquals(color(1.0f, color(toSlice("#000")), color(toSlice("#fff"))), 0xFF_FF_FF);
+        assertEquals(color(-0.0f, color(toSlice("#000")), color(toSlice("#fff"))), 0x00_00_00);
+        assertEquals(color(0.0f, color(toSlice("#000")), color(toSlice("#fff"))), 0x00_00_00);
+    }
+
+    @Test
+    public void testIndeterminate()
+    {
+        assertOperator(INDETERMINATE, "color(null)", BOOLEAN, true);
+        assertOperator(INDETERMINATE, "color('black')", BOOLEAN, false);
     }
 
     private static Slice toSlice(String string)

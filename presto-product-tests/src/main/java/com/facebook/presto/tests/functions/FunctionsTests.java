@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.tests.functions;
 
-import com.teradata.tempto.ProductTest;
+import io.prestodb.tempto.ProductTest;
 import org.testng.annotations.Test;
 
 import static com.facebook.presto.tests.TestGroups.JSON_FUNCTIONS;
-import static com.teradata.tempto.assertions.QueryAssert.Row.row;
-import static com.teradata.tempto.assertions.QueryAssert.assertThat;
-import static com.teradata.tempto.query.QueryExecutor.query;
+import static io.prestodb.tempto.assertions.QueryAssert.Row.row;
+import static io.prestodb.tempto.assertions.QueryAssert.assertThat;
+import static io.prestodb.tempto.query.QueryExecutor.query;
 
 public class FunctionsTests
         extends ProductTest
@@ -33,6 +33,6 @@ public class FunctionsTests
     @Test(groups = JSON_FUNCTIONS)
     public void testAggregate()
     {
-        assertThat(query("SELECT min(x) FROM (VALUES 1,2,3,4) t(x)")).containsExactly(row(1L));
+        assertThat(query("SELECT min(x) FROM (VALUES 1,2,3,4) t(x)")).containsExactly(row(1));
     }
 }

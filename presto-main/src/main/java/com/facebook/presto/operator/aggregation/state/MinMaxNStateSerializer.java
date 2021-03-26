@@ -13,19 +13,18 @@
  */
 package com.facebook.presto.operator.aggregation.state;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.aggregation.BlockComparator;
 import com.facebook.presto.operator.aggregation.TypedHeap;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.type.ArrayType;
-import com.facebook.presto.type.RowType;
+import com.facebook.presto.spi.function.AccumulatorStateSerializer;
 import com.google.common.collect.ImmutableList;
-import com.google.common.primitives.Ints;
 
-import java.util.Optional;
-
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static java.lang.Math.toIntExact;
 
 public class MinMaxNStateSerializer
         implements AccumulatorStateSerializer<MinMaxNState>
@@ -40,7 +39,7 @@ public class MinMaxNStateSerializer
         this.blockComparator = blockComparator;
         this.elementType = elementType;
         this.arrayType = new ArrayType(elementType);
-        this.serializedType = new RowType(ImmutableList.of(BIGINT, arrayType), Optional.empty());
+        this.serializedType = RowType.withDefaultFieldNames(ImmutableList.of(BIGINT, arrayType));
     }
 
     @Override
@@ -70,11 +69,8 @@ public class MinMaxNStateSerializer
     @Override
     public void deserialize(Block block, int index, MinMaxNState state)
     {
-        if (block.isNull(index)) {
-            return;
-        }
         Block currentBlock = (Block) serializedType.getObject(block, index);
-        int capacity = Ints.checkedCast(BIGINT.getLong(currentBlock, 0));
+        int capacity = toIntExact(BIGINT.getLong(currentBlock, 0));
         Block heapBlock = arrayType.getObject(currentBlock, 1);
         TypedHeap heap = new TypedHeap(blockComparator, elementType, capacity);
         heap.addAll(heapBlock);

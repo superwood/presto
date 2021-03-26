@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.metadata;
 
+import com.facebook.airlift.json.JsonModule;
 import com.facebook.presto.connector.informationSchema.InformationSchemaTableHandle;
 import com.facebook.presto.spi.ConnectorTableHandle;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -20,25 +21,23 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.Guice;
 import com.google.inject.Injector;
-import io.airlift.json.JsonModule;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
 import java.util.Map;
 
-import static io.airlift.testing.Assertions.assertEqualsIgnoreOrder;
+import static com.facebook.airlift.testing.Assertions.assertEqualsIgnoreOrder;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
 @Test(singleThreaded = true)
 public class TestInformationSchemaTableHandle
 {
-    private static final Map<String, Object> SCHEMA_AS_MAP = ImmutableMap.<String, Object>of(
+    private static final Map<String, Object> SCHEMA_AS_MAP = ImmutableMap.of(
             "@type", "$info_schema",
             "catalogName", "information_schema_catalog",
             "schemaName", "information_schema_schema",
-            "tableName", "information_schema_table"
-    );
+            "tableName", "information_schema_table");
 
     private ObjectMapper objectMapper;
 

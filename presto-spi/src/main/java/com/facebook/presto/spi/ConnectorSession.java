@@ -13,27 +13,41 @@
  */
 package com.facebook.presto.spi;
 
-import com.facebook.presto.spi.security.Identity;
-import com.facebook.presto.spi.type.TimeZoneKey;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.spi.function.SqlFunctionId;
+import com.facebook.presto.spi.function.SqlInvokedFunction;
+import com.facebook.presto.spi.security.ConnectorIdentity;
 
 import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
 
 public interface ConnectorSession
 {
     String getQueryId();
+
+    Optional<String> getSource();
 
     default String getUser()
     {
         return getIdentity().getUser();
     }
 
-    Identity getIdentity();
-
-    TimeZoneKey getTimeZoneKey();
+    ConnectorIdentity getIdentity();
 
     Locale getLocale();
 
+    Optional<String> getTraceToken();
+
+    Optional<String> getClientInfo();
+
     long getStartTime();
 
+    SqlFunctionProperties getSqlFunctionProperties();
+
+    Map<SqlFunctionId, SqlInvokedFunction> getSessionFunctions();
+
     <T> T getProperty(String name, Class<T> type);
+
+    Optional<String> getSchema();
 }

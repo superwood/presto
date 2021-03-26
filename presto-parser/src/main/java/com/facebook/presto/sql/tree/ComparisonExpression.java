@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.google.common.collect.ImmutableList;
+
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -21,7 +24,82 @@ import static java.util.Objects.requireNonNull;
 public class ComparisonExpression
         extends Expression
 {
-    public enum Type
+    private final Operator operator;
+    private final Expression left;
+    private final Expression right;
+
+    public ComparisonExpression(Operator operator, Expression left, Expression right)
+    {
+        this(Optional.empty(), operator, left, right);
+    }
+
+    public ComparisonExpression(NodeLocation location, Operator operator, Expression left, Expression right)
+    {
+        this(Optional.of(location), operator, left, right);
+    }
+
+    private ComparisonExpression(Optional<NodeLocation> location, Operator operator, Expression left, Expression right)
+    {
+        super(location);
+        requireNonNull(operator, "type is null");
+        requireNonNull(left, "left is null");
+        requireNonNull(right, "right is null");
+
+        this.operator = operator;
+        this.left = left;
+        this.right = right;
+    }
+
+    public Operator getOperator()
+    {
+        return operator;
+    }
+
+    public Expression getLeft()
+    {
+        return left;
+    }
+
+    public Expression getRight()
+    {
+        return right;
+    }
+
+    @Override
+    public <R, C> R accept(AstVisitor<R, C> visitor, C context)
+    {
+        return visitor.visitComparisonExpression(this, context);
+    }
+
+    @Override
+    public List<Node> getChildren()
+    {
+        return ImmutableList.of(left, right);
+    }
+
+    @Override
+    public boolean equals(Object o)
+    {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+
+        ComparisonExpression that = (ComparisonExpression) o;
+        return (operator == that.operator) &&
+                Objects.equals(left, that.left) &&
+                Objects.equals(right, that.right);
+    }
+
+    @Override
+    public int hashCode()
+    {
+        return Objects.hash(operator, left, right);
+    }
+
+    public enum Operator
     {
         EQUAL("="),
         NOT_EQUAL("<>"),
@@ -33,7 +111,7 @@ public class ComparisonExpression
 
         private final String value;
 
-        Type(String value)
+        Operator(String value)
         {
             this.value = value;
         }
@@ -43,7 +121,7 @@ public class ComparisonExpression
             return value;
         }
 
-        public Type flip()
+        public Operator flip()
         {
             switch (this) {
                 case EQUAL:
@@ -65,7 +143,7 @@ public class ComparisonExpression
             }
         }
 
-        public Type negate()
+        public Operator negate()
         {
             switch (this) {
                 case EQUAL:
@@ -84,74 +162,5 @@ public class ComparisonExpression
                     throw new IllegalArgumentException("Unsupported comparison: " + this);
             }
         }
-    }
-
-    private final Type type;
-    private final Expression left;
-    private final Expression right;
-
-    public ComparisonExpression(Type type, Expression left, Expression right)
-    {
-        this(Optional.empty(), type, left, right);
-    }
-
-    public ComparisonExpression(NodeLocation location, Type type, Expression left, Expression right)
-    {
-        this(Optional.of(location), type, left, right);
-    }
-
-    private ComparisonExpression(Optional<NodeLocation> location, Type type, Expression left, Expression right)
-    {
-        super(location);
-        requireNonNull(type, "type is null");
-        requireNonNull(left, "left is null");
-        requireNonNull(right, "right is null");
-
-        this.type = type;
-        this.left = left;
-        this.right = right;
-    }
-
-    public Type getType()
-    {
-        return type;
-    }
-
-    public Expression getLeft()
-    {
-        return left;
-    }
-
-    public Expression getRight()
-    {
-        return right;
-    }
-
-    @Override
-    public <R, C> R accept(AstVisitor<R, C> visitor, C context)
-    {
-        return visitor.visitComparisonExpression(this, context);
-    }
-
-    @Override
-    public boolean equals(Object o)
-    {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-
-        ComparisonExpression that = (ComparisonExpression) o;
-        return (type == that.type) &&
-                Objects.equals(left, that.left) &&
-                Objects.equals(right, that.right);
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return Objects.hash(type, left, right);
     }
 }

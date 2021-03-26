@@ -13,23 +13,26 @@
  */
 package com.facebook.presto.execution.scheduler;
 
-import com.facebook.presto.metadata.TableHandle;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.PartitionFunctionBinding;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.cost.StatsAndCosts;
+import com.facebook.presto.operator.StageExecutionDescriptor;
+import com.facebook.presto.spi.ConnectorId;
+import com.facebook.presto.spi.TableHandle;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.PlanNodeId;
+import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.plan.UnionNode;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
+import com.facebook.presto.sql.planner.Partitioning;
+import com.facebook.presto.sql.planner.PartitioningScheme;
 import com.facebook.presto.sql.planner.PlanFragment;
-import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.planner.TestingColumnHandle;
-import com.facebook.presto.sql.planner.TestingTableHandle;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.PlanFragmentId;
-import com.facebook.presto.sql.planner.plan.PlanNode;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.facebook.presto.sql.planner.plan.RemoteSourceNode;
-import com.facebook.presto.sql.planner.plan.TableScanNode;
-import com.facebook.presto.sql.planner.plan.UnionNode;
+import com.facebook.presto.testing.TestingMetadata.TestingColumnHandle;
+import com.facebook.presto.testing.TestingMetadata.TestingTableHandle;
+import com.facebook.presto.testing.TestingTransactionHandle;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import org.testng.annotations.Test;
@@ -37,20 +40,26 @@ import org.testng.annotations.Test;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SOURCE_DISTRIBUTION;
+import static com.facebook.presto.sql.planner.plan.ExchangeNode.Type.REPARTITION;
+import static com.facebook.presto.sql.planner.plan.ExchangeNode.Type.REPLICATE;
+import static com.facebook.presto.sql.planner.plan.JoinNode.DistributionType.REPLICATED;
 import static com.facebook.presto.sql.planner.plan.JoinNode.Type.INNER;
-import static com.facebook.presto.util.ImmutableCollectors.toImmutableList;
+import static com.facebook.presto.sql.planner.plan.JoinNode.Type.RIGHT;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static org.testng.Assert.assertEquals;
 
 public class TestPhasedExecutionSchedule
 {
+    private static final AtomicInteger nextPlanFragmentId = new AtomicInteger();
+
     @Test
     public void testExchange()
-            throws Exception
     {
         PlanFragment aFragment = createTableScanPlanFragment("a");
         PlanFragment bFragment = createTableScanPlanFragment("b");
@@ -67,7 +76,6 @@ public class TestPhasedExecutionSchedule
 
     @Test
     public void testUnion()
-            throws Exception
     {
         PlanFragment aFragment = createTableScanPlanFragment("a");
         PlanFragment bFragment = createTableScanPlanFragment("b");
@@ -84,19 +92,38 @@ public class TestPhasedExecutionSchedule
 
     @Test
     public void testJoin()
-            throws Exception
     {
         PlanFragment buildFragment = createTableScanPlanFragment("build");
         PlanFragment probeFragment = createTableScanPlanFragment("probe");
-        PlanFragment joinFragment = createJoinPlanFragment("join", buildFragment, probeFragment);
+        PlanFragment joinFragment = createJoinPlanFragment(INNER, "join", buildFragment, probeFragment);
 
         List<Set<PlanFragmentId>> phases = PhasedExecutionSchedule.extractPhases(ImmutableList.of(joinFragment, buildFragment, probeFragment));
         assertEquals(phases, ImmutableList.of(ImmutableSet.of(joinFragment.getId()), ImmutableSet.of(buildFragment.getId()), ImmutableSet.of(probeFragment.getId())));
     }
 
     @Test
+    public void testRightJoin()
+    {
+        PlanFragment buildFragment = createTableScanPlanFragment("build");
+        PlanFragment probeFragment = createTableScanPlanFragment("probe");
+        PlanFragment joinFragment = createJoinPlanFragment(RIGHT, "join", buildFragment, probeFragment);
+
+        List<Set<PlanFragmentId>> phases = PhasedExecutionSchedule.extractPhases(ImmutableList.of(joinFragment, buildFragment, probeFragment));
+        assertEquals(phases, ImmutableList.of(ImmutableSet.of(joinFragment.getId()), ImmutableSet.of(buildFragment.getId()), ImmutableSet.of(probeFragment.getId())));
+    }
+
+    @Test
+    public void testBroadcastJoin()
+    {
+        PlanFragment buildFragment = createTableScanPlanFragment("build");
+        PlanFragment joinFragment = createBroadcastJoinPlanFragment("join", buildFragment);
+
+        List<Set<PlanFragmentId>> phases = PhasedExecutionSchedule.extractPhases(ImmutableList.of(joinFragment, buildFragment));
+        assertEquals(phases, ImmutableList.of(ImmutableSet.of(joinFragment.getId(), buildFragment.getId())));
+    }
+
+    @Test
     public void testJoinWithDeepSources()
-            throws Exception
     {
         PlanFragment buildSourceFragment = createTableScanPlanFragment("buildSource");
         PlanFragment buildMiddleFragment = createExchangePlanFragment("buildMiddle", buildSourceFragment);
@@ -104,7 +131,7 @@ public class TestPhasedExecutionSchedule
         PlanFragment probeSourceFragment = createTableScanPlanFragment("probeSource");
         PlanFragment probeMiddleFragment = createExchangePlanFragment("probeMiddle", probeSourceFragment);
         PlanFragment probeTopFragment = createExchangePlanFragment("probeTop", probeMiddleFragment);
-        PlanFragment joinFragment = createJoinPlanFragment("join", buildTopFragment, probeTopFragment);
+        PlanFragment joinFragment = createJoinPlanFragment(INNER, "join", buildTopFragment, probeTopFragment);
 
         List<Set<PlanFragmentId>> phases = PhasedExecutionSchedule.extractPhases(ImmutableList.of(
                 joinFragment,
@@ -132,7 +159,10 @@ public class TestPhasedExecutionSchedule
                 Stream.of(fragments)
                         .map(PlanFragment::getId)
                         .collect(toImmutableList()),
-                fragments[0].getPartitionFunction().getOutputLayout());
+                fragments[0].getPartitioningScheme().getOutputLayout(),
+                false,
+                Optional.empty(),
+                REPARTITION);
 
         return createFragment(planNode);
     }
@@ -142,55 +172,107 @@ public class TestPhasedExecutionSchedule
         PlanNode planNode = new UnionNode(
                 new PlanNodeId(name + "_id"),
                 Stream.of(fragments)
-                        .map(fragment -> new RemoteSourceNode(new PlanNodeId(fragment.getId().toString()), fragment.getId(), fragment.getPartitionFunction().getOutputLayout()))
+                        .map(fragment -> new RemoteSourceNode(
+                                new PlanNodeId(fragment.getId().toString()),
+                                fragment.getId(),
+                                fragment.getPartitioningScheme().getOutputLayout(),
+                                false,
+                                Optional.empty(),
+                                REPARTITION))
                         .collect(toImmutableList()),
-                ImmutableListMultimap.of(),
-                ImmutableList.of());
+                ImmutableList.of(),
+                ImmutableMap.of());
 
         return createFragment(planNode);
     }
 
-    private static PlanFragment createJoinPlanFragment(String name, PlanFragment buildFragment, PlanFragment probeFragment)
+    private static PlanFragment createBroadcastJoinPlanFragment(String name, PlanFragment buildFragment)
     {
-        PlanNode planNode = new JoinNode(
+        VariableReferenceExpression variable = new VariableReferenceExpression("column", BIGINT);
+        PlanNode tableScan = new TableScanNode(
+                new PlanNodeId(name),
+                new TableHandle(
+                        new ConnectorId("test"),
+                        new TestingTableHandle(),
+                        TestingTransactionHandle.create(),
+                        Optional.empty()),
+                ImmutableList.of(variable),
+                ImmutableMap.of(variable, new TestingColumnHandle("column")),
+                TupleDomain.all(),
+                TupleDomain.all());
+
+        RemoteSourceNode remote = new RemoteSourceNode(new PlanNodeId("build_id"), buildFragment.getId(), ImmutableList.of(), false, Optional.empty(), REPLICATE);
+        PlanNode join = new JoinNode(
                 new PlanNodeId(name + "_id"),
                 INNER,
-                new RemoteSourceNode(new PlanNodeId("probe_id"), probeFragment.getId(), ImmutableList.of()),
-                new RemoteSourceNode(new PlanNodeId("build_id"), buildFragment.getId(), ImmutableList.of()),
+                tableScan,
+                remote,
                 ImmutableList.of(),
-                Optional.<Symbol>empty(),
-                Optional.<Symbol>empty());
+                ImmutableList.<VariableReferenceExpression>builder()
+                        .addAll(tableScan.getOutputVariables())
+                        .addAll(remote.getOutputVariables())
+                        .build(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.of(REPLICATED),
+                ImmutableMap.of());
 
+        return createFragment(join);
+    }
+
+    private static PlanFragment createJoinPlanFragment(JoinNode.Type joinType, String name, PlanFragment buildFragment, PlanFragment probeFragment)
+    {
+        RemoteSourceNode probe = new RemoteSourceNode(new PlanNodeId("probe_id"), probeFragment.getId(), ImmutableList.of(), false, Optional.empty(), REPARTITION);
+        RemoteSourceNode build = new RemoteSourceNode(new PlanNodeId("build_id"), buildFragment.getId(), ImmutableList.of(), false, Optional.empty(), REPARTITION);
+        PlanNode planNode = new JoinNode(
+                new PlanNodeId(name + "_id"),
+                joinType,
+                probe,
+                build,
+                ImmutableList.of(),
+                ImmutableList.<VariableReferenceExpression>builder()
+                        .addAll(probe.getOutputVariables())
+                        .addAll(build.getOutputVariables())
+                        .build(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                ImmutableMap.of());
         return createFragment(planNode);
     }
 
     private static PlanFragment createTableScanPlanFragment(String name)
     {
-        Symbol symbol = new Symbol("column");
+        VariableReferenceExpression variable = new VariableReferenceExpression("column", BIGINT);
         PlanNode planNode = new TableScanNode(
                 new PlanNodeId(name),
-                new TableHandle("test", new TestingTableHandle()),
-                ImmutableList.of(symbol),
-                ImmutableMap.of(symbol, new TestingColumnHandle("column")),
-                Optional.empty(),
+                new TableHandle(
+                        new ConnectorId("test"),
+                        new TestingTableHandle(),
+                        TestingTransactionHandle.create(),
+                        Optional.empty()),
+                ImmutableList.of(variable),
+                ImmutableMap.of(variable, new TestingColumnHandle("column")),
                 TupleDomain.all(),
-                null);
+                TupleDomain.all());
 
         return createFragment(planNode);
     }
 
     private static PlanFragment createFragment(PlanNode planNode)
     {
-        ImmutableMap.Builder<Symbol, Type> types = ImmutableMap.builder();
-        for (Symbol symbol : planNode.getOutputSymbols()) {
-            types.put(symbol, VARCHAR);
-        }
         return new PlanFragment(
-                new PlanFragmentId(planNode.getId() + "_fragment_id"),
+                new PlanFragmentId(nextPlanFragmentId.incrementAndGet()),
                 planNode,
-                types.build(),
+                ImmutableSet.copyOf(planNode.getOutputVariables()),
                 SOURCE_DISTRIBUTION,
-                planNode.getId(),
-                new PartitionFunctionBinding(SINGLE_DISTRIBUTION, planNode.getOutputSymbols(), ImmutableList.of()));
+                ImmutableList.of(planNode.getId()),
+                new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), planNode.getOutputVariables()),
+                StageExecutionDescriptor.ungroupedExecution(),
+                false,
+                StatsAndCosts.empty(),
+                Optional.empty());
     }
 }

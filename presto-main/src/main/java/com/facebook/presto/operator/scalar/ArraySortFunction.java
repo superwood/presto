@@ -13,89 +13,154 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.metadata.SqlScalarFunction;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.google.common.collect.ImmutableList;
+import com.facebook.presto.common.NotSupportedException;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.function.Description;
+import com.facebook.presto.spi.function.OperatorDependency;
+import com.facebook.presto.spi.function.ScalarFunction;
+import com.facebook.presto.spi.function.SqlType;
+import com.facebook.presto.spi.function.TypeParameter;
 import com.google.common.primitives.Ints;
 
 import java.lang.invoke.MethodHandle;
-import java.util.Collections;
+import java.util.AbstractList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 
-import static com.facebook.presto.metadata.Signature.orderableTypeParameter;
-import static com.facebook.presto.util.Reflection.methodHandle;
-import static com.google.common.base.Preconditions.checkArgument;
-import static java.lang.String.format;
+import static com.facebook.presto.common.function.OperatorType.LESS_THAN;
+import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 
+@ScalarFunction("array_sort")
+@Description("Sorts the given array in ascending order according to the natural ordering of its elements.")
 public final class ArraySortFunction
-        extends SqlScalarFunction
 {
-    public static final ArraySortFunction ARRAY_SORT_FUNCTION = new ArraySortFunction();
-    private static final String FUNCTION_NAME = "array_sort";
-    private static final MethodHandle METHOD_HANDLE = methodHandle(ArraySortFunction.class, "sort", Type.class, Block.class);
+    private ArraySortFunction() {}
 
-    public ArraySortFunction()
+    @TypeParameter("E")
+    @SqlType("array(E)")
+    public static Block sort(
+            @OperatorDependency(operator = LESS_THAN, argumentTypes = {"E", "E"}) MethodHandle lessThanFunction,
+            @TypeParameter("E") Type type,
+            @SqlType("array(E)") Block block)
     {
-        super(FUNCTION_NAME, ImmutableList.of(orderableTypeParameter("E")), "array(E)", ImmutableList.of("array(E)"));
-    }
+        int arrayLength = block.getPositionCount();
 
-    @Override
-    public boolean isHidden()
-    {
-        return false;
-    }
-
-    @Override
-    public boolean isDeterministic()
-    {
-        return true;
-    }
-
-    @Override
-    public String getDescription()
-    {
-        return "Sorts the given array in ascending order according to the natural ordering of its elements.";
-    }
-
-    @Override
-    public ScalarFunctionImplementation specialize(Map<String, Type> types, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
-    {
-        checkArgument(types.size() == 1, format("%s expects only one argument", FUNCTION_NAME));
-        Type type = types.get("E");
-        MethodHandle methodHandle = METHOD_HANDLE.bindTo(type);
-        return new ScalarFunctionImplementation(false, ImmutableList.of(false), methodHandle, isDeterministic());
-    }
-
-    public static Block sort(Type type, Block block)
-    {
-        List<Integer> positions = Ints.asList(new int[block.getPositionCount()]);
-        for (int i = 0; i < block.getPositionCount(); i++) {
-            positions.set(i, i);
+        if (arrayLength < 2) {
+            return block;
         }
 
-        Collections.sort(positions, new Comparator<Integer>()
-        {
-            @Override
-            public int compare(Integer p1, Integer p2)
+        ListOfPositions listOfPositions = new ListOfPositions(block.getPositionCount());
+        if (block.mayHaveNull()) {
+            listOfPositions.sort(new Comparator<Integer>()
             {
-                //TODO: This could be quite slow, it should use parametric equals
-                return type.compareTo(block, p1, block, p2);
-            }
-        });
+                @Override
+                public int compare(Integer p1, Integer p2)
+                {
+                    if (block.isNull(p1)) {
+                        return block.isNull(p2) ? 0 : 1;
+                    }
+                    else if (block.isNull(p2)) {
+                        return -1;
+                    }
 
-        BlockBuilder blockBuilder = type.createBlockBuilder(new BlockBuilderStatus(), block.getPositionCount());
+                    try {
+                        //TODO: This could be quite slow, it should use parametric equals
+                        return type.compareTo(block, p1, block, p2);
+                    }
+                    catch (PrestoException | NotSupportedException e) {
+                        if (e instanceof NotSupportedException || ((PrestoException) e).getErrorCode() == NOT_SUPPORTED.toErrorCode()) {
+                            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Array contains elements not supported for comparison", e);
+                        }
+                        throw e;
+                    }
+                }
+            });
+        }
+        else {
+            listOfPositions.sort(new Comparator<Integer>()
+            {
+                @Override
+                public int compare(Integer p1, Integer p2)
+                {
+                    try {
+                        //TODO: This could be quite slow, it should use parametric equals
+                        return type.compareTo(block, p1, block, p2);
+                    }
+                    catch (PrestoException | NotSupportedException e) {
+                        if (e instanceof NotSupportedException || ((PrestoException) e).getErrorCode() == NOT_SUPPORTED.toErrorCode()) {
+                            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Array contains elements not supported for comparison", e);
+                        }
+                        throw e;
+                    }
+                }
+            });
+        }
 
-        for (int position : positions) {
-            type.appendTo(block, position, blockBuilder);
+        List<Integer> sortedListOfPositions = listOfPositions.getSortedListOfPositions();
+        if (sortedListOfPositions == listOfPositions) {
+            // Original array is already sorted.
+            return block;
+        }
+
+        BlockBuilder blockBuilder = type.createBlockBuilder(null, arrayLength);
+
+        for (int i = 0; i < arrayLength; i++) {
+            type.appendTo(block, sortedListOfPositions.get(i), blockBuilder);
         }
 
         return blockBuilder.build();
+    }
+
+    private static class ListOfPositions
+            extends AbstractList<Integer>
+    {
+        private final int size;
+        private List<Integer> sortedListOfPositions;
+
+        ListOfPositions(int size)
+        {
+            this.size = size;
+        }
+
+        @Override
+        public final int size()
+        {
+            return size;
+        }
+
+        @Override
+        public final Integer get(int i)
+        {
+            return i;
+        }
+
+        @Override
+        public final Integer set(int index, Integer position)
+        {
+            if (index != position) {
+                // The element at position is out of order.
+                if (sortedListOfPositions == null) {
+                    // So we need to store the entire position array in a new list.
+                    sortedListOfPositions = Ints.asList(new int[size()]);
+                    for (int i = 0; i < size(); i++) {
+                        sortedListOfPositions.set(i, i);
+                    }
+                }
+
+                // Set the new position to be used for this index.
+                sortedListOfPositions.set(index, position);
+            }
+
+            return position;
+        }
+
+        List<Integer> getSortedListOfPositions()
+        {
+            return sortedListOfPositions == null ? this : sortedListOfPositions;
+        }
     }
 }

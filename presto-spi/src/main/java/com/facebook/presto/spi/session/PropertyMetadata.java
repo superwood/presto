@@ -13,14 +13,17 @@
  */
 package com.facebook.presto.spi.session;
 
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.type.Type;
+import io.airlift.units.DataSize;
 
 import java.util.function.Function;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 
@@ -33,11 +36,7 @@ public final class PropertyMetadata<T>
     private final T defaultValue;
     private final boolean hidden;
     private final Function<Object, T> decoder;
-
-    public PropertyMetadata(String name, String description, Type sqlType, Class<T> javaType, T defaultValue, boolean hidden)
-    {
-        this(name, description, sqlType, javaType, defaultValue, hidden, javaType::cast);
-    }
+    private final Function<T, Object> encoder;
 
     public PropertyMetadata(
             String name,
@@ -46,19 +45,21 @@ public final class PropertyMetadata<T>
             Class<T> javaType,
             T defaultValue,
             boolean hidden,
-            Function<Object, T> decoder)
+            Function<Object, T> decoder,
+            Function<T, Object> encoder)
     {
         requireNonNull(name, "name is null");
         requireNonNull(description, "description is null");
         requireNonNull(sqlType, "type is null");
         requireNonNull(javaType, "javaType is null");
         requireNonNull(decoder, "decoder is null");
+        requireNonNull(encoder, "encoder is null");
 
         if (name.isEmpty() || !name.trim().toLowerCase(ENGLISH).equals(name)) {
-            throw new IllegalArgumentException(String.format("Invalid session property name '%s'", name));
+            throw new IllegalArgumentException(format("Invalid property name '%s'", name));
         }
         if (description.isEmpty() || !description.trim().equals(description)) {
-            throw new IllegalArgumentException(String.format("Invalid session property description '%s'", description));
+            throw new IllegalArgumentException(format("Invalid property description '%s'", description));
         }
 
         this.name = name;
@@ -68,10 +69,11 @@ public final class PropertyMetadata<T>
         this.defaultValue = defaultValue;
         this.hidden = hidden;
         this.decoder = decoder;
+        this.encoder = encoder;
     }
 
     /**
-     * Name of the session property.  This must be a valid identifier.
+     * Name of the property.  This must be a valid identifier.
      */
     public String getName()
     {
@@ -126,7 +128,15 @@ public final class PropertyMetadata<T>
         return decoder.apply(value);
     }
 
-    public static PropertyMetadata<Boolean> booleanSessionProperty(String name, String description, Boolean defaultValue, boolean hidden)
+    /**
+     * Encodes the Java type value to SQL type object value
+     */
+    public Object encode(T value)
+    {
+        return encoder.apply(value);
+    }
+
+    public static PropertyMetadata<Boolean> booleanProperty(String name, String description, Boolean defaultValue, boolean hidden)
     {
         return new PropertyMetadata<>(
                 name,
@@ -135,22 +145,24 @@ public final class PropertyMetadata<T>
                 Boolean.class,
                 defaultValue,
                 hidden,
-                Boolean.class::cast);
+                Boolean.class::cast,
+                object -> object);
     }
 
-    public static PropertyMetadata<Integer> integerSessionProperty(String name, String description, Integer defaultValue, boolean hidden)
+    public static PropertyMetadata<Integer> integerProperty(String name, String description, Integer defaultValue, boolean hidden)
     {
         return new PropertyMetadata<>(
                 name,
                 description,
-                BIGINT,
+                INTEGER,
                 Integer.class,
                 defaultValue,
                 hidden,
-                value -> ((Number) value).intValue());
+                value -> ((Number) value).intValue(),
+                object -> object);
     }
 
-    public static PropertyMetadata<Long> longSessionProperty(String name, String description, Long defaultValue, boolean hidden)
+    public static PropertyMetadata<Long> longProperty(String name, String description, Long defaultValue, boolean hidden)
     {
         return new PropertyMetadata<>(
                 name,
@@ -159,10 +171,11 @@ public final class PropertyMetadata<T>
                 Long.class,
                 defaultValue,
                 hidden,
-                value -> ((Number) value).longValue());
+                value -> ((Number) value).longValue(),
+                object -> object);
     }
 
-    public static PropertyMetadata<Double> doubleSessionProperty(String name, String description, Double defaultValue, boolean hidden)
+    public static PropertyMetadata<Double> doubleProperty(String name, String description, Double defaultValue, boolean hidden)
     {
         return new PropertyMetadata<>(
                 name,
@@ -171,10 +184,11 @@ public final class PropertyMetadata<T>
                 Double.class,
                 defaultValue,
                 hidden,
-                value -> ((Number) value).doubleValue());
+                value -> ((Number) value).doubleValue(),
+                object -> object);
     }
 
-    public static PropertyMetadata<String> stringSessionProperty(String name, String description, String defaultValue, boolean hidden)
+    public static PropertyMetadata<String> stringProperty(String name, String description, String defaultValue, boolean hidden)
     {
         return new PropertyMetadata<>(
                 name,
@@ -183,6 +197,20 @@ public final class PropertyMetadata<T>
                 String.class,
                 defaultValue,
                 hidden,
-                String.class::cast);
+                String.class::cast,
+                object -> object);
+    }
+
+    public static PropertyMetadata<DataSize> dataSizeProperty(String name, String description, DataSize defaultValue, boolean hidden)
+    {
+        return new PropertyMetadata<>(
+                name,
+                description,
+                VARCHAR,
+                DataSize.class,
+                defaultValue,
+                hidden,
+                value -> DataSize.valueOf((String) value),
+                DataSize::toString);
     }
 }

@@ -13,9 +13,12 @@
  */
 package com.facebook.presto.security;
 
-import com.facebook.presto.metadata.QualifiedObjectName;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.spi.security.AccessControlContext;
 import com.facebook.presto.spi.security.Identity;
 import com.facebook.presto.transaction.TransactionId;
+
+import java.util.Set;
 
 import static java.util.Objects.requireNonNull;
 
@@ -30,26 +33,14 @@ public class ViewAccessControl
     }
 
     @Override
-    public void checkCanSelectFromTable(TransactionId transactionId, Identity identity, QualifiedObjectName tableName)
+    public void checkCanSelectFromColumns(TransactionId transactionId, Identity identity, AccessControlContext context, QualifiedObjectName tableName, Set<String> columnNames)
     {
-        delegate.checkCanCreateViewWithSelectFromTable(transactionId, identity, tableName);
+        delegate.checkCanCreateViewWithSelectFromColumns(transactionId, identity, context, tableName, columnNames);
     }
 
     @Override
-    public void checkCanSelectFromView(TransactionId transactionId, Identity identity, QualifiedObjectName viewName)
+    public void checkCanCreateViewWithSelectFromColumns(TransactionId transactionId, Identity identity, AccessControlContext context, QualifiedObjectName tableName, Set<String> columnNames)
     {
-        delegate.checkCanCreateViewWithSelectFromView(transactionId, identity, viewName);
-    }
-
-    @Override
-    public void checkCanCreateViewWithSelectFromTable(TransactionId transactionId, Identity identity, QualifiedObjectName tableName)
-    {
-        delegate.checkCanCreateViewWithSelectFromTable(transactionId, identity, tableName);
-    }
-
-    @Override
-    public void checkCanCreateViewWithSelectFromView(TransactionId transactionId, Identity identity, QualifiedObjectName viewName)
-    {
-        delegate.checkCanCreateViewWithSelectFromView(transactionId, identity, viewName);
+        delegate.checkCanCreateViewWithSelectFromColumns(transactionId, identity, context, tableName, columnNames);
     }
 }

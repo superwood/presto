@@ -13,48 +13,61 @@
  */
 package com.facebook.presto.orc;
 
-import com.facebook.presto.orc.metadata.BooleanStatistics;
-import com.facebook.presto.orc.metadata.ColumnStatistics;
-import com.facebook.presto.orc.metadata.DateStatistics;
-import com.facebook.presto.orc.metadata.DoubleStatistics;
-import com.facebook.presto.orc.metadata.IntegerStatistics;
-import com.facebook.presto.orc.metadata.StringStatistics;
-import com.facebook.presto.spi.predicate.Range;
-import com.facebook.presto.spi.predicate.ValueSet;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.Range;
+import com.facebook.presto.common.predicate.ValueSet;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.metadata.statistics.BinaryStatistics;
+import com.facebook.presto.orc.metadata.statistics.BooleanStatistics;
+import com.facebook.presto.orc.metadata.statistics.ColumnStatistics;
+import com.facebook.presto.orc.metadata.statistics.DateStatistics;
+import com.facebook.presto.orc.metadata.statistics.DecimalStatistics;
+import com.facebook.presto.orc.metadata.statistics.DoubleStatistics;
+import com.facebook.presto.orc.metadata.statistics.IntegerStatistics;
+import com.facebook.presto.orc.metadata.statistics.StringStatistics;
+import io.airlift.slice.Slice;
 import org.testng.annotations.Test;
 
+import java.math.BigDecimal;
+
+import static com.facebook.presto.common.predicate.Domain.create;
+import static com.facebook.presto.common.predicate.Domain.notNull;
+import static com.facebook.presto.common.predicate.Domain.onlyNull;
+import static com.facebook.presto.common.predicate.Domain.singleValue;
+import static com.facebook.presto.common.predicate.Range.greaterThanOrEqual;
+import static com.facebook.presto.common.predicate.Range.lessThanOrEqual;
+import static com.facebook.presto.common.predicate.Range.range;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.CharType.createCharType;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DecimalType.createDecimalType;
+import static com.facebook.presto.common.type.Decimals.encodeScaledValue;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.orc.TupleDomainOrcPredicate.getDomain;
-import static com.facebook.presto.orc.metadata.OrcMetadataReader.getMaxSlice;
-import static com.facebook.presto.orc.metadata.OrcMetadataReader.getMinSlice;
-import static com.facebook.presto.spi.predicate.Domain.all;
-import static com.facebook.presto.spi.predicate.Domain.create;
-import static com.facebook.presto.spi.predicate.Domain.none;
-import static com.facebook.presto.spi.predicate.Domain.notNull;
-import static com.facebook.presto.spi.predicate.Domain.onlyNull;
-import static com.facebook.presto.spi.predicate.Domain.singleValue;
-import static com.facebook.presto.spi.predicate.Range.greaterThanOrEqual;
-import static com.facebook.presto.spi.predicate.Range.lessThanOrEqual;
-import static com.facebook.presto.spi.predicate.Range.range;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.orc.metadata.statistics.ShortDecimalStatisticsBuilder.SHORT_DECIMAL_VALUE_BYTES;
 import static io.airlift.slice.Slices.utf8Slice;
+import static java.lang.Float.floatToRawIntBits;
 import static org.testng.Assert.assertEquals;
 
 public class TestTupleDomainOrcPredicate
 {
+    private static final Type SHORT_DECIMAL = createDecimalType(5, 2);
+    private static final Type LONG_DECIMAL = createDecimalType(20, 10);
+    private static final Type CHAR = createCharType(10);
+
     @Test
     public void testBoolean()
-            throws Exception
     {
-        assertEquals(getDomain(BOOLEAN, 0, null), none(BOOLEAN));
-        assertEquals(getDomain(BOOLEAN, 10, null), all(BOOLEAN));
+        assertEquals(getDomain(BOOLEAN, 0, null), Domain.none(BOOLEAN));
+        assertEquals(getDomain(BOOLEAN, 10, null), Domain.all(BOOLEAN));
 
-        assertEquals(getDomain(BOOLEAN, 0, booleanColumnStats(null, null)), none(BOOLEAN));
-        assertEquals(getDomain(BOOLEAN, 0, booleanColumnStats(0L, null)), none(BOOLEAN));
-        assertEquals(getDomain(BOOLEAN, 0, booleanColumnStats(0L, 0L)), none(BOOLEAN));
+        assertEquals(getDomain(BOOLEAN, 0, booleanColumnStats(null, null)), Domain.none(BOOLEAN));
+        assertEquals(getDomain(BOOLEAN, 0, booleanColumnStats(0L, null)), Domain.none(BOOLEAN));
+        assertEquals(getDomain(BOOLEAN, 0, booleanColumnStats(0L, 0L)), Domain.none(BOOLEAN));
 
         assertEquals(getDomain(BOOLEAN, 10, booleanColumnStats(0L, 0L)), onlyNull(BOOLEAN));
         assertEquals(getDomain(BOOLEAN, 10, booleanColumnStats(10L, null)), notNull(BOOLEAN));
@@ -62,7 +75,7 @@ public class TestTupleDomainOrcPredicate
         assertEquals(getDomain(BOOLEAN, 10, booleanColumnStats(10L, 10L)), singleValue(BOOLEAN, true));
         assertEquals(getDomain(BOOLEAN, 10, booleanColumnStats(10L, 0L)), singleValue(BOOLEAN, false));
 
-        assertEquals(getDomain(BOOLEAN, 20, booleanColumnStats(10L, 5L)), all(BOOLEAN));
+        assertEquals(getDomain(BOOLEAN, 20, booleanColumnStats(10L, 5L)), Domain.all(BOOLEAN));
 
         assertEquals(getDomain(BOOLEAN, 20, booleanColumnStats(10L, 10L)), create(ValueSet.ofRanges(Range.equal(BOOLEAN, true)), true));
         assertEquals(getDomain(BOOLEAN, 20, booleanColumnStats(10L, 0L)), create(ValueSet.ofRanges(Range.equal(BOOLEAN, false)), true));
@@ -74,19 +87,18 @@ public class TestTupleDomainOrcPredicate
         if (trueValueCount != null) {
             booleanStatistics = new BooleanStatistics(trueValueCount);
         }
-        return new ColumnStatistics(numberOfValues, booleanStatistics, null, null, null, null);
+        return new ColumnStatistics(numberOfValues, 2L, booleanStatistics, null, null, null, null, null, null, null);
     }
 
     @Test
     public void testBigint()
-            throws Exception
     {
-        assertEquals(getDomain(BIGINT, 0, null), none(BIGINT));
-        assertEquals(getDomain(BIGINT, 10, null), all(BIGINT));
+        assertEquals(getDomain(BIGINT, 0, null), Domain.none(BIGINT));
+        assertEquals(getDomain(BIGINT, 10, null), Domain.all(BIGINT));
 
-        assertEquals(getDomain(BIGINT, 0, integerColumnStats(null, null, null)), none(BIGINT));
-        assertEquals(getDomain(BIGINT, 0, integerColumnStats(0L, null, null)), none(BIGINT));
-        assertEquals(getDomain(BIGINT, 0, integerColumnStats(0L, 100L, 100L)), none(BIGINT));
+        assertEquals(getDomain(BIGINT, 0, integerColumnStats(null, null, null)), Domain.none(BIGINT));
+        assertEquals(getDomain(BIGINT, 0, integerColumnStats(0L, null, null)), Domain.none(BIGINT));
+        assertEquals(getDomain(BIGINT, 0, integerColumnStats(0L, 100L, 100L)), Domain.none(BIGINT));
 
         assertEquals(getDomain(BIGINT, 10, integerColumnStats(0L, null, null)), onlyNull(BIGINT));
         assertEquals(getDomain(BIGINT, 10, integerColumnStats(10L, null, null)), notNull(BIGINT));
@@ -104,19 +116,18 @@ public class TestTupleDomainOrcPredicate
 
     private static ColumnStatistics integerColumnStats(Long numberOfValues, Long minimum, Long maximum)
     {
-        return new ColumnStatistics(numberOfValues, null, new IntegerStatistics(minimum, maximum), null, null, null);
+        return new ColumnStatistics(numberOfValues, 9L, null, new IntegerStatistics(minimum, maximum, null), null, null, null, null, null, null);
     }
 
     @Test
     public void testDouble()
-            throws Exception
     {
-        assertEquals(getDomain(DOUBLE, 0, null), none(DOUBLE));
-        assertEquals(getDomain(DOUBLE, 10, null), all(DOUBLE));
+        assertEquals(getDomain(DOUBLE, 0, null), Domain.none(DOUBLE));
+        assertEquals(getDomain(DOUBLE, 10, null), Domain.all(DOUBLE));
 
-        assertEquals(getDomain(DOUBLE, 0, doubleColumnStats(null, null, null)), none(DOUBLE));
-        assertEquals(getDomain(DOUBLE, 0, doubleColumnStats(0L, null, null)), none(DOUBLE));
-        assertEquals(getDomain(DOUBLE, 0, doubleColumnStats(0L, 42.24, 42.24)), none(DOUBLE));
+        assertEquals(getDomain(DOUBLE, 0, doubleColumnStats(null, null, null)), Domain.none(DOUBLE));
+        assertEquals(getDomain(DOUBLE, 0, doubleColumnStats(0L, null, null)), Domain.none(DOUBLE));
+        assertEquals(getDomain(DOUBLE, 0, doubleColumnStats(0L, 42.24, 42.24)), Domain.none(DOUBLE));
 
         assertEquals(getDomain(DOUBLE, 10, doubleColumnStats(0L, null, null)), onlyNull(DOUBLE));
         assertEquals(getDomain(DOUBLE, 10, doubleColumnStats(10L, null, null)), notNull(DOUBLE));
@@ -134,19 +145,42 @@ public class TestTupleDomainOrcPredicate
 
     private static ColumnStatistics doubleColumnStats(Long numberOfValues, Double minimum, Double maximum)
     {
-        return new ColumnStatistics(numberOfValues, null, null, new DoubleStatistics(minimum, maximum), null, null);
+        return new ColumnStatistics(numberOfValues, 9L, null, null, new DoubleStatistics(minimum, maximum), null, null, null, null, null);
+    }
+
+    @Test
+    public void testFloat()
+    {
+        assertEquals(getDomain(REAL, 0, null), Domain.none(REAL));
+        assertEquals(getDomain(REAL, 10, null), Domain.all(REAL));
+
+        assertEquals(getDomain(REAL, 0, doubleColumnStats(null, null, null)), Domain.none(REAL));
+        assertEquals(getDomain(REAL, 0, doubleColumnStats(0L, null, null)), Domain.none(REAL));
+        assertEquals(getDomain(REAL, 0, doubleColumnStats(0L, (double) 42.24f, (double) 42.24f)), Domain.none(REAL));
+
+        assertEquals(getDomain(REAL, 10, doubleColumnStats(0L, null, null)), onlyNull(REAL));
+        assertEquals(getDomain(REAL, 10, doubleColumnStats(10L, null, null)), notNull(REAL));
+
+        assertEquals(getDomain(REAL, 10, doubleColumnStats(10L, (double) 42.24f, (double) 42.24f)), singleValue(REAL, (long) floatToRawIntBits(42.24f)));
+
+        assertEquals(getDomain(REAL, 10, doubleColumnStats(10L, 3.3, (double) 42.24f)), create(ValueSet.ofRanges(range(REAL, (long) floatToRawIntBits(3.3f), true, (long) floatToRawIntBits(42.24f), true)), false));
+        assertEquals(getDomain(REAL, 10, doubleColumnStats(10L, null, (double) 42.24f)), create(ValueSet.ofRanges(lessThanOrEqual(REAL, (long) floatToRawIntBits(42.24f))), false));
+        assertEquals(getDomain(REAL, 10, doubleColumnStats(10L, 3.3, null)), create(ValueSet.ofRanges(greaterThanOrEqual(REAL, (long) floatToRawIntBits(3.3f))), false));
+
+        assertEquals(getDomain(REAL, 10, doubleColumnStats(5L, 3.3, (double) 42.24f)), create(ValueSet.ofRanges(range(REAL, (long) floatToRawIntBits(3.3f), true, (long) floatToRawIntBits(42.24f), true)), true));
+        assertEquals(getDomain(REAL, 10, doubleColumnStats(5L, null, (double) 42.24f)), create(ValueSet.ofRanges(lessThanOrEqual(REAL, (long) floatToRawIntBits(42.24f))), true));
+        assertEquals(getDomain(REAL, 10, doubleColumnStats(5L, 3.3, null)), create(ValueSet.ofRanges(greaterThanOrEqual(REAL, (long) floatToRawIntBits(3.3f))), true));
     }
 
     @Test
     public void testString()
-            throws Exception
     {
-        assertEquals(getDomain(VARCHAR, 0, null), none(VARCHAR));
-        assertEquals(getDomain(VARCHAR, 10, null), all(VARCHAR));
+        assertEquals(getDomain(VARCHAR, 0, null), Domain.none(VARCHAR));
+        assertEquals(getDomain(VARCHAR, 10, null), Domain.all(VARCHAR));
 
-        assertEquals(getDomain(VARCHAR, 0, stringColumnStats(null, null, null)), none(VARCHAR));
-        assertEquals(getDomain(VARCHAR, 0, stringColumnStats(0L, null, null)), none(VARCHAR));
-        assertEquals(getDomain(VARCHAR, 0, stringColumnStats(0L, "taco", "taco")), none(VARCHAR));
+        assertEquals(getDomain(VARCHAR, 0, stringColumnStats(null, null, null)), Domain.none(VARCHAR));
+        assertEquals(getDomain(VARCHAR, 0, stringColumnStats(0L, null, null)), Domain.none(VARCHAR));
+        assertEquals(getDomain(VARCHAR, 0, stringColumnStats(0L, "taco", "taco")), Domain.none(VARCHAR));
 
         assertEquals(getDomain(VARCHAR, 10, stringColumnStats(0L, null, null)), onlyNull(VARCHAR));
         assertEquals(getDomain(VARCHAR, 10, stringColumnStats(10L, null, null)), notNull(VARCHAR));
@@ -162,21 +196,57 @@ public class TestTupleDomainOrcPredicate
         assertEquals(getDomain(VARCHAR, 10, stringColumnStats(5L, "apple", null)), create(ValueSet.ofRanges(greaterThanOrEqual(VARCHAR, utf8Slice("apple"))), true));
     }
 
+    @Test
+    public void testChar()
+    {
+        assertEquals(getDomain(CHAR, 0, null), Domain.none(CHAR));
+        assertEquals(getDomain(CHAR, 10, null), Domain.all(CHAR));
+
+        assertEquals(getDomain(CHAR, 0, stringColumnStats(null, null, null)), Domain.none(CHAR));
+        assertEquals(getDomain(CHAR, 0, stringColumnStats(0L, null, null)), Domain.none(CHAR));
+        assertEquals(getDomain(CHAR, 0, stringColumnStats(0L, "taco      ", "taco      ")), Domain.none(CHAR));
+        assertEquals(getDomain(CHAR, 0, stringColumnStats(0L, "taco", "taco      ")), Domain.none(CHAR));
+
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(0L, null, null)), onlyNull(CHAR));
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(10L, null, null)), notNull(CHAR));
+
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(10L, "taco      ", "taco      ")), singleValue(CHAR, utf8Slice("taco")));
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(10L, "taco", "taco      ")), singleValue(CHAR, utf8Slice("taco")));
+
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(10L, "apple     ", "taco      ")), create(ValueSet.ofRanges(range(CHAR, utf8Slice("apple"), true, utf8Slice("taco"), true)), false));
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(10L, "apple     ", "taco")), create(ValueSet.ofRanges(range(CHAR, utf8Slice("apple"), true, utf8Slice("taco"), true)), false));
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(10L, null, "taco      ")), create(ValueSet.ofRanges(lessThanOrEqual(CHAR, utf8Slice("taco"))), false));
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(10L, null, "taco")), create(ValueSet.ofRanges(lessThanOrEqual(CHAR, utf8Slice("taco"))), false));
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(10L, "apple     ", null)), create(ValueSet.ofRanges(greaterThanOrEqual(CHAR, utf8Slice("apple"))), false));
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(10L, "apple", null)), create(ValueSet.ofRanges(greaterThanOrEqual(CHAR, utf8Slice("apple"))), false));
+
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(5L, "apple     ", "taco      ")), create(ValueSet.ofRanges(range(CHAR, utf8Slice("apple"), true, utf8Slice("taco"), true)), true));
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(5L, "apple     ", "taco")), create(ValueSet.ofRanges(range(CHAR, utf8Slice("apple"), true, utf8Slice("taco"), true)), true));
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(5L, null, "taco      ")), create(ValueSet.ofRanges(lessThanOrEqual(CHAR, utf8Slice("taco"))), true));
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(5L, null, "taco")), create(ValueSet.ofRanges(lessThanOrEqual(CHAR, utf8Slice("taco"))), true));
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(5L, "apple     ", null)), create(ValueSet.ofRanges(greaterThanOrEqual(CHAR, utf8Slice("apple"))), true));
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(5L, "apple", null)), create(ValueSet.ofRanges(greaterThanOrEqual(CHAR, utf8Slice("apple"))), true));
+
+        assertEquals(getDomain(CHAR, 10, stringColumnStats(10L, "\0 ", " ")), create(ValueSet.ofRanges(range(CHAR, utf8Slice("\0"), true, utf8Slice(""), true)), false));
+    }
+
     private static ColumnStatistics stringColumnStats(Long numberOfValues, String minimum, String maximum)
     {
-        return new ColumnStatistics(numberOfValues, null, null, null, new StringStatistics(getMinSlice(minimum), getMaxSlice(maximum)), null);
+        Slice minimumSlice = minimum == null ? null : utf8Slice(minimum);
+        Slice maximumSlice = maximum == null ? null : utf8Slice(maximum);
+        // sum and minAverageValueSizeInBytes are not used in this test; they could be arbitrary numbers
+        return new ColumnStatistics(numberOfValues, 10L, null, null, null, new StringStatistics(minimumSlice, maximumSlice, 100L), null, null, null, null);
     }
 
     @Test
     public void testDate()
-            throws Exception
     {
-        assertEquals(getDomain(DATE, 0, null), none(DATE));
-        assertEquals(getDomain(DATE, 10, null), all(DATE));
+        assertEquals(getDomain(DATE, 0, null), Domain.none(DATE));
+        assertEquals(getDomain(DATE, 10, null), Domain.all(DATE));
 
-        assertEquals(getDomain(DATE, 0, dateColumnStats(null, null, null)), none(DATE));
-        assertEquals(getDomain(DATE, 0, dateColumnStats(0L, null, null)), none(DATE));
-        assertEquals(getDomain(DATE, 0, dateColumnStats(0L, 100, 100)), none(DATE));
+        assertEquals(getDomain(DATE, 0, dateColumnStats(null, null, null)), Domain.none(DATE));
+        assertEquals(getDomain(DATE, 0, dateColumnStats(0L, null, null)), Domain.none(DATE));
+        assertEquals(getDomain(DATE, 0, dateColumnStats(0L, 100, 100)), Domain.none(DATE));
 
         assertEquals(getDomain(DATE, 10, dateColumnStats(0L, null, null)), onlyNull(DATE));
         assertEquals(getDomain(DATE, 10, dateColumnStats(10L, null, null)), notNull(DATE));
@@ -194,6 +264,94 @@ public class TestTupleDomainOrcPredicate
 
     private static ColumnStatistics dateColumnStats(Long numberOfValues, Integer minimum, Integer maximum)
     {
-        return new ColumnStatistics(numberOfValues, null, null, null, null, new DateStatistics(minimum, maximum));
+        return new ColumnStatistics(numberOfValues, 5L, null, null, null, null, new DateStatistics(minimum, maximum), null, null, null);
+    }
+
+    @Test
+    public void testDecimal()
+    {
+        assertEquals(getDomain(SHORT_DECIMAL, 0, null), Domain.none(SHORT_DECIMAL));
+        assertEquals(getDomain(LONG_DECIMAL, 10, null), Domain.all(LONG_DECIMAL));
+
+        assertEquals(getDomain(SHORT_DECIMAL, 0, decimalColumnStats(null, null, null)), Domain.none(SHORT_DECIMAL));
+        assertEquals(getDomain(LONG_DECIMAL, 0, decimalColumnStats(0L, null, null)), Domain.none(LONG_DECIMAL));
+        assertEquals(getDomain(SHORT_DECIMAL, 0, decimalColumnStats(0L, "-999.99", "999.99")), Domain.none(SHORT_DECIMAL));
+
+        assertEquals(getDomain(LONG_DECIMAL, 10, decimalColumnStats(0L, null, null)), onlyNull(LONG_DECIMAL));
+        assertEquals(getDomain(SHORT_DECIMAL, 10, decimalColumnStats(10L, null, null)), notNull(SHORT_DECIMAL));
+
+        assertEquals(getDomain(SHORT_DECIMAL, 10, decimalColumnStats(10L, "999.99", "999.99")), singleValue(SHORT_DECIMAL, shortDecimal("999.99")));
+        assertEquals(getDomain(SHORT_DECIMAL, 10, decimalColumnStats(10L, "999.9", "999.9")), singleValue(SHORT_DECIMAL, shortDecimal("999.90")));
+        assertEquals(getDomain(LONG_DECIMAL, 10, decimalColumnStats(10L, "1234567890.0987654321", "1234567890.0987654321")),
+                singleValue(LONG_DECIMAL, longDecimal("1234567890.0987654321")));
+
+        assertEquals(getDomain(SHORT_DECIMAL, 10, decimalColumnStats(10L, "-999.99", "999.99")),
+                create(ValueSet.ofRanges(range(SHORT_DECIMAL, shortDecimal("-999.99"), true, shortDecimal("999.99"), true)), false));
+        assertEquals(getDomain(SHORT_DECIMAL, 10, decimalColumnStats(10L, "10.5", "20")),
+                create(ValueSet.ofRanges(range(SHORT_DECIMAL, shortDecimal("10.50"), true, shortDecimal("20.00"), true)), false));
+        assertEquals(getDomain(SHORT_DECIMAL, 10, decimalColumnStats(10L, null, "999.99")),
+                create(ValueSet.ofRanges(lessThanOrEqual(SHORT_DECIMAL, shortDecimal("999.99"))), false));
+        assertEquals(getDomain(SHORT_DECIMAL, 10, decimalColumnStats(10L, "-999.99", null)),
+                create(ValueSet.ofRanges(greaterThanOrEqual(SHORT_DECIMAL, shortDecimal("-999.99"))), false));
+
+        assertEquals(getDomain(LONG_DECIMAL, 10, decimalColumnStats(10L, "-1234567890.0987654321", "1234567890.0987654321")),
+                create(ValueSet.ofRanges(range(LONG_DECIMAL, longDecimal("-1234567890.0987654321"), true, longDecimal("1234567890.0987654321"), true)), false));
+        assertEquals(getDomain(LONG_DECIMAL, 10, decimalColumnStats(10L, null, "1234567890.0987654321")),
+                create(ValueSet.ofRanges(lessThanOrEqual(LONG_DECIMAL, longDecimal("1234567890.0987654321"))), false));
+        assertEquals(getDomain(LONG_DECIMAL, 10, decimalColumnStats(10L, "-1234567890.0987654321", null)),
+                create(ValueSet.ofRanges(greaterThanOrEqual(LONG_DECIMAL, longDecimal("-1234567890.0987654321"))), false));
+
+        assertEquals(getDomain(SHORT_DECIMAL, 10, decimalColumnStats(5L, "-999.99", "999.99")),
+                create(ValueSet.ofRanges(range(SHORT_DECIMAL, shortDecimal("-999.99"), true, shortDecimal("999.99"), true)), true));
+        assertEquals(getDomain(SHORT_DECIMAL, 10, decimalColumnStats(5L, null, "999.99")),
+                create(ValueSet.ofRanges(lessThanOrEqual(SHORT_DECIMAL, shortDecimal("999.99"))), true));
+        assertEquals(getDomain(SHORT_DECIMAL, 10, decimalColumnStats(5L, "-999.99", null)),
+                create(ValueSet.ofRanges(greaterThanOrEqual(SHORT_DECIMAL, shortDecimal("-999.99"))), true));
+
+        assertEquals(getDomain(LONG_DECIMAL, 10, decimalColumnStats(5L, "-1234567890.0987654321", "1234567890.0987654321")),
+                create(ValueSet.ofRanges(range(LONG_DECIMAL, longDecimal("-1234567890.0987654321"), true, longDecimal("1234567890.0987654321"), true)), true));
+        assertEquals(getDomain(LONG_DECIMAL, 10, decimalColumnStats(5L, null, "1234567890.0987654321")),
+                create(ValueSet.ofRanges(lessThanOrEqual(LONG_DECIMAL, longDecimal("1234567890.0987654321"))), true));
+        assertEquals(getDomain(LONG_DECIMAL, 10, decimalColumnStats(5L, "-1234567890.0987654321", null)),
+                create(ValueSet.ofRanges(greaterThanOrEqual(LONG_DECIMAL, longDecimal("-1234567890.0987654321"))), true));
+    }
+
+    private static ColumnStatistics decimalColumnStats(Long numberOfValues, String minimum, String maximum)
+    {
+        BigDecimal minimumDecimal = minimum == null ? null : new BigDecimal(minimum);
+        BigDecimal maximumDecimal = maximum == null ? null : new BigDecimal(maximum);
+        return new ColumnStatistics(numberOfValues, 9L, null, null, null, null, null, new DecimalStatistics(minimumDecimal, maximumDecimal, SHORT_DECIMAL_VALUE_BYTES), null, null);
+    }
+
+    @Test
+    public void testBinary()
+    {
+        assertEquals(getDomain(VARBINARY, 0, null), Domain.none(VARBINARY));
+        assertEquals(getDomain(VARBINARY, 10, null), Domain.all(VARBINARY));
+
+        assertEquals(getDomain(VARBINARY, 0, binaryColumnStats(null)), Domain.none(VARBINARY));
+        assertEquals(getDomain(VARBINARY, 0, binaryColumnStats(0L)), Domain.none(VARBINARY));
+        assertEquals(getDomain(VARBINARY, 0, binaryColumnStats(0L)), Domain.none(VARBINARY));
+
+        assertEquals(getDomain(VARBINARY, 10, binaryColumnStats(0L)), onlyNull(VARBINARY));
+        assertEquals(getDomain(VARBINARY, 10, binaryColumnStats(10L)), notNull(VARBINARY));
+
+        assertEquals(getDomain(VARBINARY, 20, binaryColumnStats(10L)), Domain.all(VARBINARY));
+    }
+
+    private static ColumnStatistics binaryColumnStats(Long numberOfValues)
+    {
+        // sum and minAverageValueSizeInBytes are not used in this test; they could be arbitrary numbers
+        return new ColumnStatistics(numberOfValues, 10L, null, null, null, null, null, null, new BinaryStatistics(100L), null);
+    }
+
+    private static Long shortDecimal(String value)
+    {
+        return new BigDecimal(value).unscaledValue().longValue();
+    }
+
+    private static Slice longDecimal(String value)
+    {
+        return encodeScaledValue(new BigDecimal(value));
     }
 }

@@ -13,10 +13,13 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.spi.function.WindowIndex;
+
+import java.util.List;
 
 public interface Accumulator
 {
@@ -27,6 +30,8 @@ public interface Accumulator
     Type getIntermediateType();
 
     void addInput(Page page);
+
+    void addInput(WindowIndex index, List<Integer> channels, int startPosition, int endPosition);
 
     void addIntermediate(Block block);
 

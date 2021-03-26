@@ -15,7 +15,9 @@ package com.facebook.presto.connector.system;
 
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.ConnectorTableHandle;
 import com.facebook.presto.spi.ConnectorTableLayout;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
@@ -24,6 +26,7 @@ import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.Constraint;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
+import com.facebook.presto.spi.SplitContext;
 import com.facebook.presto.spi.SystemTable;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.facebook.presto.spi.connector.ConnectorPageSourceProvider;
@@ -102,7 +105,7 @@ public class GlobalSystemConnector
             }
 
             @Override
-            public List<SchemaTableName> listTables(ConnectorSession session, String schemaNameOrNull)
+            public List<SchemaTableName> listTables(ConnectorSession session, Optional<String> schemaName)
             {
                 return ImmutableList.of();
             }
@@ -130,14 +133,20 @@ public class GlobalSystemConnector
     @Override
     public ConnectorSplitManager getSplitManager()
     {
-        return new ConnectorSplitManager() {};
+        return (transactionHandle, session, layout, splitSchedulingContext) -> {
+            throw new UnsupportedOperationException();
+        };
     }
 
     @Override
     public ConnectorPageSourceProvider getPageSourceProvider()
     {
-        return (transactionHandle, session, split, columns) -> {
-            throw new UnsupportedOperationException();
+        return new ConnectorPageSourceProvider() {
+            @Override
+            public ConnectorPageSource createPageSource(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorSplit split, ConnectorTableLayoutHandle layout, List<ColumnHandle> columns, SplitContext splitContext)
+            {
+                throw new UnsupportedOperationException();
+            }
         };
     }
 

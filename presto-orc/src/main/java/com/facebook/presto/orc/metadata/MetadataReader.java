@@ -13,24 +13,40 @@
  */
 package com.facebook.presto.orc.metadata;
 
+import com.facebook.presto.orc.DwrfEncryptionProvider;
+import com.facebook.presto.orc.DwrfKeyProvider;
+import com.facebook.presto.orc.OrcDataSource;
+import com.facebook.presto.orc.OrcDecompressor;
+import com.facebook.presto.orc.metadata.PostScript.HiveWriterVersion;
+import com.facebook.presto.orc.metadata.statistics.HiveBloomFilter;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
+import java.util.Optional;
 
 public interface MetadataReader
 {
     PostScript readPostScript(byte[] data, int offset, int length)
             throws IOException;
 
-    Metadata readMetadata(InputStream inputStream)
+    Metadata readMetadata(HiveWriterVersion hiveWriterVersion, InputStream inputStream)
             throws IOException;
 
-    Footer readFooter(InputStream inputStream)
+    Footer readFooter(HiveWriterVersion hiveWriterVersion,
+            InputStream inputStream,
+            DwrfEncryptionProvider dwrfEncryptionProvider,
+            DwrfKeyProvider dwrfKeyProvider,
+            OrcDataSource orcDataSource,
+            Optional<OrcDecompressor> decompressor)
             throws IOException;
 
     StripeFooter readStripeFooter(List<OrcType> types, InputStream inputStream)
             throws IOException;
 
-    List<RowGroupIndex> readRowIndexes(InputStream inputStream)
+    List<RowGroupIndex> readRowIndexes(HiveWriterVersion hiveWriterVersion, InputStream inputStream)
+            throws IOException;
+
+    List<HiveBloomFilter> readBloomFilterIndexes(InputStream inputStream)
             throws IOException;
 }
