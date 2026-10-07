@@ -13,75 +13,113 @@
  */
 package com.facebook.presto.cassandra;
 
-import com.datastax.driver.core.Cluster;
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.Session;
+import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.tests.DistributedQueryRunner;
 import com.facebook.presto.tpch.TpchPlugin;
-import com.facebook.presto.tpch.testing.SampledTpchPlugin;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.tpch.TpchTable;
-import org.cassandraunit.utils.EmbeddedCassandraServerHelper;
 
-import static com.facebook.presto.cassandra.CassandraTestingUtils.createOrReplaceKeyspace;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import static com.facebook.presto.cassandra.CassandraTestingUtils.createKeyspace;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.tests.QueryAssertions.copyTpchTables;
 import static com.facebook.presto.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 
 public final class CassandraQueryRunner
 {
+    private static final Logger log = Logger.get(CassandraQueryRunner.class);
+
     private CassandraQueryRunner()
     {
     }
 
-    private static final String TPCH_SCHEMA = "tpch";
-    private static final String TPCH_SAMPLED_SCHEMA = "tpch_sampled";
-
-    public static DistributedQueryRunner createCassandraQueryRunner(TpchTable<?>... tables)
+    public static DistributedQueryRunner createCassandraQueryRunner(CassandraServer server, Map<String, String> connectorProperties)
             throws Exception
     {
-        return createCassandraQueryRunner(ImmutableList.copyOf(tables));
-    }
+        log.info("Starting createCassandraQueryRunner");
+        DistributedQueryRunner queryRunner = null;
+        try {
+            log.info("Creating DistributedQueryRunner");
+            queryRunner = new DistributedQueryRunner(createCassandraSession("tpch"), 4);
 
-    public static DistributedQueryRunner createCassandraQueryRunner(Iterable<TpchTable<?>> tables)
-            throws Exception
-    {
-        EmbeddedCassandraServerHelper.startEmbeddedCassandra();
+            log.info("Installing TpchPlugin");
+            queryRunner.installPlugin(new TpchPlugin());
+            queryRunner.createCatalog("tpch", "tpch");
 
-        try (Cluster cluster = CassandraTestingUtils.getCluster();
-                com.datastax.driver.core.Session session = cluster.connect()) {
-            createOrReplaceKeyspace(session, "tpch");
-            createOrReplaceKeyspace(session, "tpch_sampled");
+            connectorProperties = new HashMap<>(ImmutableMap.copyOf(connectorProperties));
+            connectorProperties.putIfAbsent("cassandra.contact-points", server.getHost());
+            connectorProperties.putIfAbsent("cassandra.native-protocol-port", Integer.toString(server.getPort()));
+            connectorProperties.putIfAbsent("cassandra.allow-drop-table", "true");
+            connectorProperties.putIfAbsent("cassandra.load-policy.dc-aware.local-dc", "datacenter1");
+
+            log.info("Installing CassandraPlugin");
+            queryRunner.installPlugin(new CassandraPlugin());
+            queryRunner.createCatalog("cassandra", "cassandra", connectorProperties);
+
+            log.info("Creating keyspace 'tpch'");
+            createKeyspace(server.getSession(), "tpch");
+
+            log.info("Starting to copy TPCH tables");
+            List<TpchTable<?>> tables = TpchTable.getTables();
+            log.info("Tables to copy: %s", tables.size());
+
+            try {
+                copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, createCassandraSession("tpch"), tables, true);
+                log.info("Successfully copied TPCH tables");
+
+                // Validate that tables were actually created and populated
+                log.info("Validating table creation");
+                for (TpchTable<?> table : tables) {
+                    String tableName = table.getTableName();
+                    try {
+                        MaterializedResult result = queryRunner.execute(
+                                createCassandraSession("tpch"),
+                                String.format("SELECT COUNT(*) FROM cassandra.tpch.%s", tableName));
+                        long count = (Long) result.getMaterializedRows().get(0).getField(0);
+                        log.info("Table %s: %d rows", tableName, count);
+
+                        if (count == 0) {
+                            throw new RuntimeException(String.format("Table %s was created but contains no data", tableName));
+                        }
+                    }
+                    catch (Exception e) {
+                        log.error(e, "Validation failed for table %s", tableName);
+                        throw new RuntimeException(String.format("Table validation failed for %s", tableName), e);
+                    }
+                }
+                log.info("All tables validated successfully");
+            }
+            catch (Exception e) {
+                log.error(e, "Error copying TPCH tables");
+                throw new RuntimeException("Failed to copy TPCH tables", e);
+            }
+
+            log.info("Refreshing size estimates");
+            for (TpchTable<?> table : tables) {
+                server.refreshSizeEstimates("tpch", table.getTableName());
+            }
+
+            log.info("Successfully completed createCassandraQueryRunner");
+            return queryRunner;
         }
-
-        DistributedQueryRunner queryRunner = new DistributedQueryRunner(createSession(), 4);
-
-        queryRunner.installPlugin(new TpchPlugin());
-        queryRunner.createCatalog("tpch", "tpch");
-
-        queryRunner.installPlugin(new SampledTpchPlugin());
-        queryRunner.createCatalog("tpch_sampled", "tpch_sampled");
-
-        queryRunner.installPlugin(new CassandraPlugin());
-        queryRunner.createCatalog("cassandra", "cassandra", ImmutableMap.of(
-                "cassandra.contact-points", "localhost",
-                "cassandra.native-protocol-port", "9142",
-                "cassandra.allow-drop-table", "true"));
-
-        copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, createSession(), tables);
-        copyTpchTables(queryRunner, "tpch_sampled", TINY_SCHEMA_NAME, createSampledSession(), tables);
-
-        return queryRunner;
-    }
-
-    public static Session createSession()
-    {
-        return createCassandraSession(TPCH_SCHEMA);
-    }
-
-    public static Session createSampledSession()
-    {
-        return createCassandraSession(TPCH_SAMPLED_SCHEMA);
+        catch (Exception e) {
+            log.error(e, "Fatal error in createCassandraQueryRunner");
+            if (queryRunner != null) {
+                try {
+                    log.warn("Attempting to close queryRunner due to error");
+                    queryRunner.close();
+                }
+                catch (Exception closeException) {
+                    log.error(closeException, "Error closing queryRunner");
+                }
+            }
+            throw e;
+        }
     }
 
     public static Session createCassandraSession(String schema)

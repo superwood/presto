@@ -13,37 +13,39 @@
  */
 package com.facebook.presto.kafka.util;
 
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Maps;
 import com.google.common.io.Files;
-import kafka.admin.AdminUtils;
-import kafka.javaapi.producer.Producer;
-import kafka.producer.ProducerConfig;
-import kafka.server.KafkaConfig;
-import kafka.server.KafkaServerStartable;
-import kafka.utils.ZKStringSerializer$;
-import org.I0Itec.zkclient.ZkClient;
+import kafka.testkit.KafkaClusterTestKit;
+import kafka.testkit.TestKitNodes;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.common.serialization.LongSerializer;
 
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
-import java.util.Map;
+import java.util.Arrays;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
 import static com.facebook.presto.kafka.util.TestUtils.findUnusedPort;
-import static com.facebook.presto.kafka.util.TestUtils.toProperties;
 import static com.google.common.base.Preconditions.checkState;
-import static io.airlift.testing.FileUtils.deleteRecursively;
-import static java.util.Objects.requireNonNull;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.io.MoreFiles.deleteRecursively;
+import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
+import static java.util.function.Function.identity;
+import static org.apache.kafka.clients.producer.ProducerConfig.ACKS_CONFIG;
+import static org.apache.kafka.clients.producer.ProducerConfig.BOOTSTRAP_SERVERS_CONFIG;
+import static org.apache.kafka.clients.producer.ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG;
+import static org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG;
 
 public class EmbeddedKafka
         implements Closeable
 {
-    private final EmbeddedZookeeper zookeeper;
     private final int port;
     private final File kafkaDataDir;
-    private final KafkaServerStartable kafka;
+    private final KafkaClusterTestKit kafka;
 
     private final AtomicBoolean started = new AtomicBoolean();
     private final AtomicBoolean stopped = new AtomicBoolean();
@@ -51,61 +53,52 @@ public class EmbeddedKafka
     public static EmbeddedKafka createEmbeddedKafka()
             throws IOException
     {
-        return new EmbeddedKafka(new EmbeddedZookeeper(), new Properties());
+        return new EmbeddedKafka();
     }
 
-    public static EmbeddedKafka createEmbeddedKafka(Properties overrideProperties)
+    EmbeddedKafka()
             throws IOException
     {
-        return new EmbeddedKafka(new EmbeddedZookeeper(), overrideProperties);
-    }
-
-    EmbeddedKafka(EmbeddedZookeeper zookeeper, Properties overrideProperties)
-            throws IOException
-    {
-        this.zookeeper = requireNonNull(zookeeper, "zookeeper is null");
-        requireNonNull(overrideProperties, "overrideProperties is null");
-
         this.port = findUnusedPort();
         this.kafkaDataDir = Files.createTempDir();
-
-        Map<String, String> properties = ImmutableMap.<String, String>builder()
-                .put("broker.id", "0")
-                .put("host.name", "localhost")
-                .put("num.partitions", "2")
-                .put("log.flush.interval.messages", "10000")
-                .put("log.flush.interval.ms", "1000")
-                .put("log.retention.minutes", "60")
-                .put("log.segment.bytes", "1048576")
-                .put("auto.create.topics.enable", "false")
-                .put("zookeeper.connection.timeout.ms", "1000000")
-                .put("port", Integer.toString(port))
-                .put("log.dirs", kafkaDataDir.getAbsolutePath())
-                .put("zookeeper.connect", zookeeper.getConnectString())
-                .putAll(Maps.fromProperties(overrideProperties))
+        TestKitNodes nodes = new TestKitNodes.Builder()
+                .setNumBrokerNodes(1)
+                .setNumControllerNodes(1)
+                .setCombined(true)
                 .build();
-
-        KafkaConfig config = new KafkaConfig(toProperties(properties));
-        this.kafka = new KafkaServerStartable(config);
+        try {
+            this.kafka = new KafkaClusterTestKit.Builder(nodes)
+                    .setConfigProp("log.dirs", kafkaDataDir.getAbsolutePath())
+                    .build();
+        }
+        catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     public void start()
-            throws InterruptedException, IOException
+            throws Exception
     {
         if (!started.getAndSet(true)) {
-            zookeeper.start();
+            kafka.format();
             kafka.startup();
+            kafka.waitForActiveController();
+            kafka.waitForReadyBrokers();
         }
     }
 
     @Override
     public void close()
+            throws IOException
     {
         if (started.get() && !stopped.getAndSet(true)) {
-            kafka.shutdown();
-            kafka.awaitShutdown();
-            zookeeper.close();
-            deleteRecursively(kafkaDataDir);
+            try {
+                kafka.close();
+            }
+            catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+            deleteRecursively(kafkaDataDir.toPath(), ALLOW_INSECURE);
         }
     }
 
@@ -118,58 +111,31 @@ public class EmbeddedKafka
     {
         checkState(started.get() && !stopped.get(), "not started!");
 
-        ZkClient zkClient = new ZkClient(getZookeeperConnectString(), 30_000, 30_000, ZKStringSerializer$.MODULE$);
-        try {
-            for (String topic : topics) {
-                AdminUtils.createTopic(zkClient, topic, partitions, replication, topicProperties);
-            }
-        }
-        finally {
-            zkClient.close();
-        }
-    }
-
-    public CloseableProducer<Long, Object> createProducer()
-    {
-        Map<String, String> properties = ImmutableMap.<String, String>builder()
-                .put("metadata.broker.list", getConnectString())
-                .put("serializer.class", JsonEncoder.class.getName())
-                .put("key.serializer.class", NumberEncoder.class.getName())
-                .put("partitioner.class", NumberPartitioner.class.getName())
-                .put("request.required.acks", "1")
-                .build();
-
-        ProducerConfig producerConfig = new ProducerConfig(toProperties(properties));
-        return new CloseableProducer<>(producerConfig);
-    }
-
-    public static class CloseableProducer<K, V>
-            extends Producer<K, V>
-            implements AutoCloseable
-    {
-        public CloseableProducer(ProducerConfig config)
-        {
-            super(config);
+        try (AdminClient client = AdminClient.create(kafka.clientProperties())) {
+            client.createTopics(Arrays.stream(topics)
+                    .map(topic -> new NewTopic(topic, partitions, (short) replication)
+                            .configs(topicProperties.stringPropertyNames()
+                                    .stream()
+                                    .collect(toImmutableMap(
+                                            identity(),
+                                            prop -> (String) topicProperties.get(prop)))))
+                    .collect(Collectors.toList()));
         }
     }
 
-    public int getZookeeperPort()
+    public KafkaProducer<Long, Object> createProducer()
     {
-        return zookeeper.getPort();
-    }
+        Properties properties = new Properties();
+        properties.setProperty(BOOTSTRAP_SERVERS_CONFIG, getConnectString());
+        properties.setProperty(VALUE_SERIALIZER_CLASS_CONFIG, JsonEncoder.class.getName());
+        properties.setProperty(KEY_SERIALIZER_CLASS_CONFIG, LongSerializer.class.getName());
+        properties.setProperty(ACKS_CONFIG, "1");
 
-    public int getPort()
-    {
-        return port;
+        return new KafkaProducer<>(properties);
     }
 
     public String getConnectString()
     {
-        return "localhost:" + Integer.toString(port);
-    }
-
-    public String getZookeeperConnectString()
-    {
-        return zookeeper.getConnectString();
+        return kafka.bootstrapServers();
     }
 }

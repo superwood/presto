@@ -13,12 +13,13 @@
  */
 package com.facebook.presto.benchmark.driver;
 
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.client.ClientSession;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
 import io.airlift.airline.Option;
-import io.airlift.units.Duration;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -84,20 +85,33 @@ public class BenchmarkDriverOptions
     @Option(name = "--client-request-timeout", title = "client request timeout", description = "Client request timeout (default: 2m)")
     public Duration clientRequestTimeout = new Duration(2, MINUTES);
 
+    @Option(name = "--disable-compression", title = "disable response compression", description = "Disable compression of query results")
+    public boolean disableCompression;
+
     public ClientSession getClientSession()
     {
         return new ClientSession(
                 parseServer(server),
                 user,
                 "presto-benchmark",
+                Optional.empty(),
+                ImmutableSet.of(),
+                null,
                 catalog,
                 schema,
                 TimeZone.getDefault().getID(),
                 Locale.getDefault(),
+                ImmutableMap.of(),
                 toProperties(this.sessionProperties),
+                ImmutableMap.of(),
+                ImmutableMap.of(),
+                ImmutableMap.of(),
                 null,
-                debug,
-                clientRequestTimeout);
+                clientRequestTimeout,
+                disableCompression,
+                ImmutableMap.of(),
+                ImmutableMap.of(),
+                false);
     }
 
     private static URI parseServer(String server)
@@ -109,7 +123,7 @@ public class BenchmarkDriverOptions
 
         HostAndPort host = HostAndPort.fromString(server);
         try {
-            return new URI("http", null, host.getHostText(), host.getPortOrDefault(80), null, null, null);
+            return new URI("http", null, host.getHost(), host.getPortOrDefault(80), null, null, null);
         }
         catch (URISyntaxException e) {
             throw new IllegalArgumentException(e);

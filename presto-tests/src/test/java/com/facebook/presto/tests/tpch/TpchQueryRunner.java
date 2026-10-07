@@ -13,17 +13,12 @@
  */
 package com.facebook.presto.tests.tpch;
 
-import com.facebook.presto.Session;
+import com.facebook.airlift.log.Logger;
+import com.facebook.airlift.log.Logging;
 import com.facebook.presto.tests.DistributedQueryRunner;
-import com.facebook.presto.tpch.TpchPlugin;
-import com.facebook.presto.tpch.testing.SampledTpchPlugin;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.log.Logger;
-import io.airlift.log.Logging;
 
 import java.util.Map;
-
-import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 
 public final class TpchQueryRunner
 {
@@ -32,33 +27,79 @@ public final class TpchQueryRunner
     public static DistributedQueryRunner createQueryRunner()
             throws Exception
     {
-        return createQueryRunner(ImmutableMap.of());
+        return TpchQueryRunnerBuilder.builder()
+                .build();
     }
 
     public static DistributedQueryRunner createQueryRunner(Map<String, String> extraProperties)
             throws Exception
     {
-        Session session = testSessionBuilder()
-                .setSource("test")
-                .setCatalog("tpch")
-                .setSchema("tiny")
+        return TpchQueryRunnerBuilder.builder()
+                .setExtraProperties(extraProperties)
                 .build();
+    }
 
-        DistributedQueryRunner queryRunner = new DistributedQueryRunner(session, 4, extraProperties);
+    public static DistributedQueryRunner createQueryRunner(Map<String, String> extraProperties, int coordinatorCount)
+            throws Exception
+    {
+        DistributedQueryRunner queryRunner = TpchQueryRunnerBuilder.builder()
+                .setExtraProperties(extraProperties)
+                .setResourceManagerEnabled(true)
+                .setCoordinatorCount(coordinatorCount)
+                .build();
+        queryRunner.waitForClusterToGetReady();
+        return queryRunner;
+    }
 
-        try {
-            queryRunner.installPlugin(new TpchPlugin());
-            queryRunner.createCatalog("tpch", "tpch");
+    public static DistributedQueryRunner createQueryRunner(
+            Map<String, String> resourceManagerProperties,
+            Map<String, String> catalogServerProperties,
+            Map<String, String> coordinatorSidecarProperties,
+            Map<String, String> coordinatorProperties,
+            Map<String, String> extraProperties,
+            int coordinatorCount)
+            throws Exception
+    {
+        return createQueryRunner(resourceManagerProperties, catalogServerProperties, coordinatorSidecarProperties, coordinatorProperties, extraProperties, coordinatorCount, false, 1, false);
+    }
 
-            queryRunner.installPlugin(new SampledTpchPlugin());
-            queryRunner.createCatalog("tpch_sampled", "tpch_sampled");
+    public static DistributedQueryRunner createQueryRunnerWithNoClusterReadyCheck(
+            Map<String, String> resourceManagerProperties,
+            Map<String, String> catalogServerProperties,
+            Map<String, String> coordinatorSidecarProperties,
+            Map<String, String> coordinatorProperties,
+            Map<String, String> extraProperties,
+            int coordinatorCount,
+            boolean skipLoadingResourceGroupConfigurationManager)
+            throws Exception
+    {
+        return createQueryRunner(resourceManagerProperties, catalogServerProperties, coordinatorSidecarProperties, coordinatorProperties, extraProperties, coordinatorCount, true, 1, skipLoadingResourceGroupConfigurationManager);
+    }
 
-            return queryRunner;
+    public static DistributedQueryRunner createQueryRunner(Map<String, String> resourceManagerProperties, Map<String, String> coordinatorProperties, Map<String, String> extraProperties, int coordinatorCount, int resourceManagerCount)
+            throws Exception
+    {
+        return createQueryRunner(resourceManagerProperties, ImmutableMap.of(), ImmutableMap.of(), coordinatorProperties, extraProperties, coordinatorCount, false, resourceManagerCount, false);
+    }
+
+    public static DistributedQueryRunner createQueryRunner(Map<String, String> resourceManagerProperties, Map<String, String> catalogServerProperties, Map<String, String> coordinatorSidecarProperties, Map<String, String> coordinatorProperties, Map<String, String> extraProperties, int coordinatorCount, boolean skipClusterReadyCheck, int resourceManagerCount, boolean skipLoadingResourceGroupConfigurationManager)
+            throws Exception
+    {
+        DistributedQueryRunner queryRunner = TpchQueryRunnerBuilder.builder()
+                .setResourceManagerProperties(resourceManagerProperties)
+                .setCatalogServerProperties(catalogServerProperties)
+                .setCoordinatorProperties(coordinatorProperties)
+                .setCoordinatorSidecarProperties(coordinatorSidecarProperties)
+                .setExtraProperties(extraProperties)
+                .setResourceManagerEnabled(true)
+                .setCoordinatorCount(coordinatorCount)
+                .setResourceManagerCount(resourceManagerCount)
+                .setSkipLoadingResourceGroupConfigurationManager(skipLoadingResourceGroupConfigurationManager)
+                .build();
+        if (!skipClusterReadyCheck) {
+            queryRunner.waitForClusterToGetReady();
         }
-        catch (Exception e) {
-            queryRunner.close();
-            throw e;
-        }
+        return queryRunner;
     }
 
     public static void main(String[] args)

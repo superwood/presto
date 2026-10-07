@@ -23,8 +23,6 @@ import com.facebook.presto.bytecode.instruction.VariableInstruction;
 import com.google.common.collect.ImmutableList;
 import org.objectweb.asm.MethodVisitor;
 
-import javax.annotation.concurrent.NotThreadSafe;
-
 import java.lang.invoke.MethodType;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -53,7 +51,6 @@ import static com.facebook.presto.bytecode.instruction.VariableInstruction.store
 import static com.google.common.base.Preconditions.checkArgument;
 
 @SuppressWarnings("UnusedDeclaration")
-@NotThreadSafe
 public class BytecodeBlock
         implements BytecodeNode
 {
@@ -921,9 +918,21 @@ public class BytecodeBlock
         return this;
     }
 
+    public BytecodeBlock getIntArrayElement()
+    {
+        nodes.add(OpCode.IALOAD);
+        return this;
+    }
+
+    public BytecodeBlock putIntArrayElement()
+    {
+        nodes.add(OpCode.IASTORE);
+        return this;
+    }
+
     public BytecodeBlock visitLineNumber(int currentLineNumber)
     {
-        checkArgument(currentLineNumber >= 0, "currentLineNumber must be positive");
+        checkArgument(currentLineNumber >= 0, "currentLineNumber must be non-negative");
         if (this.currentLineNumber != currentLineNumber) {
             nodes.add(new LineNumberNode(currentLineNumber));
             this.currentLineNumber = currentLineNumber;

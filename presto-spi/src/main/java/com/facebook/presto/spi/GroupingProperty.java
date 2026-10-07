@@ -13,29 +13,41 @@
  */
 package com.facebook.presto.spi;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import static java.util.Collections.unmodifiableSet;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.toCollection;
 
 public final class GroupingProperty<E>
         implements LocalProperty<E>
 {
     private final Set<E> columns;
 
-    public GroupingProperty(Collection<E> columns)
+    @JsonCreator
+    public GroupingProperty(@JsonProperty("columns") Collection<E> columns)
     {
         requireNonNull(columns, "columns is null");
 
-        this.columns = Collections.unmodifiableSet(new HashSet<>(columns));
+        this.columns = unmodifiableSet(new LinkedHashSet<>(columns));
     }
 
+    @Override
+    public boolean isOrderSensitive()
+    {
+        return true;
+    }
+
+    @JsonProperty
     public Set<E> getColumns()
     {
         return columns;
@@ -65,12 +77,12 @@ public final class GroupingProperty<E>
     {
         Set<Optional<T>> translated = columns.stream()
                 .map(translator)
-                .collect(Collectors.toSet());
+                .collect(toCollection(LinkedHashSet::new));
 
         if (translated.stream().allMatch(Optional::isPresent)) {
             Set<T> columns = translated.stream()
                     .map(Optional::get)
-                    .collect(Collectors.toSet());
+                    .collect(toCollection(LinkedHashSet::new));
 
             return Optional.of(new GroupingProperty<>(columns));
         }

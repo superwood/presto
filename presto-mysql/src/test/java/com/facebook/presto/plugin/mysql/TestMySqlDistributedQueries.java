@@ -13,75 +13,154 @@
  */
 package com.facebook.presto.plugin.mysql;
 
-import com.facebook.presto.tests.AbstractTestQueries;
-import io.airlift.testing.mysql.TestingMySqlServer;
+import com.facebook.presto.testing.MaterializedResult;
+import com.facebook.presto.testing.QueryRunner;
+import com.facebook.presto.tests.AbstractTestDistributedQueries;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.tpch.TpchTable;
+import org.testcontainers.mysql.MySQLContainer;
 import org.testng.annotations.AfterClass;
+import org.testng.annotations.Optional;
 import org.testng.annotations.Test;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.sql.Statement;
-
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.plugin.mysql.MySqlQueryRunner.createMySqlQueryRunner;
-import static io.airlift.testing.Closeables.closeAllRuntimeException;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
+import static com.facebook.presto.testing.MaterializedResult.resultBuilder;
+import static com.facebook.presto.testing.assertions.Assert.assertEquals;
 
-@Test
+@Test(singleThreaded = true)
 public class TestMySqlDistributedQueries
-        extends AbstractTestQueries
+        extends AbstractTestDistributedQueries
 {
-    private final TestingMySqlServer mysqlServer;
+    private final MySQLContainer mysqlContainer;
 
     public TestMySqlDistributedQueries()
-            throws Exception
     {
-        this(new TestingMySqlServer("testuser", "testpass", "tpch"));
+        this.mysqlContainer = new MySQLContainer("mysql:8.0")
+                .withDatabaseName("tpch")
+                .withUsername("testuser")
+                .withPassword("testpass");
+        this.mysqlContainer.start();
     }
 
-    public TestMySqlDistributedQueries(TestingMySqlServer mysqlServer)
+    @Override
+    protected QueryRunner createQueryRunner()
             throws Exception
     {
-        super(createMySqlQueryRunner(mysqlServer, TpchTable.getTables()));
-        this.mysqlServer = mysqlServer;
+        return createMySqlQueryRunner(mysqlContainer.getJdbcUrl(), ImmutableMap.of(), TpchTable.getTables());
+    }
+
+    @Override
+    protected boolean supportsViews()
+    {
+        return false;
     }
 
     @AfterClass(alwaysRun = true)
     public final void destroy()
     {
-        closeAllRuntimeException(mysqlServer);
+        mysqlContainer.stop();
     }
 
-    @Test
-    public void testDropTable()
-            throws Exception
+    @Override
+    public void testShowColumns(@Optional("PARQUET") String storageFormat)
     {
-        assertUpdate("CREATE TABLE test_drop AS SELECT 123 x", 1);
-        assertTrue(queryRunner.tableExists(getSession(), "test_drop"));
+        MaterializedResult actual = computeActual("SHOW COLUMNS FROM orders").toTestTypes();
 
-        assertUpdate("DROP TABLE test_drop");
-        assertFalse(queryRunner.tableExists(getSession(), "test_drop"));
+        MaterializedResult expectedParametrizedVarchar = resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR, BIGINT, BIGINT, BIGINT)
+                .row("orderkey", "bigint", "", "", 19L, null, null)
+                .row("custkey", "bigint", "", "", 19L, null, null)
+                .row("orderstatus", "varchar(255)", "", "", null, null, 255L)
+                .row("totalprice", "double", "", "", 53L, null, null)
+                .row("orderdate", "date", "", "", null, null, null)
+                .row("orderpriority", "varchar(255)", "", "", null, null, 255L)
+                .row("clerk", "varchar(255)", "", "", null, null, 255L)
+                .row("shippriority", "integer", "", "", 10L, null, null)
+                .row("comment", "varchar(255)", "", "", null, null, 255L)
+                .build();
+
+        assertEquals(actual, expectedParametrizedVarchar);
     }
 
-    @Test
-    public void testViews()
-            throws Exception
+    @Override
+    public void testDescribeOutput()
     {
-        execute("CREATE OR REPLACE VIEW tpch.test_view AS SELECT * FROM tpch.orders");
-
-        assertQuery("SELECT orderkey FROM test_view", "SELECT orderkey FROM orders");
-
-        execute("DROP VIEW IF EXISTS tpch.test_view");
+        // this connector uses a non-canonical type for varchar columns in tpch
     }
 
-    private void execute(String sql)
-            throws SQLException
+    @Override
+    public void testDescribeOutputNamedAndUnnamed()
     {
-        try (Connection connection = DriverManager.getConnection(mysqlServer.getJdbcUrl());
-                Statement statement = connection.createStatement()) {
-            statement.execute(sql);
-        }
+        // this connector uses a non-canonical type for varchar columns in tpch
     }
+
+    @Override
+    public void testInsert()
+    {
+        // no op -- test not supported due to lack of support for array types.  See
+        // TestMySqlIntegrationSmokeTest for insertion tests.
+    }
+
+    @Override
+    public void testDelete()
+    {
+        // Delete is currently unsupported
+    }
+
+    @Override
+    public void testUpdate()
+    {
+        // Updates are not supported by the connector
+    }
+
+    @Override
+    public void testNonAutoCommitTransactionWithRollback()
+    {
+        // JDBC connectors do not support multi-statement writes within transactions
+    }
+
+    @Override
+    public void testNonAutoCommitTransactionWithCommit()
+    {
+        // JDBC connectors do not support multi-statement writes within transactions
+    }
+
+    @Override
+    public void testNonAutoCommitTransactionWithFailAndRollback()
+    {
+        // JDBC connectors do not support multi-statement writes within transactions
+    }
+
+    @Override
+    public void testPayloadJoinApplicability()
+    {
+        // MySQL does not support MAP type
+    }
+
+    @Override
+    public void testPayloadJoinCorrectness()
+    {
+        // MySQL does not support MAP type
+    }
+
+    @Override
+    public void testRemoveRedundantCastToVarcharInJoinClause()
+    {
+        // MySQL does not support MAP type
+    }
+
+    @Override
+    public void testSubfieldAccessControl()
+    {
+        // MySQL does not support ROW type
+    }
+
+    @Override
+    public void testStringFilters()
+    {
+        // MySQL maps char types to varchar(255), causing type mismatches
+    }
+
+    // MySQL specific tests should normally go in TestMySqlIntegrationSmokeTest
 }

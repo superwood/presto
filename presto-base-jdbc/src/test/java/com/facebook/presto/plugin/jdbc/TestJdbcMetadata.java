@@ -13,24 +13,43 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.TableNotFoundException;
+import com.facebook.presto.testing.TestingConnectorSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.util.concurrent.ListeningExecutorService;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalLong;
+
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.VarcharType.createVarcharType;
 import static com.facebook.presto.plugin.jdbc.TestingDatabase.CONNECTOR_ID;
+import static com.facebook.presto.plugin.jdbc.TestingJdbcTypeHandle.JDBC_BIGINT;
+import static com.facebook.presto.plugin.jdbc.TestingJdbcTypeHandle.JDBC_VARCHAR;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_FOUND;
 import static com.facebook.presto.spi.StandardErrorCode.PERMISSION_DENIED;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
+import static com.google.common.util.concurrent.MoreExecutors.listeningDecorator;
+import static com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
+import static java.util.concurrent.Executors.newCachedThreadPool;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.data.MapEntry.entry;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
@@ -41,6 +60,9 @@ public class TestJdbcMetadata
 {
     private TestingDatabase database;
     private JdbcMetadata metadata;
+    private JdbcMetadataCache jdbcMetadataCache;
+    private JdbcMetadataCacheStats globalMetadataCacheStats;
+    private JdbcMetadataCacheStats transactionMetadataCacheStats;
     private JdbcTableHandle tableHandle;
 
     @BeforeMethod
@@ -48,7 +70,15 @@ public class TestJdbcMetadata
             throws Exception
     {
         database = new TestingDatabase();
-        metadata = new JdbcMetadata(new JdbcConnectorId(CONNECTOR_ID), database.getJdbcClient(), new JdbcMetadataConfig());
+        ListeningExecutorService executor = listeningDecorator(newCachedThreadPool(daemonThreadsNamed("test-%s")));
+        globalMetadataCacheStats = new JdbcMetadataCacheStats();
+        jdbcMetadataCache = new JdbcMetadataCache(executor, database.getJdbcClient(), globalMetadataCacheStats, OptionalLong.of(0), OptionalLong.of(0), 100);
+        transactionMetadataCacheStats = new JdbcMetadataCacheStats();
+
+        BaseJdbcConfig baseConfig = new BaseJdbcConfig();
+        baseConfig.setConnectionUrl("jdbc:h2:mem:test");
+
+        metadata = new JdbcMetadata(JdbcMetadataCache.createTransactionCache(jdbcMetadataCache, transactionMetadataCacheStats, 100), database.getJdbcClient(), false, new DefaultTableLocationProvider(baseConfig));
         tableHandle = metadata.getTableHandle(SESSION, new SchemaTableName("example", "numbers"));
     }
 
@@ -80,12 +110,194 @@ public class TestJdbcMetadata
     {
         // known table
         assertEquals(metadata.getColumnHandles(SESSION, tableHandle), ImmutableMap.of(
-                "text", new JdbcColumnHandle(CONNECTOR_ID, "TEXT", VARCHAR),
-                "value", new JdbcColumnHandle(CONNECTOR_ID, "VALUE", BIGINT)));
+                "text", new JdbcColumnHandle(CONNECTOR_ID, "TEXT", JDBC_VARCHAR, VARCHAR, true, Optional.empty()),
+                "text_short", new JdbcColumnHandle(CONNECTOR_ID, "TEXT_SHORT", JDBC_VARCHAR, createVarcharType(32), true, Optional.empty()),
+                "value", new JdbcColumnHandle(CONNECTOR_ID, "VALUE", JDBC_BIGINT, BIGINT, true, Optional.empty())));
 
         // unknown table
         unknownTableColumnHandle(new JdbcTableHandle(CONNECTOR_ID, new SchemaTableName("unknown", "unknown"), "unknown", "unknown", "unknown"));
-        unknownTableColumnHandle(new JdbcTableHandle(CONNECTOR_ID, new SchemaTableName("example", "numbers"), null, "example", "unknown"));
+        unknownTableColumnHandle(new JdbcTableHandle(CONNECTOR_ID, new SchemaTableName("example", "unknown"), null, "example", "unknown"));
+    }
+
+    @Test
+    public void testColumnMetadataReuseIsTransactionScoped()
+    {
+        ConnectorSession firstSession = new TestingConnectorSession(ImmutableList.of());
+        metadata.getTableMetadata(firstSession, tableHandle);
+        metadata.getColumnHandles(firstSession, tableHandle);
+        assertEquals(transactionMetadataCacheStats.getColumnHandlesCacheMiss(), 1);
+
+        ConnectorSession secondSession = new TestingConnectorSession(ImmutableList.of());
+        metadata.getColumnHandles(secondSession, tableHandle);
+        metadata.getTableMetadata(secondSession, tableHandle);
+        assertEquals(transactionMetadataCacheStats.getColumnHandlesCacheMiss(), 1);
+
+        BaseJdbcConfig baseConfig = new BaseJdbcConfig();
+        baseConfig.setConnectionUrl("jdbc:h2:mem:test");
+        JdbcMetadataCacheStats otherTransactionCacheStats = new JdbcMetadataCacheStats();
+        JdbcMetadata otherTransactionMetadata = new JdbcMetadata(JdbcMetadataCache.createTransactionCache(jdbcMetadataCache, otherTransactionCacheStats, 100), database.getJdbcClient(), false, new DefaultTableLocationProvider(baseConfig));
+
+        otherTransactionMetadata.getColumnHandles(secondSession, tableHandle);
+        otherTransactionMetadata.getTableMetadata(secondSession, tableHandle);
+        assertEquals(transactionMetadataCacheStats.getColumnHandlesCacheMiss(), 1);
+        assertEquals(otherTransactionCacheStats.getColumnHandlesCacheMiss(), 1);
+    }
+
+    @Test
+    public void testTransactionCacheDoesNotReuseMetadataAcrossTransactionsWhenGlobalCacheIsDisabled()
+    {
+        BaseJdbcConfig baseConfig = new BaseJdbcConfig();
+        baseConfig.setConnectionUrl("jdbc:h2:mem:test");
+        JdbcMetadataFactory metadataFactory = new JdbcMetadataFactory(
+                jdbcMetadataCache,
+                database.getJdbcClient(),
+                new JdbcMetadataConfig().setMetadataTransactionCacheEnabled(true),
+                new DefaultTableLocationProvider(baseConfig));
+        SchemaTableName tableName = new SchemaTableName("example", "numbers");
+        ConnectorSession firstSession = new TestingConnectorSession(ImmutableList.of());
+        ConnectorSession secondSession = new TestingConnectorSession(ImmutableList.of());
+
+        long initialTableHandleMisses = globalMetadataCacheStats.getTableHandleCacheMiss();
+        long initialColumnHandleMisses = globalMetadataCacheStats.getColumnHandlesCacheMiss();
+
+        JdbcMetadata firstTransaction = metadataFactory.create();
+        JdbcTableHandle firstTableHandle = firstTransaction.getTableHandle(firstSession, tableName);
+        firstTransaction.getTableHandle(firstSession, tableName);
+        firstTransaction.getTableMetadata(firstSession, firstTableHandle);
+        firstTransaction.getColumnHandles(firstSession, firstTableHandle);
+
+        assertEquals(globalMetadataCacheStats.getTableHandleCacheMiss(), initialTableHandleMisses + 1);
+        assertEquals(globalMetadataCacheStats.getColumnHandlesCacheMiss(), initialColumnHandleMisses + 1);
+
+        JdbcMetadata secondTransaction = metadataFactory.create();
+        JdbcTableHandle secondTableHandle = secondTransaction.getTableHandle(secondSession, tableName);
+        secondTransaction.getTableMetadata(secondSession, secondTableHandle);
+
+        assertEquals(globalMetadataCacheStats.getTableHandleCacheMiss(), initialTableHandleMisses + 2);
+        assertEquals(globalMetadataCacheStats.getColumnHandlesCacheMiss(), initialColumnHandleMisses + 2);
+    }
+
+    @Test
+    public void testColumnMetadataReuseCanBeDisabled()
+    {
+        BaseJdbcConfig baseConfig = new BaseJdbcConfig();
+        baseConfig.setConnectionUrl("jdbc:h2:mem:test");
+        JdbcMetadataFactory metadataFactory = new JdbcMetadataFactory(
+                jdbcMetadataCache,
+                database.getJdbcClient(),
+                new JdbcMetadataConfig().setMetadataTransactionCacheEnabled(false),
+                new DefaultTableLocationProvider(baseConfig));
+        JdbcMetadata uncachedMetadata = metadataFactory.create();
+        ConnectorSession session = new TestingConnectorSession(ImmutableList.of());
+
+        long initialMisses = globalMetadataCacheStats.getColumnHandlesCacheMiss();
+        uncachedMetadata.getTableMetadata(session, tableHandle);
+        uncachedMetadata.getColumnHandles(session, tableHandle);
+
+        assertEquals(globalMetadataCacheStats.getColumnHandlesCacheMiss(), initialMisses + 2);
+    }
+
+    @Test
+    public void testTransactionCacheUsesGlobalCacheWhenEnabled()
+    {
+        ListeningExecutorService executor = newDirectExecutorService();
+        JdbcMetadataCacheStats globalCacheStats = new JdbcMetadataCacheStats();
+        JdbcMetadataCache globalCache = new JdbcMetadataCache(
+                executor,
+                database.getJdbcClient(),
+                globalCacheStats,
+                OptionalLong.empty(),
+                OptionalLong.empty(),
+                100);
+
+        BaseJdbcConfig baseConfig = new BaseJdbcConfig();
+        baseConfig.setConnectionUrl("jdbc:h2:mem:test");
+        JdbcMetadata firstTransaction = new JdbcMetadata(
+                JdbcMetadataCache.createTransactionCache(globalCache, 100),
+                database.getJdbcClient(),
+                false,
+                new DefaultTableLocationProvider(baseConfig));
+        JdbcMetadata secondTransaction = new JdbcMetadata(
+                JdbcMetadataCache.createTransactionCache(globalCache, 100),
+                database.getJdbcClient(),
+                false,
+                new DefaultTableLocationProvider(baseConfig));
+
+        firstTransaction.getTableMetadata(SESSION, tableHandle);
+        secondTransaction.getTableMetadata(SESSION, tableHandle);
+
+        assertEquals(globalCacheStats.getColumnHandlesCacheMiss(), 1);
+        assertEquals(globalCacheStats.getColumnHandlesCacheHit(), 1);
+    }
+
+    @Test
+    public void testMissingTableHandleIsNotCached()
+    {
+        ListeningExecutorService executor = newDirectExecutorService();
+        JdbcMetadataCacheStats globalCacheStats = new JdbcMetadataCacheStats();
+        JdbcMetadataCache globalCache = new JdbcMetadataCache(
+                executor,
+                database.getJdbcClient(),
+                globalCacheStats,
+                OptionalLong.empty(),
+                OptionalLong.empty(),
+                100);
+        JdbcMetadataCacheStats firstTransactionCacheStats = new JdbcMetadataCacheStats();
+        JdbcMetadataCache firstTransactionCache = JdbcMetadataCache.createTransactionCache(globalCache, firstTransactionCacheStats, 100);
+        SchemaTableName missingTable = new SchemaTableName("example", "unknown");
+
+        assertNull(firstTransactionCache.getTableHandle(SESSION, missingTable));
+        assertNull(firstTransactionCache.getTableHandle(SESSION, missingTable));
+
+        assertEquals(firstTransactionCacheStats.getTableHandleCacheMiss(), 2);
+        assertEquals(globalCacheStats.getTableHandleCacheMiss(), 2);
+
+        JdbcMetadataCacheStats secondTransactionCacheStats = new JdbcMetadataCacheStats();
+        JdbcMetadataCache secondTransactionCache = JdbcMetadataCache.createTransactionCache(globalCache, secondTransactionCacheStats, 100);
+        assertNull(secondTransactionCache.getTableHandle(SESSION, missingTable));
+
+        assertEquals(secondTransactionCacheStats.getTableHandleCacheMiss(), 1);
+        assertEquals(globalCacheStats.getTableHandleCacheMiss(), 3);
+    }
+
+    @Test
+    public void testSchemaChangeInvalidatesTransactionAndGlobalCaches()
+    {
+        ListeningExecutorService executor = newDirectExecutorService();
+        JdbcMetadataCacheStats globalCacheStats = new JdbcMetadataCacheStats();
+        JdbcMetadataCache globalCache = new JdbcMetadataCache(
+                executor,
+                database.getJdbcClient(),
+                globalCacheStats,
+                OptionalLong.empty(),
+                OptionalLong.empty(),
+                100);
+        JdbcMetadataCacheStats cacheStats = new JdbcMetadataCacheStats();
+
+        BaseJdbcConfig baseConfig = new BaseJdbcConfig();
+        baseConfig.setConnectionUrl("jdbc:h2:mem:test");
+        JdbcMetadata cachedMetadata = new JdbcMetadata(
+                JdbcMetadataCache.createTransactionCache(globalCache, cacheStats, 100),
+                database.getJdbcClient(),
+                false,
+                new DefaultTableLocationProvider(baseConfig));
+        JdbcTableHandle cachedTableHandle = cachedMetadata.getTableHandle(SESSION, new SchemaTableName("example", "numbers"));
+        JdbcTableHandle unaffectedTableHandle = cachedMetadata.getTableHandle(SESSION, new SchemaTableName("example", "view"));
+
+        assertEquals(cachedMetadata.getTableMetadata(SESSION, cachedTableHandle).getColumns().size(), 3);
+        cachedMetadata.getTableMetadata(SESSION, unaffectedTableHandle);
+        assertEquals(cacheStats.getColumnHandlesCacheMiss(), 2);
+        assertEquals(globalCacheStats.getColumnHandlesCacheMiss(), 2);
+
+        cachedMetadata.addColumn(SESSION, cachedTableHandle, ColumnMetadata.builder().setName("new_column").setType(VARCHAR).build());
+
+        cachedMetadata.getTableMetadata(SESSION, unaffectedTableHandle);
+        assertEquals(cacheStats.getColumnHandlesCacheMiss(), 2);
+        assertEquals(globalCacheStats.getColumnHandlesCacheMiss(), 2);
+
+        assertEquals(cachedMetadata.getTableMetadata(SESSION, cachedTableHandle).getColumns().size(), 4);
+        assertEquals(cacheStats.getColumnHandlesCacheMiss(), 3);
+        assertEquals(globalCacheStats.getColumnHandlesCacheMiss(), 3);
     }
 
     private void unknownTableColumnHandle(JdbcTableHandle tableHandle)
@@ -105,21 +317,49 @@ public class TestJdbcMetadata
         ConnectorTableMetadata tableMetadata = metadata.getTableMetadata(SESSION, tableHandle);
         assertEquals(tableMetadata.getTable(), new SchemaTableName("example", "numbers"));
         assertEquals(tableMetadata.getColumns(), ImmutableList.of(
-                new ColumnMetadata("text", VARCHAR),
-                new ColumnMetadata("value", BIGINT)));
+                ColumnMetadata.builder().setName("text").setType(VARCHAR).setNullable(false).build(),
+                ColumnMetadata.builder().setName("text_short").setType(createVarcharType(32)).build(),
+                ColumnMetadata.builder().setName("value").setType(BIGINT).build()));
 
         // escaping name patterns
         JdbcTableHandle specialTableHandle = metadata.getTableHandle(SESSION, new SchemaTableName("exa_ple", "num_ers"));
         ConnectorTableMetadata specialTableMetadata = metadata.getTableMetadata(SESSION, specialTableHandle);
         assertEquals(specialTableMetadata.getTable(), new SchemaTableName("exa_ple", "num_ers"));
         assertEquals(specialTableMetadata.getColumns(), ImmutableList.of(
-                new ColumnMetadata("te_t", VARCHAR),
-                new ColumnMetadata("va%ue", BIGINT)));
+                ColumnMetadata.builder().setName("te_t").setType(VARCHAR).setNullable(false).build(),
+                ColumnMetadata.builder().setName("va%ue").setType(BIGINT).build()));
 
         // unknown tables should produce null
         unknownTableMetadata(new JdbcTableHandle(CONNECTOR_ID, new SchemaTableName("u", "numbers"), null, "unknown", "unknown"));
-        unknownTableMetadata(new JdbcTableHandle(CONNECTOR_ID, new SchemaTableName("example", "numbers"), null, "example", "unknown"));
-        unknownTableMetadata(new JdbcTableHandle(CONNECTOR_ID, new SchemaTableName("example", "numbers"), null, "unknown", "numbers"));
+        unknownTableMetadata(new JdbcTableHandle(CONNECTOR_ID, new SchemaTableName("example", "unknown"), null, "example", "unknown"));
+        unknownTableMetadata(new JdbcTableHandle(CONNECTOR_ID, new SchemaTableName("unknown", "numbers"), null, "unknown", "numbers"));
+    }
+
+    @Test
+    public void testListTableColumns()
+    {
+        SchemaTableName tpchOrders = new SchemaTableName("tpch", "orders");
+        ImmutableList<ColumnMetadata> tpchOrdersColumnMetadata = ImmutableList.of(
+                ColumnMetadata.builder().setName("orderkey").setType(BIGINT).setNullable(false).build(),
+                ColumnMetadata.builder().setName("custkey").setType(BIGINT).setNullable(true).build());
+
+        SchemaTableName tpchLineItem = new SchemaTableName("tpch", "lineitem");
+        ImmutableList<ColumnMetadata> tpchLineItemColumnMetadata = ImmutableList.of(
+                ColumnMetadata.builder().setName("orderkey").setType(BIGINT).setNullable(false).build(),
+                ColumnMetadata.builder().setName("partkey").setType(BIGINT).setNullable(true).build());
+
+        //List columns for a given schema and table
+        Map<SchemaTableName, List<ColumnMetadata>> tpchOrdersColumns = metadata.listTableColumns(SESSION, new SchemaTablePrefix("tpch", "orders"));
+        assertThat(tpchOrdersColumns)
+                .containsOnly(
+                        entry(tpchOrders, tpchOrdersColumnMetadata));
+
+        //List columns for a given schema
+        Map<SchemaTableName, List<ColumnMetadata>> tpchColumns = metadata.listTableColumns(SESSION, new SchemaTablePrefix("tpch"));
+        assertThat(tpchColumns)
+                .containsOnly(
+                        entry(tpchOrders, tpchOrdersColumnMetadata),
+                        entry(tpchLineItem, tpchLineItemColumnMetadata));
     }
 
     private void unknownTableMetadata(JdbcTableHandle tableHandle)
@@ -136,43 +376,71 @@ public class TestJdbcMetadata
     public void testListTables()
     {
         // all schemas
-        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, null)), ImmutableSet.of(
+        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, Optional.empty())), ImmutableSet.of(
                 new SchemaTableName("example", "numbers"),
                 new SchemaTableName("example", "view_source"),
                 new SchemaTableName("example", "view"),
                 new SchemaTableName("tpch", "orders"),
                 new SchemaTableName("tpch", "lineitem"),
+                new SchemaTableName("exa_ple", "table_with_float_col"),
                 new SchemaTableName("exa_ple", "num_ers")));
 
         // specific schema
-        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, "example")), ImmutableSet.of(
+        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, Optional.of("example"))), ImmutableSet.of(
                 new SchemaTableName("example", "numbers"),
                 new SchemaTableName("example", "view_source"),
                 new SchemaTableName("example", "view")));
-        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, "tpch")), ImmutableSet.of(
+        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, Optional.of("tpch"))), ImmutableSet.of(
                 new SchemaTableName("tpch", "orders"),
                 new SchemaTableName("tpch", "lineitem")));
-        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, "exa_ple")), ImmutableSet.of(
-                new SchemaTableName("exa_ple", "num_ers")));
+        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, Optional.of("exa_ple"))), ImmutableSet.of(
+                new SchemaTableName("exa_ple", "num_ers"),
+                new SchemaTableName("exa_ple", "table_with_float_col")));
 
         // unknown schema
-        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, "unknown")), ImmutableSet.of());
+        assertEquals(ImmutableSet.copyOf(metadata.listTables(SESSION, Optional.of("unknown"))), ImmutableSet.of());
     }
 
     @Test
     public void getColumnMetadata()
     {
         assertEquals(
-                metadata.getColumnMetadata(SESSION, tableHandle, new JdbcColumnHandle(CONNECTOR_ID, "text", VARCHAR)),
-                new ColumnMetadata("text", VARCHAR));
+                metadata.getColumnMetadata(SESSION, tableHandle, new JdbcColumnHandle(CONNECTOR_ID, "text", JDBC_VARCHAR, VARCHAR, true, Optional.empty())),
+                ColumnMetadata.builder().setName("text").setType(VARCHAR).build());
     }
 
-    @Test(expectedExceptions = PrestoException.class)
-    public void testCreateTable()
+    @Test
+    public void testCreateAndAlterTable()
     {
-        metadata.createTable(SESSION, new ConnectorTableMetadata(
-                new SchemaTableName("example", "foo"),
-                ImmutableList.of(new ColumnMetadata("text", VARCHAR))));
+        SchemaTableName table = new SchemaTableName("example", "foo");
+        metadata.createTable(SESSION, new ConnectorTableMetadata(table, ImmutableList.of(ColumnMetadata.builder().setName("text").setType(VARCHAR).build())), false);
+
+        JdbcTableHandle handle = metadata.getTableHandle(SESSION, table);
+
+        ConnectorTableMetadata layout = metadata.getTableMetadata(SESSION, handle);
+        assertEquals(layout.getTable(), table);
+        assertEquals(layout.getColumns().size(), 1);
+        assertEquals(layout.getColumns().get(0), ColumnMetadata.builder().setName("text").setType(VARCHAR).build());
+
+        metadata.addColumn(SESSION, handle, ColumnMetadata.builder().setName("x").setType(VARCHAR).build());
+        layout = metadata.getTableMetadata(SESSION, handle);
+        assertEquals(layout.getColumns().size(), 2);
+        assertEquals(layout.getColumns().get(0), ColumnMetadata.builder().setName("text").setType(VARCHAR).build());
+        assertEquals(layout.getColumns().get(1), ColumnMetadata.builder().setName("x").setType(VARCHAR).build());
+
+        JdbcColumnHandle columnHandle = new JdbcColumnHandle(CONNECTOR_ID, "x", JDBC_VARCHAR, VARCHAR, true, Optional.empty());
+        metadata.dropColumn(SESSION, handle, columnHandle);
+        layout = metadata.getTableMetadata(SESSION, handle);
+        assertEquals(layout.getColumns().size(), 1);
+        assertEquals(layout.getColumns().get(0), ColumnMetadata.builder().setName("text").setType(VARCHAR).build());
+
+        SchemaTableName newTableName = new SchemaTableName("example", "bar");
+        metadata.renameTable(SESSION, handle, newTableName);
+        handle = metadata.getTableHandle(SESSION, newTableName);
+        layout = metadata.getTableMetadata(SESSION, handle);
+        assertEquals(layout.getTable(), newTableName);
+        assertEquals(layout.getColumns().size(), 1);
+        assertEquals(layout.getColumns().get(0), ColumnMetadata.builder().setName("text").setType(VARCHAR).build());
     }
 
     @Test
@@ -186,8 +454,10 @@ public class TestJdbcMetadata
             assertEquals(e.getErrorCode(), PERMISSION_DENIED.toErrorCode());
         }
 
-        JdbcMetadataConfig config = new JdbcMetadataConfig().setAllowDropTable(true);
-        metadata = new JdbcMetadata(new JdbcConnectorId(CONNECTOR_ID), database.getJdbcClient(), config);
+        // Create BaseJdbcConfig with connection URL for drop table test
+        BaseJdbcConfig dropConfig = new BaseJdbcConfig();
+        dropConfig.setConnectionUrl("jdbc:h2:mem:test");
+        metadata = new JdbcMetadata(JdbcMetadataCache.createTransactionCache(jdbcMetadataCache, 100), database.getJdbcClient(), true, new DefaultTableLocationProvider(dropConfig));
         metadata.dropTable(SESSION, tableHandle);
 
         try {
@@ -197,5 +467,47 @@ public class TestJdbcMetadata
         catch (PrestoException e) {
             assertEquals(e.getErrorCode(), NOT_FOUND.toErrorCode());
         }
+    }
+
+    @Test
+    public void testCustomTableLocationProvider()
+    {
+        // Create a custom TableLocationProvider that returns a specific location
+        TableLocationProvider customProvider = new TableLocationProvider()
+        {
+            @Override
+            public String getTableLocation()
+            {
+                return "custom://test-location:8080/database";
+            }
+        };
+
+        // Create JdbcMetadata with the custom provider
+        JdbcMetadata customMetadata = new JdbcMetadata(JdbcMetadataCache.createTransactionCache(jdbcMetadataCache, 100), database.getJdbcClient(), false, customProvider);
+
+        // Verify that the metadata can be created and basic operations work
+        JdbcTableHandle customTableHandle = customMetadata.getTableHandle(SESSION, new SchemaTableName("example", "numbers"));
+        assertEquals(customTableHandle, tableHandle);
+
+        // Verify table metadata can be retrieved
+        ConnectorTableMetadata tableMetadata = customMetadata.getTableMetadata(SESSION, customTableHandle);
+        assertEquals(tableMetadata.getTable(), new SchemaTableName("example", "numbers"));
+        assertEquals(tableMetadata.getColumns().size(), 3);
+
+        // Verify column handles work
+        Map<String, ColumnHandle> columnHandles = customMetadata.getColumnHandles(SESSION, customTableHandle);
+        assertEquals(columnHandles.size(), 3);
+        assertTrue(columnHandles.containsKey("text"));
+        assertTrue(columnHandles.containsKey("text_short"));
+        assertTrue(columnHandles.containsKey("value"));
+
+        // Verify schema listing works
+        assertTrue(customMetadata.listSchemaNames(SESSION).containsAll(ImmutableSet.of("example", "tpch")));
+
+        // Verify table listing works
+        assertEquals(ImmutableSet.copyOf(customMetadata.listTables(SESSION, Optional.of("example"))), ImmutableSet.of(
+                new SchemaTableName("example", "numbers"),
+                new SchemaTableName("example", "view_source"),
+                new SchemaTableName("example", "view")));
     }
 }

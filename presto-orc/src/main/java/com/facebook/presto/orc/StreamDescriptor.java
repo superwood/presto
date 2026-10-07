@@ -13,36 +13,44 @@
  */
 package com.facebook.presto.orc;
 
+import com.facebook.presto.orc.StreamDescriptorFactory.AllStreams;
+import com.facebook.presto.orc.StreamDescriptorFactory.StreamProperty;
+import com.facebook.presto.orc.metadata.OrcType;
 import com.facebook.presto.orc.metadata.OrcType.OrcTypeKind;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 
+import static com.facebook.presto.orc.metadata.ColumnEncoding.DEFAULT_SEQUENCE_ID;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
 public final class StreamDescriptor
 {
-    private final String streamName;
+    private final AllStreams allStreams;
     private final int streamId;
-    private final OrcTypeKind streamType;
-    private final String fieldName;
-    private final OrcDataSource fileInput;
-    private final List<StreamDescriptor> nestedStreams;
+    private final int sequence;
 
-    public StreamDescriptor(String streamName, int streamId, String fieldName, OrcTypeKind streamType, OrcDataSource fileInput, List<StreamDescriptor> nestedStreams)
+    public StreamDescriptor(int streamId, AllStreams allStreams)
     {
-        this.streamName = requireNonNull(streamName, "streamName is null");
+        this(streamId, DEFAULT_SEQUENCE_ID, allStreams);
+    }
+
+    public StreamDescriptor(int streamId, int sequence, AllStreams allStreams)
+    {
         this.streamId = streamId;
-        this.fieldName = requireNonNull(fieldName, "fieldName is null");
-        this.streamType = requireNonNull(streamType, "type is null");
-        this.fileInput = requireNonNull(fileInput, "fileInput is null");
-        this.nestedStreams = ImmutableList.copyOf(requireNonNull(nestedStreams, "nestedStreams is null"));
+        this.sequence = sequence;
+        this.allStreams = requireNonNull(allStreams, "allStreams is null");
+    }
+
+    public StreamDescriptor duplicate(int sequence)
+    {
+        return new StreamDescriptor(streamId, sequence, allStreams);
     }
 
     public String getStreamName()
     {
-        return streamName;
+        return getStreamProperty().getStreamName();
     }
 
     public int getStreamId()
@@ -50,34 +58,64 @@ public final class StreamDescriptor
         return streamId;
     }
 
-    public OrcTypeKind getStreamType()
+    public int getSequence()
     {
-        return streamType;
+        return sequence;
+    }
+
+    public OrcTypeKind getOrcTypeKind()
+    {
+        return getOrcType().getOrcTypeKind();
+    }
+
+    public OrcType getOrcType()
+    {
+        return getStreamProperty().getOrcType();
     }
 
     public String getFieldName()
     {
-        return fieldName;
+        return getStreamProperty().getFieldName();
     }
 
-    public OrcDataSource getFileInput()
+    public OrcDataSourceId getOrcDataSourceId()
     {
-        return fileInput;
+        return getOrcDataSource().getId();
+    }
+
+    public OrcDataSource getOrcDataSource()
+    {
+        return allStreams.getOrcDataSource();
     }
 
     public List<StreamDescriptor> getNestedStreams()
     {
-        return nestedStreams;
+        List<Integer> nestedStreamIds = getStreamProperty().getNestedStreamIds();
+        if (nestedStreamIds.isEmpty()) {
+            return ImmutableList.of();
+        }
+
+        ImmutableList.Builder<StreamDescriptor> nestedStreamsBuilder = ImmutableList.builderWithExpectedSize(nestedStreamIds.size());
+        for (int nestedStreamId : nestedStreamIds) {
+            nestedStreamsBuilder.add(new StreamDescriptor(nestedStreamId, sequence, allStreams));
+        }
+        return nestedStreamsBuilder.build();
+    }
+
+    private StreamProperty getStreamProperty()
+    {
+        return allStreams.getStreamProperty(streamId);
     }
 
     @Override
     public String toString()
     {
         return toStringHelper(this)
-                .add("streamName", streamName)
+                .add("streamName", getStreamName())
                 .add("streamId", streamId)
-                .add("streamType", streamType)
-                .add("path", fileInput)
+                .add("sequence", sequence)
+                .add("orcType", getOrcType())
+                .add("dataSource", getOrcDataSourceId())
                 .toString();
     }
 }

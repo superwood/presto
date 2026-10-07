@@ -18,8 +18,10 @@ import com.facebook.presto.bytecode.MethodDefinition;
 import com.facebook.presto.bytecode.OpCode;
 import com.facebook.presto.bytecode.ParameterizedType;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Streams;
 
 import java.lang.invoke.MethodType;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
@@ -34,7 +36,8 @@ import static com.facebook.presto.bytecode.instruction.Constant.loadLong;
 import static com.facebook.presto.bytecode.instruction.Constant.loadNull;
 import static com.facebook.presto.bytecode.instruction.Constant.loadString;
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.collect.Iterables.transform;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.util.Arrays.stream;
 import static java.util.Objects.requireNonNull;
 
 public final class BytecodeExpressions
@@ -130,6 +133,14 @@ public final class BytecodeExpressions
         return new ConstantBytecodeExpression(String.class, loadString(value));
     }
 
+    public static BytecodeExpression defaultValue(ParameterizedType type)
+    {
+        if (type.isPrimitive()) {
+            return defaultValue(type.getPrimitiveType());
+        }
+        return constantNull(type);
+    }
+
     public static BytecodeExpression defaultValue(Class<?> type)
     {
         requireNonNull(type, "type is null");
@@ -210,6 +221,21 @@ public final class BytecodeExpressions
     // New instance
     //
 
+    public static BytecodeExpression newInstance(Constructor<?> constructor, BytecodeExpression... parameters)
+    {
+        return newInstance(constructor, ImmutableList.copyOf(parameters));
+    }
+
+    public static BytecodeExpression newInstance(Constructor<?> constructor, Iterable<? extends BytecodeExpression> parameters)
+    {
+        return newInstance(
+                type(constructor.getDeclaringClass()),
+                stream(constructor.getParameterTypes())
+                        .map(ParameterizedType::type)
+                        .collect(toImmutableList()),
+                parameters);
+    }
+
     public static BytecodeExpression newInstance(Class<?> returnType, BytecodeExpression... parameters)
     {
         return newInstance(type(returnType), ImmutableList.copyOf(requireNonNull(parameters, "parameters is null")));
@@ -233,13 +259,16 @@ public final class BytecodeExpressions
 
         return newInstance(
                 returnType,
-                ImmutableList.copyOf(transform(parameters, BytecodeExpression::getType)),
+                Streams.stream(parameters).map(BytecodeExpression::getType).collect(toImmutableList()),
                 parameters);
     }
 
     public static BytecodeExpression newInstance(Class<?> returnType, Iterable<? extends Class<?>> parameterTypes, BytecodeExpression... parameters)
     {
-        return newInstance(type(returnType), transform(parameterTypes, ParameterizedType::type), ImmutableList.copyOf(requireNonNull(parameters, "parameters is null")));
+        return newInstance(
+                type(returnType),
+                Streams.stream(parameterTypes).map(ParameterizedType::type).collect(toImmutableList()),
+                ImmutableList.copyOf(requireNonNull(parameters, "parameters is null")));
     }
 
     public static BytecodeExpression newInstance(ParameterizedType returnType, Iterable<ParameterizedType> parameterTypes, BytecodeExpression... parameters)
@@ -268,6 +297,16 @@ public final class BytecodeExpressions
         return new NewArrayBytecodeExpression(type, length);
     }
 
+    public static BytecodeExpression newArray(ParameterizedType type, BytecodeExpression... elements)
+    {
+        return new NewArrayBytecodeExpression(type, ImmutableList.copyOf(elements));
+    }
+
+    public static BytecodeExpression newArray(ParameterizedType type, Iterable<? extends BytecodeExpression> elements)
+    {
+        return new NewArrayBytecodeExpression(type, ImmutableList.copyOf(elements));
+    }
+
     public static BytecodeExpression length(BytecodeExpression instance)
     {
         return new ArrayLengthBytecodeExpression(instance);
@@ -287,19 +326,31 @@ public final class BytecodeExpressions
     // Invoke static method
     //
 
-    public static BytecodeExpression invokeStatic(MethodDefinition method,  BytecodeExpression... parameters)
+    public static BytecodeExpression invokeStatic(MethodDefinition method, BytecodeExpression... parameters)
     {
-        return invokeStatic(method.getDeclaringClass().getType(), method.getName(), method.getReturnType(), ImmutableList.copyOf(parameters));
+        return invokeStatic(
+                method.getDeclaringClass().getType(),
+                method.getName(),
+                method.getReturnType(),
+                method.getParameterTypes(),
+                ImmutableList.copyOf(parameters));
     }
 
-    public static BytecodeExpression invokeStatic(Method method,  BytecodeExpression... parameters)
+    public static BytecodeExpression invokeStatic(Method method, BytecodeExpression... parameters)
     {
         return invokeStatic(method, ImmutableList.copyOf(requireNonNull(parameters, "parameters is null")));
     }
 
-    public static BytecodeExpression invokeStatic(Method method,  Iterable<? extends BytecodeExpression> parameters)
+    public static BytecodeExpression invokeStatic(Method method, Iterable<? extends BytecodeExpression> parameters)
     {
-        return invokeStatic(method.getDeclaringClass(), method.getName(), method.getReturnType(), parameters);
+        return invokeStatic(
+                type(method.getDeclaringClass()),
+                method.getName(),
+                type(method.getReturnType()),
+                stream(method.getParameterTypes())
+                        .map(ParameterizedType::type)
+                        .collect(toImmutableList()),
+                parameters);
     }
 
     public static BytecodeExpression invokeStatic(Class<?> methodTargetType, String methodName, Class<?> returnType, BytecodeExpression... parameters)
@@ -330,9 +381,10 @@ public final class BytecodeExpressions
                 methodTargetType,
                 methodName,
                 returnType,
-                ImmutableList.copyOf(transform(parameters, BytecodeExpression::getType)),
+                Streams.stream(parameters).map(BytecodeExpression::getType).collect(toImmutableList()),
                 parameters);
     }
+
     public static BytecodeExpression invokeStatic(
             Class<?> methodTargetType,
             String methodName,
@@ -349,7 +401,7 @@ public final class BytecodeExpressions
                 type(methodTargetType),
                 methodName,
                 type(returnType),
-                transform(parameterTypes, ParameterizedType::type),
+                Streams.stream(parameterTypes).map(ParameterizedType::type).collect(toImmutableList()),
                 ImmutableList.copyOf(parameters));
     }
 
@@ -408,7 +460,7 @@ public final class BytecodeExpressions
                 bootstrapArgs,
                 methodName,
                 type(returnType),
-                ImmutableList.copyOf(transform(parameters, BytecodeExpression::getType)),
+                Streams.stream(parameters).map(BytecodeExpression::getType).collect(toImmutableList()),
                 parameters);
     }
 
@@ -437,7 +489,7 @@ public final class BytecodeExpressions
                 bootstrapArgs,
                 methodName,
                 returnType,
-                ImmutableList.copyOf(transform(parameters, BytecodeExpression::getType)),
+                Streams.stream(parameters).map(BytecodeExpression::getType).collect(toImmutableList()),
                 parameters);
     }
 
@@ -466,7 +518,7 @@ public final class BytecodeExpressions
                 bootstrapArgs,
                 methodName,
                 type(methodType.returnType()),
-                transform(methodType.parameterList(), ParameterizedType::type),
+                methodType.parameterList().stream().map(ParameterizedType::type).collect(toImmutableList()),
                 ImmutableList.copyOf(requireNonNull(parameters, "parameters is null")));
     }
 
@@ -583,6 +635,20 @@ public final class BytecodeExpressions
     public static BytecodeExpression notEqual(BytecodeExpression left, BytecodeExpression right)
     {
         return ComparisonBytecodeExpression.notEqual(left, right);
+    }
+
+    //
+    // Null comparison operations
+    //
+
+    public static BytecodeExpression isNull(BytecodeExpression value)
+    {
+        return equal(value, constantNull(value.getType()));
+    }
+
+    public static BytecodeExpression isNotNull(BytecodeExpression value)
+    {
+        return notEqual(value, constantNull(value.getType()));
     }
 
     //

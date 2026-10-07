@@ -6,8 +6,7 @@ Installation
     :maxdepth: 1
 
     installation/deployment
-    installation/cli
-    installation/jdbc
-    installation/verifier
-    installation/benchmark-driver
-    installation/tableau
+    installation/deploy-custom-plugins
+    installation/deploy-brew
+    installation/deploy-docker
+    installation/deploy-helm

@@ -13,24 +13,25 @@
  */
 package com.facebook.presto.decoder;
 
-import com.facebook.presto.spi.ErrorCode;
+import com.facebook.presto.common.ErrorCode;
+import com.facebook.presto.common.ErrorType;
 import com.facebook.presto.spi.ErrorCodeSupplier;
+
+import static com.facebook.presto.common.ErrorType.EXTERNAL;
 
 public enum DecoderErrorCode
         implements ErrorCodeSupplier
 {
-    // Connectors can use error codes starting at EXTERNAL
-
     /**
      * A requested data conversion is not supported.
      */
-    DECODER_CONVERSION_NOT_SUPPORTED(0x0200_0000);
+    DECODER_CONVERSION_NOT_SUPPORTED(0, EXTERNAL);
 
     private final ErrorCode errorCode;
 
-    DecoderErrorCode(int code)
+    DecoderErrorCode(int code, ErrorType type)
     {
-        errorCode = new ErrorCode(code, name());
+        errorCode = new ErrorCode(code + 0x0101_0000, name(), type);
     }
 
     @Override

@@ -15,32 +15,31 @@ package com.facebook.presto.hive;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.annotation.Nullable;
+import org.openjdk.jol.info.ClassLayout;
 
 import java.util.Objects;
+import java.util.Optional;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
 public final class HivePartitionKey
 {
-    public static final String HIVE_DEFAULT_DYNAMIC_PARTITION = "__HIVE_DEFAULT_PARTITION__";
+    private static final int INSTANCE_SIZE = ClassLayout.parseClass(HivePartitionKey.class).instanceSize() +
+            ClassLayout.parseClass(String.class).instanceSize() * 2;
+
     private final String name;
-    private final HiveType hiveType;
+    @Nullable
     private final String value;
 
     @JsonCreator
     public HivePartitionKey(
             @JsonProperty("name") String name,
-            @JsonProperty("hiveType") HiveType hiveType,
-            @JsonProperty("value") String value)
+            @JsonProperty("value") Optional<String> value)
     {
-        requireNonNull(name, "name is null");
-        requireNonNull(hiveType, "hiveType is null");
-        requireNonNull(value, "value is null");
-
-        this.name = name;
-        this.hiveType = hiveType;
-        this.value = value.equals(HIVE_DEFAULT_DYNAMIC_PARTITION) ? "\\N" : value;
+        this.name = requireNonNull(name, "name is null");
+        this.value = requireNonNull(value, "value is null").orElse(null);
     }
 
     @JsonProperty
@@ -50,15 +49,14 @@ public final class HivePartitionKey
     }
 
     @JsonProperty
-    public HiveType getHiveType()
+    public Optional<String> getValue()
     {
-        return hiveType;
+        return Optional.ofNullable(value);
     }
 
-    @JsonProperty
-    public String getValue()
+    public int getEstimatedSizeInBytes()
     {
-        return value;
+        return INSTANCE_SIZE + name.length() * Character.BYTES + (value == null ? 0 : value.length() * Character.BYTES);
     }
 
     @Override
@@ -66,7 +64,6 @@ public final class HivePartitionKey
     {
         return toStringHelper(this)
                 .add("name", name)
-                .add("hiveType", hiveType)
                 .add("value", value)
                 .toString();
     }
@@ -74,7 +71,7 @@ public final class HivePartitionKey
     @Override
     public int hashCode()
     {
-        return Objects.hash(name, hiveType, value);
+        return Objects.hash(name, value);
     }
 
     @Override
@@ -88,7 +85,6 @@ public final class HivePartitionKey
         }
         HivePartitionKey other = (HivePartitionKey) obj;
         return Objects.equals(this.name, other.name) &&
-                Objects.equals(this.hiveType, other.hiveType) &&
                 Objects.equals(this.value, other.value);
     }
 }

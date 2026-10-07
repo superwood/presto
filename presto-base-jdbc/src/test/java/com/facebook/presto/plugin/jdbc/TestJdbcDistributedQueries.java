@@ -13,23 +13,39 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.presto.Session;
+import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestQueries;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.tpch.TpchTable;
+import org.testng.annotations.Test;
 
 import static com.facebook.presto.plugin.jdbc.JdbcQueryRunner.createJdbcQueryRunner;
+import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 
 public class TestJdbcDistributedQueries
         extends AbstractTestQueries
 {
-    public TestJdbcDistributedQueries()
+    @Override
+    protected QueryRunner createQueryRunner()
             throws Exception
     {
-        super(createJdbcQueryRunner(TpchTable.getTables()));
+        return createJdbcQueryRunner(ImmutableMap.of(), TpchTable.getTables());
     }
 
     @Override
     public void testLargeIn()
-            throws Exception
     {
+    }
+
+    @Test
+    public void testNativeQueryParameters()
+    {
+        Session session = testSessionBuilder()
+                .addPreparedStatement("my_query_simple", "SELECT * FROM TABLE(system.query(query => ?))")
+                .addPreparedStatement("my_query", "SELECT * FROM TABLE(system.query(query => format('SELECT %s FROM %s', ?, ?)))")
+                .build();
+        assertQueryFails(session, "EXECUTE my_query_simple USING 'SELECT 1 a'", "line 1:21: Table function system.query not registered");
+        assertQueryFails(session, "EXECUTE my_query USING 'a', '(SELECT 2 a) t'", "line 1:21: Table function system.query not registered");
     }
 }

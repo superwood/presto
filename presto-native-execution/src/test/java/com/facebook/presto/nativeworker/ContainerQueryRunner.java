@@ -1,0 +1,532 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.facebook.presto.nativeworker;
+
+import com.facebook.presto.Session;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.cost.StatsCalculator;
+import com.facebook.presto.metadata.Metadata;
+import com.facebook.presto.spi.Plugin;
+import com.facebook.presto.spi.eventlistener.EventListener;
+import com.facebook.presto.split.PageSourceManager;
+import com.facebook.presto.split.SplitManager;
+import com.facebook.presto.sql.expressions.ExpressionOptimizerManager;
+import com.facebook.presto.sql.planner.ConnectorPlanOptimizerManager;
+import com.facebook.presto.sql.planner.NodePartitioningManager;
+import com.facebook.presto.sql.planner.sanity.PlanCheckerProviderManager;
+import com.facebook.presto.testing.MaterializedResult;
+import com.facebook.presto.testing.MaterializedRow;
+import com.facebook.presto.testing.QueryRunner;
+import com.facebook.presto.testing.TestingAccessControlManager;
+import com.facebook.presto.transaction.TransactionManager;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.Network;
+import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.utility.MountableFile;
+
+import java.io.IOException;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
+import java.util.logging.Logger;
+
+import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
+
+public class ContainerQueryRunner
+        implements QueryRunner
+{
+    protected static final Network network = Network.newNetwork();
+    protected static final Network networkExpected = Network.newNetwork();
+    protected static final String PRESTO_COORDINATOR_IMAGE = System.getProperty("coordinatorImage", "presto-coordinator:latest");
+    protected static final String PRESTO_WORKER_IMAGE = System.getProperty("workerImage", "presto-worker:latest");
+    protected static final String CONTAINER_TIMEOUT = System.getProperty("containerTimeout", "120");
+    protected static final String CLUSTER_SHUTDOWN_TIMEOUT = System.getProperty("clusterShutDownTimeout", "10");
+    protected static final String BASE_DIR = System.getProperty("user.dir");
+    protected static final int DEFAULT_COORDINATOR_PORT = 8080;
+    protected static final int DEFAULT_BASE_WORKER_PORT = 7778;
+    protected static final int DEFAULT_SIDECAR_PORT = 7777;
+    protected static final int DEFAULT_FUNCTION_SERVER_PORT = 1122;
+    protected static final String TPCH_CATALOG = "tpch";
+    protected static final String TINY_SCHEMA = "tiny";
+    protected static final int DEFAULT_NUMBER_OF_WORKERS = 4;
+    protected static final Logger logger = Logger.getLogger(ContainerQueryRunner.class.getName());
+    protected final GenericContainer<?> coordinator;
+    protected final List<GenericContainer<?>> workers = new ArrayList<>();
+    protected final Optional<GenericContainer<?>> sidecar;
+    protected final int coordinatorPort;
+    protected final String catalog;
+    protected final String schema;
+    protected final int numberOfWorkers;
+    protected GenericContainer<?> functionServer;
+    protected int functionServerPort;
+    protected boolean enableFunctionServer;
+    protected Connection connection;
+
+    public static class Config
+    {
+        private int coordinatorPort = DEFAULT_COORDINATOR_PORT;
+        private String catalog = TPCH_CATALOG;
+        private String schema = TINY_SCHEMA;
+        private int numberOfWorkers = DEFAULT_NUMBER_OF_WORKERS;
+        private boolean nativeCluster = true;
+        private boolean sidecarEnabled;
+        private int functionServerPort = DEFAULT_FUNCTION_SERVER_PORT;
+        private boolean functionServerEnabled;
+
+        public Config setCoordinatorPort(int coordinatorPort)
+        {
+            this.coordinatorPort = coordinatorPort;
+            return this;
+        }
+
+        public Config setCatalog(String catalog)
+        {
+            this.catalog = catalog;
+            return this;
+        }
+
+        public Config setSchema(String schema)
+        {
+            this.schema = schema;
+            return this;
+        }
+
+        public Config setNumberOfWorkers(int numberOfWorkers)
+        {
+            this.numberOfWorkers = numberOfWorkers;
+            return this;
+        }
+
+        public Config setNativeCluster(boolean nativeCluster)
+        {
+            this.nativeCluster = nativeCluster;
+            return this;
+        }
+
+        public Config setSidecarEnabled(boolean sidecarEnabled)
+        {
+            this.sidecarEnabled = sidecarEnabled;
+            return this;
+        }
+
+        public Config setFunctionServerPort(int functionServerPort)
+        {
+            this.functionServerPort = functionServerPort;
+            return this;
+        }
+
+        public Config setFunctionServerEnabled(boolean functionServerEnabled)
+        {
+            this.functionServerEnabled = functionServerEnabled;
+            return this;
+        }
+    }
+
+    public ContainerQueryRunner()
+            throws InterruptedException, IOException
+    {
+        this(new Config());
+    }
+
+    public ContainerQueryRunner(Config config)
+            throws IOException, InterruptedException
+    {
+        this(config.coordinatorPort, config.catalog, config.schema, config.numberOfWorkers,
+                config.nativeCluster, config.sidecarEnabled, config.functionServerPort, config.functionServerEnabled);
+    }
+
+    public ContainerQueryRunner(int coordinatorPort, String catalog, String schema, int numberOfWorkers, boolean isNativeCluster, boolean isSidecarEnabled, int functionServerPort, boolean enableFunctionServer)
+            throws IOException, InterruptedException
+    {
+        this.coordinatorPort = coordinatorPort;
+        this.catalog = catalog;
+        this.schema = schema;
+        this.functionServerPort = functionServerPort;
+        this.enableFunctionServer = enableFunctionServer;
+        this.numberOfWorkers = numberOfWorkers;
+
+        // Start function server first if enabled
+        if (enableFunctionServer) {
+            this.functionServer = createFunctionServer();
+            this.functionServer.start();
+            logger.info("Presto function server is deployed at http://" + functionServer.getHost() + ":" + functionServer.getMappedPort(functionServerPort));
+        }
+
+        if (isSidecarEnabled) {
+            GenericContainer<?> sidecarContainer = createSidecar(DEFAULT_SIDECAR_PORT, "sidecar", isNativeCluster);
+            sidecarContainer.start();
+            this.sidecar = Optional.of(sidecarContainer);
+        }
+        else {
+            this.sidecar = Optional.empty();
+        }
+
+        this.coordinator = createCoordinator(isNativeCluster, isSidecarEnabled);
+        coordinator.start();
+        startWorkers(numberOfWorkers, isNativeCluster, isSidecarEnabled);
+
+        TimeUnit.SECONDS.sleep(5);
+
+        startCoordinatorAndLogUI();
+        initializeConnection();
+        cleanupDirectories(numberOfWorkers, isNativeCluster, isSidecarEnabled, enableFunctionServer);
+    }
+
+    private void startWorkers(int numberOfWorkers, boolean isNativeCluster, boolean isSidecarEnabled)
+            throws InterruptedException, IOException
+    {
+        ContainerQueryRunnerUtils.deleteDirectory(BASE_DIR + "/testcontainers/coordinator");
+
+        if (isNativeCluster) {
+            for (int i = 0; i < numberOfWorkers; i++) {
+                workers.add(createNativeWorker(DEFAULT_BASE_WORKER_PORT + i, "native-worker-" + i, true, isSidecarEnabled, false));
+            }
+        }
+        else {
+            for (int i = 0; i < numberOfWorkers; i++) {
+                workers.add(createJavaWorker(DEFAULT_BASE_WORKER_PORT + i, "java-worker-" + i));
+            }
+        }
+
+        workers.forEach(GenericContainer::start);
+    }
+
+    private void cleanupDirectories(int numberOfWorkers, boolean isNativeCluster, boolean isSidecarEnabled, boolean isFunctionServerEnabled)
+    {
+        for (int i = 0; i < numberOfWorkers; i++) {
+            String workerType = isNativeCluster ? "native-worker-" : "java-worker-";
+            ContainerQueryRunnerUtils.deleteDirectory(BASE_DIR + "/testcontainers/" + workerType + i);
+        }
+
+        if (isSidecarEnabled) {
+            ContainerQueryRunnerUtils.deleteDirectory(BASE_DIR + "/testcontainers/sidecar");
+        }
+
+        if (isFunctionServerEnabled) {
+            ContainerQueryRunnerUtils.deleteDirectory(BASE_DIR + "/testcontainers/function-server");
+        }
+    }
+
+    private void startCoordinatorAndLogUI()
+    {
+        String dockerHostIp = coordinator.getHost();
+        logger.info("Presto UI is accessible at http://" + dockerHostIp + ":" + coordinator.getMappedPort(coordinatorPort));
+    }
+
+    private void initializeConnection()
+    {
+        String dockerHostIp = coordinator.getHost();
+        int mappedPort = coordinator.getMappedPort(coordinatorPort);
+
+        String url = String.format("jdbc:presto://%s:%s/%s/%s?%s",
+                dockerHostIp,
+                mappedPort,
+                catalog,
+                schema,
+                enableFunctionServer ? "timeZoneId=UTC&sessionProperties=remote_functions_enabled:true" : "timeZoneId=UTC");
+
+        try {
+            this.connection = DriverManager.getConnection(url, "test", null);
+        }
+        catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static Duration containerStartupTimeout()
+    {
+        try {
+            return Duration.ofSeconds(Long.parseLong(CONTAINER_TIMEOUT));
+        }
+        catch (NumberFormatException e) {
+            throw new IllegalArgumentException("containerTimeout must be a whole number of seconds, but was: " + CONTAINER_TIMEOUT, e);
+        }
+    }
+
+    protected GenericContainer<?> createCoordinator(boolean isNativeCluster, boolean isSidecarEnabled)
+            throws IOException
+    {
+        ContainerQueryRunnerUtils.createCoordinatorTpchProperties();
+        ContainerQueryRunnerUtils.createCoordinatorTpcdsProperties();
+        ContainerQueryRunnerUtils.createCoordinatorConfigProperties(coordinatorPort, isNativeCluster, isSidecarEnabled);
+        if (isSidecarEnabled && isNativeCluster) {
+            ContainerQueryRunnerUtils.createCoordinatorSidecarProperties();
+        }
+        ContainerQueryRunnerUtils.createCoordinatorJvmConfig();
+        ContainerQueryRunnerUtils.createCoordinatorLogProperties();
+        ContainerQueryRunnerUtils.createCoordinatorNodeProperties();
+        ContainerQueryRunnerUtils.createCoordinatorEntryPointScript(); // Never run function server in coordinator
+        if (enableFunctionServer) {
+            ContainerQueryRunnerUtils.createRestRemoteProperties(functionServerPort);
+        }
+
+        return new GenericContainer<>(PRESTO_COORDINATOR_IMAGE)
+                .withNetwork(isNativeCluster ? network : networkExpected)
+                .withNetworkAliases("presto-coordinator")
+                .withCopyFileToContainer(MountableFile.forHostPath(BASE_DIR + "/testcontainers/coordinator/etc"), "/opt/presto-server/etc")
+                .withCopyFileToContainer(MountableFile.forHostPath(BASE_DIR + "/testcontainers/coordinator/entrypoint.sh"), "/opt/entrypoint.sh")
+                .waitingFor(Wait.forLogMessage(".*======== SERVER STARTED ========.*", 1))
+                .withStartupTimeout(containerStartupTimeout())
+                .withExposedPorts(coordinatorPort);
+    }
+    protected GenericContainer<?> createJavaWorker(int port, String nodeId)
+            throws IOException
+    {
+        ContainerQueryRunnerUtils.createJavaWorkerConfigProperties(port, coordinatorPort, nodeId);
+        ContainerQueryRunnerUtils.createNativeWorkerTpchProperties(nodeId);
+        ContainerQueryRunnerUtils.createJavaEntryPointScript(nodeId);
+        ContainerQueryRunnerUtils.createNativeWorkerNodeProperties(nodeId);
+        return new GenericContainer<>(PRESTO_COORDINATOR_IMAGE)
+                .withExposedPorts(port)
+                .withNetwork(networkExpected)
+                .withNetworkAliases(nodeId)
+                .withCopyFileToContainer(MountableFile.forHostPath(BASE_DIR + "/testcontainers/" + nodeId + "/etc"), "/opt/presto-server/etc")
+                .withCopyFileToContainer(MountableFile.forHostPath(BASE_DIR + "/testcontainers/" + nodeId + "/entrypoint.sh"), "/opt/entrypoint.sh")
+                // No explicit wait strategy, so the default host-port strategy applies; bound it by
+                // CONTAINER_TIMEOUT rather than the Testcontainers default.
+                .withStartupTimeout(containerStartupTimeout());
+    }
+
+    protected GenericContainer<?> createSidecar(int port, String nodeId, boolean isNativeCluster)
+            throws IOException
+    {
+        return createNativeWorker(port, nodeId, isNativeCluster, true, true);
+    }
+
+    private GenericContainer<?> createNativeWorker(int port, String nodeId, boolean isNativeCluster, boolean isSidecarEnabled, boolean isSidecarNode)
+            throws IOException
+    {
+        ContainerQueryRunnerUtils.createNativeWorkerConfigProperties(coordinatorPort, port, functionServerPort, nodeId, isSidecarEnabled, isSidecarNode);
+        if (!isSidecarEnabled) {
+            ContainerQueryRunnerUtils.createNativeWorkerTpchProperties(nodeId);
+        }
+        ContainerQueryRunnerUtils.createNativeWorkerEntryPointScript(nodeId);
+        ContainerQueryRunnerUtils.createNativeWorkerNodeProperties(nodeId);
+        return new GenericContainer<>(PRESTO_WORKER_IMAGE)
+                .withExposedPorts(port)
+                .withNetwork(isNativeCluster ? network : networkExpected)
+                .withNetworkAliases(nodeId)
+                .withCopyFileToContainer(MountableFile.forHostPath(BASE_DIR + "/testcontainers/" + nodeId + "/etc"), "/opt/presto-server/etc")
+                .withCopyFileToContainer(MountableFile.forHostPath(BASE_DIR + "/testcontainers/" + nodeId + "/entrypoint.sh"), "/opt/entrypoint.sh")
+                .waitingFor(isSidecarNode ? Wait.forListeningPort() : Wait.forLogMessage(".*Announcement succeeded: HTTP 202.*", 1))
+                .withStartupTimeout(containerStartupTimeout());
+    }
+
+    protected GenericContainer<?> createFunctionServer()
+            throws IOException
+    {
+        ContainerQueryRunnerUtils.createFunctionServerConfigProperties(functionServerPort);
+        ContainerQueryRunnerUtils.createFunctionServerEntryPointScript();
+
+        // Reuse the coordinator image since it already contains the function server jar
+        return new GenericContainer<>(PRESTO_COORDINATOR_IMAGE)
+                .withNetwork(network)
+                .withNetworkAliases("presto-remote-function-server")
+                .withCopyFileToContainer(MountableFile.forHostPath(BASE_DIR + "/testcontainers/function-server/etc"), "/opt/function-server/etc")
+                .withCopyFileToContainer(MountableFile.forHostPath(BASE_DIR + "/testcontainers/function-server/entrypoint.sh"), "/opt/entrypoint.sh")
+                .waitingFor(Wait.forLogMessage(".*======== REMOTE FUNCTION SERVER STARTED at: .*", 1))
+                .withStartupTimeout(containerStartupTimeout())
+                .withExposedPorts(functionServerPort);
+    }
+
+    @Override
+    public void close()
+    {
+        try {
+            TimeUnit.SECONDS.sleep(Long.parseLong(CLUSTER_SHUTDOWN_TIMEOUT));
+        }
+        catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+        coordinator.stop();
+        workers.forEach(GenericContainer::stop);
+        sidecar.ifPresent(GenericContainer::stop);
+        if (functionServer != null) {
+            functionServer.stop();
+        }
+    }
+
+    @Override
+    public TransactionManager getTransactionManager()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Metadata getMetadata()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public SplitManager getSplitManager()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public PageSourceManager getPageSourceManager()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public NodePartitioningManager getNodePartitioningManager()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public ConnectorPlanOptimizerManager getPlanOptimizerManager()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public PlanCheckerProviderManager getPlanCheckerProviderManager()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public StatsCalculator getStatsCalculator()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public List<EventListener> getEventListeners()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public TestingAccessControlManager getAccessControl()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public ExpressionOptimizerManager getExpressionManager()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public MaterializedResult execute(String sql)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public MaterializedResult execute(Session session, String sql, List<? extends Type> resultTypes)
+    {
+        // Added logic similar to H2QueryRunner.
+        try {
+            Statement statement = connection.createStatement();
+            ResultSet resultSet = statement.executeQuery(sql);
+            MaterializedResult rawResult = ContainerQueryRunnerUtils.toMaterializedResult(resultSet);
+
+            // Coerce the raw result to the requested resultTypes
+            List<MaterializedRow> coercedRows = new ArrayList<>();
+            for (MaterializedRow row : rawResult.getMaterializedRows()) {
+                List<Object> coercedValues = new ArrayList<>();
+                for (int i = 0; i < resultTypes.size(); i++) {
+                    Object value = row.getField(i);
+                    coercedValues.add(value);
+                }
+                coercedRows.add(new MaterializedRow(MaterializedResult.DEFAULT_PRECISION, coercedValues));
+            }
+            return new MaterializedResult(coercedRows, resultTypes);
+        }
+        catch (SQLException e) {
+            throw new RuntimeException("Error executing query: " + sql, e);
+        }
+    }
+
+    @Override
+    public List<QualifiedObjectName> listTables(Session session, String catalog, String schema)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean tableExists(Session session, String table)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void installPlugin(Plugin plugin)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void createCatalog(String catalogName, String connectorName, Map<String, String> properties)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void loadFunctionNamespaceManager(String functionNamespaceManagerName, String catalogName, Map<String, String> properties)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Lock getExclusiveLock()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public int getNodeCount()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Session getDefaultSession()
+    {
+        return testSessionBuilder()
+                .setCatalog(catalog)
+                .setSchema(schema)
+                .build();
+    }
+
+    @Override
+    public MaterializedResult execute(Session session, String sql)
+    {
+        try {
+            Statement statement = connection.createStatement();
+            ResultSet resultSet = statement.executeQuery(sql);
+            return ContainerQueryRunnerUtils.toMaterializedResult(resultSet);
+        }
+        catch (SQLException e) {
+            throw new RuntimeException("Error executing query: " + sql + "\n" + e.getMessage(), e);
+        }
+    }
+}

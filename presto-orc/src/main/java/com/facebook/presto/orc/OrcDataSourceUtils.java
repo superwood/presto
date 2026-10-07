@@ -13,22 +13,25 @@
  */
 package com.facebook.presto.orc;
 
+import com.facebook.airlift.units.DataSize;
 import com.google.common.collect.ImmutableList;
-import com.google.common.primitives.Ints;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
-import io.airlift.units.DataSize;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
-import static com.google.common.collect.Lists.newArrayList;
+import static java.lang.Math.toIntExact;
 
 public final class OrcDataSourceUtils
 {
+    public static final int EXPECTED_FOOTER_SIZE_IN_BYTES = 16 * 1024;
+
     private OrcDataSourceUtils()
     {
     }
@@ -36,10 +39,10 @@ public final class OrcDataSourceUtils
     /**
      * Merge disk ranges that are closer than {@code maxMergeDistance}.
      */
-    public static List<DiskRange> mergeAdjacentDiskRanges(Iterable<DiskRange> diskRanges, DataSize maxMergeDistance, DataSize maxReadSize)
+    public static List<DiskRange> mergeAdjacentDiskRanges(Collection<DiskRange> diskRanges, DataSize maxMergeDistance, DataSize maxReadSize)
     {
         // sort ranges by start offset
-        List<DiskRange> ranges = newArrayList(diskRanges);
+        List<DiskRange> ranges = new ArrayList<>(diskRanges);
         Collections.sort(ranges, new Comparator<DiskRange>()
         {
             @Override
@@ -81,7 +84,7 @@ public final class OrcDataSourceUtils
             DiskRange bufferRange = bufferEntry.getKey();
             byte[] buffer = bufferEntry.getValue();
             if (bufferRange.contains(diskRange)) {
-                int offset = Ints.checkedCast(diskRange.getOffset() - bufferRange.getOffset());
+                int offset = toIntExact(diskRange.getOffset() - bufferRange.getOffset());
                 return Slices.wrappedBuffer(buffer, offset, diskRange.getLength());
             }
         }

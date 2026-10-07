@@ -13,7 +13,8 @@
  */
 package com.facebook.presto.spi;
 
-import com.facebook.presto.spi.predicate.TupleDomain;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.spi.relation.RowExpression;
 
 import java.util.List;
 import java.util.Objects;
@@ -28,10 +29,12 @@ public class ConnectorTableLayout
     private final ConnectorTableLayoutHandle handle;
     private final Optional<List<ColumnHandle>> columns;
     private final TupleDomain<ColumnHandle> predicate;
-    private final Optional<ConnectorNodePartitioning> nodePartitioning;
+    private final Optional<ConnectorTablePartitioning> tablePartitioning;
     private final Optional<Set<ColumnHandle>> streamPartitioningColumns;
     private final Optional<DiscretePredicates> discretePredicates;
     private final List<LocalProperty<ColumnHandle>> localProperties;
+    private final Optional<RowExpression> remainingPredicate;
+    private final Optional<ColumnHandle> uniqueColumn;
 
     public ConnectorTableLayout(ConnectorTableLayoutHandle handle)
     {
@@ -41,33 +44,64 @@ public class ConnectorTableLayout
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
-                emptyList());
+                emptyList(),
+                Optional.empty());
     }
 
     public ConnectorTableLayout(
             ConnectorTableLayoutHandle handle,
             Optional<List<ColumnHandle>> columns,
             TupleDomain<ColumnHandle> predicate,
-            Optional<ConnectorNodePartitioning> nodePartitioning,
+            Optional<ConnectorTablePartitioning> tablePartitioning,
             Optional<Set<ColumnHandle>> streamPartitioningColumns,
             Optional<DiscretePredicates> discretePredicates,
             List<LocalProperty<ColumnHandle>> localProperties)
     {
+        this(handle, columns, predicate, tablePartitioning, streamPartitioningColumns, discretePredicates, localProperties, Optional.empty());
+    }
+
+    public ConnectorTableLayout(
+            ConnectorTableLayoutHandle handle,
+            Optional<List<ColumnHandle>> columns,
+            TupleDomain<ColumnHandle> predicate,
+            Optional<ConnectorTablePartitioning> tablePartitioning,
+            Optional<Set<ColumnHandle>> streamPartitioningColumns,
+            Optional<DiscretePredicates> discretePredicates,
+            List<LocalProperty<ColumnHandle>> localProperties,
+            Optional<RowExpression> remainingPredicate)
+    {
+        this(handle, columns, predicate, tablePartitioning, streamPartitioningColumns, discretePredicates, localProperties, remainingPredicate, Optional.empty());
+    }
+
+    public ConnectorTableLayout(
+            ConnectorTableLayoutHandle handle,
+            Optional<List<ColumnHandle>> columns,
+            TupleDomain<ColumnHandle> predicate,
+            Optional<ConnectorTablePartitioning> tablePartitioning,
+            Optional<Set<ColumnHandle>> streamPartitioningColumns,
+            Optional<DiscretePredicates> discretePredicates,
+            List<LocalProperty<ColumnHandle>> localProperties,
+            Optional<RowExpression> remainingPredicate,
+            Optional<ColumnHandle> uniqueColumn)
+    {
         requireNonNull(handle, "handle is null");
         requireNonNull(columns, "columns is null");
         requireNonNull(streamPartitioningColumns, "partitioningColumns is null");
-        requireNonNull(nodePartitioning, "nodePartitioning is null");
+        requireNonNull(tablePartitioning, "tablePartitioning is null");
         requireNonNull(predicate, "predicate is null");
         requireNonNull(discretePredicates, "discretePredicates is null");
         requireNonNull(localProperties, "localProperties is null");
+        requireNonNull(remainingPredicate, "remainingPredicate is null");
 
         this.handle = handle;
         this.columns = columns;
-        this.nodePartitioning = nodePartitioning;
+        this.tablePartitioning = tablePartitioning;
         this.streamPartitioningColumns = streamPartitioningColumns;
         this.predicate = predicate;
         this.discretePredicates = discretePredicates;
         this.localProperties = localProperties;
+        this.remainingPredicate = remainingPredicate;
+        this.uniqueColumn = uniqueColumn;
     }
 
     public ConnectorTableLayoutHandle getHandle()
@@ -84,12 +118,30 @@ public class ConnectorTableLayout
     }
 
     /**
-     * A predicate that describes the universe of data in this layout. It may be used by the query engine to
-     * infer additional properties and perform further optimizations
+     * A TupleDomain that represents a predicate that every row this TableScan node
+     * produces is guaranteed to satisfy.
+     * <p>
+     * This guarantee can have different origins.
+     * For example, it may be successful predicate push down, or inherent guarantee provided by the underlying data.
      */
     public TupleDomain<ColumnHandle> getPredicate()
     {
         return predicate;
+    }
+
+    /**
+     * Returns the remaining predicates after the tuple domain push down in getTableLayout(). This doesn't have overlap with the {@code predicate} and {@code discretePredicates}.
+     * Note that if the predicate is fully pushed down to the connector, it may reference columns which are not in the output of the table scan if the columns are not used in the
+     * downstream plan.
+     */
+    public Optional<RowExpression> getRemainingPredicate()
+    {
+        return remainingPredicate;
+    }
+
+    public Optional<ColumnHandle> getUniqueColumn()
+    {
+        return uniqueColumn;
     }
 
     /**
@@ -98,9 +150,9 @@ public class ConnectorTableLayout
      * If the table is node partitioned, the connector guarantees that each combination of values for
      * the distributed columns will be contained within a single worker.
      */
-    public Optional<ConnectorNodePartitioning> getNodePartitioning()
+    public Optional<ConnectorTablePartitioning> getTablePartitioning()
     {
-        return nodePartitioning;
+        return tablePartitioning;
     }
 
     /**
@@ -138,7 +190,7 @@ public class ConnectorTableLayout
     @Override
     public int hashCode()
     {
-        return Objects.hash(handle, columns, predicate, discretePredicates, streamPartitioningColumns, nodePartitioning, localProperties);
+        return Objects.hash(handle, columns, predicate, discretePredicates, streamPartitioningColumns, tablePartitioning, localProperties);
     }
 
     @Override
@@ -156,7 +208,7 @@ public class ConnectorTableLayout
                 && Objects.equals(this.predicate, other.predicate)
                 && Objects.equals(this.discretePredicates, other.discretePredicates)
                 && Objects.equals(this.streamPartitioningColumns, other.streamPartitioningColumns)
-                && Objects.equals(this.nodePartitioning, other.nodePartitioning)
+                && Objects.equals(this.tablePartitioning, other.tablePartitioning)
                 && Objects.equals(this.localProperties, other.localProperties);
     }
 }

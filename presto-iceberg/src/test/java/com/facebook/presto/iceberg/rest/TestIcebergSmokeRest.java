@@ -1,0 +1,259 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.facebook.presto.iceberg.rest;
+
+import com.facebook.airlift.http.server.testing.TestingHttpServer;
+import com.facebook.presto.hive.NodeVersion;
+import com.facebook.presto.hive.azure.HiveAzureConfig;
+import com.facebook.presto.hive.azure.HiveAzureConfigurationInitializer;
+import com.facebook.presto.hive.gcs.HiveGcsConfig;
+import com.facebook.presto.hive.gcs.HiveGcsConfigurationInitializer;
+import com.facebook.presto.hive.s3.HiveS3Config;
+import com.facebook.presto.hive.s3.PrestoS3ConfigurationUpdater;
+import com.facebook.presto.iceberg.IcebergCatalogName;
+import com.facebook.presto.iceberg.IcebergConfig;
+import com.facebook.presto.iceberg.IcebergDistributedSmokeTestBase;
+import com.facebook.presto.iceberg.IcebergNativeCatalogFactory;
+import com.facebook.presto.iceberg.IcebergQueryRunner;
+import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.testing.QueryRunner;
+import org.apache.iceberg.Table;
+import org.apache.iceberg.rest.RESTCatalog;
+import org.assertj.core.util.Files;
+import org.testng.annotations.AfterClass;
+import org.testng.annotations.BeforeClass;
+import org.testng.annotations.Test;
+
+import java.io.File;
+import java.util.Map;
+import java.util.Optional;
+
+import static com.facebook.presto.iceberg.CatalogType.REST;
+import static com.facebook.presto.iceberg.IcebergQueryRunner.ICEBERG_CATALOG;
+import static com.facebook.presto.iceberg.IcebergUtil.getNativeIcebergTable;
+import static com.facebook.presto.iceberg.rest.AuthenticationType.BASIC;
+import static com.facebook.presto.iceberg.rest.AuthenticationType.OAUTH2;
+import static com.facebook.presto.iceberg.rest.IcebergRestCatalogFactory.REST_PROXY_HOSTNAME;
+import static com.facebook.presto.iceberg.rest.IcebergRestCatalogFactory.REST_PROXY_PASSWORD;
+import static com.facebook.presto.iceberg.rest.IcebergRestCatalogFactory.REST_PROXY_PORT;
+import static com.facebook.presto.iceberg.rest.IcebergRestCatalogFactory.REST_PROXY_USERNAME;
+import static com.facebook.presto.iceberg.rest.IcebergRestTestUtil.getRestServer;
+import static com.facebook.presto.iceberg.rest.IcebergRestTestUtil.restConnectorProperties;
+import static com.google.common.io.MoreFiles.deleteRecursively;
+import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
+import static java.lang.String.format;
+import static org.apache.iceberg.rest.auth.AuthProperties.AUTH_TYPE;
+import static org.apache.iceberg.rest.auth.AuthProperties.AUTH_TYPE_BASIC;
+import static org.apache.iceberg.rest.auth.AuthProperties.BASIC_PASSWORD;
+import static org.apache.iceberg.rest.auth.AuthProperties.BASIC_USERNAME;
+import static org.apache.iceberg.rest.auth.OAuth2Properties.OAUTH2_SERVER_URI;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertNull;
+
+@Test
+public class TestIcebergSmokeRest
+        extends IcebergDistributedSmokeTestBase
+{
+    private File warehouseLocation;
+    private TestingHttpServer restServer;
+    private String serverUri;
+
+    public TestIcebergSmokeRest()
+    {
+        super(REST);
+    }
+
+    @BeforeClass
+    @Override
+    public void init()
+            throws Exception
+    {
+        warehouseLocation = Files.newTemporaryFolder();
+
+        restServer = getRestServer(warehouseLocation.getAbsolutePath());
+        restServer.start();
+
+        serverUri = restServer.getBaseUrl().toString();
+        super.init();
+    }
+
+    @AfterClass
+    public void tearDown()
+            throws Exception
+    {
+        if (restServer != null) {
+            restServer.stop();
+        }
+        deleteRecursively(warehouseLocation.toPath(), ALLOW_INSECURE);
+    }
+
+    @Override
+    protected String getLocation(String schema, String table)
+    {
+        return format("%s/%s/%s", warehouseLocation, schema, table);
+    }
+
+    @Override
+    protected QueryRunner createQueryRunner()
+            throws Exception
+    {
+        return IcebergQueryRunner.builder()
+                .setCatalogType(REST)
+                .setExtraConnectorProperties(restConnectorProperties(serverUri))
+                .setDataDirectory(Optional.of(warehouseLocation.toPath()))
+                .build().getQueryRunner();
+    }
+
+    protected IcebergNativeCatalogFactory getCatalogFactory(IcebergRestConfig restConfig)
+    {
+        IcebergConfig icebergConfig = new IcebergConfig()
+                .setCatalogType(REST)
+                .setCatalogWarehouse(warehouseLocation.getAbsolutePath());
+
+        return new IcebergRestCatalogFactory(
+                icebergConfig,
+                restConfig,
+                new IcebergCatalogName(ICEBERG_CATALOG),
+                new PrestoS3ConfigurationUpdater(new HiveS3Config()),
+                new HiveGcsConfigurationInitializer(new HiveGcsConfig()),
+                new HiveAzureConfigurationInitializer(new HiveAzureConfig()),
+                new NodeVersion("test_version"));
+    }
+
+    @Override
+    protected Table getIcebergTable(ConnectorSession session, String schema, String tableName)
+    {
+        IcebergRestConfig restConfig = new IcebergRestConfig().setServerUri(serverUri);
+        return getNativeIcebergTable(getCatalogFactory(restConfig),
+                session,
+                SchemaTableName.valueOf(schema + "." + tableName));
+    }
+
+    @Test
+    public void testSetOauth2ServerUriPropertyI()
+    {
+        String authEndpoint = "http://localhost:8888";
+        IcebergRestConfig restConfig = new IcebergRestConfig()
+                .setServerUri(serverUri)
+                .setAuthenticationType(OAUTH2)
+                .setToken("SXVLUXUhIExFQ0tFUiEK")
+                .setAuthenticationServerUri(authEndpoint);
+
+        IcebergRestCatalogFactory catalogFactory = (IcebergRestCatalogFactory) getCatalogFactory(restConfig);
+        RESTCatalog catalog = (RESTCatalog) catalogFactory.getCatalog(getSession().toConnectorSession());
+
+        assertEquals(catalog.properties().get(OAUTH2_SERVER_URI), authEndpoint);
+    }
+
+    @Test
+    public void testBasicAuthCatalogProperties()
+    {
+        IcebergRestConfig restConfig = new IcebergRestConfig()
+                .setServerUri(serverUri)
+                .setAuthenticationType(BASIC)
+                .setBasicAuthUsername("alice")
+                .setBasicAuthPassword("s3cr3t");
+
+        IcebergRestCatalogFactory catalogFactory = (IcebergRestCatalogFactory) getCatalogFactory(restConfig);
+        RESTCatalog catalog = (RESTCatalog) catalogFactory.getCatalog(getSession().toConnectorSession());
+        Map<String, String> properties = catalog.properties();
+
+        assertEquals(properties.get(AUTH_TYPE), AUTH_TYPE_BASIC);
+        assertEquals(properties.get(BASIC_USERNAME), "alice");
+        assertEquals(properties.get(BASIC_PASSWORD), "s3cr3t");
+    }
+
+    @Test
+    public void testNoAuthTypeLeavesAuthPropertiesAbsent()
+    {
+        IcebergRestConfig restConfig = new IcebergRestConfig()
+                .setServerUri(serverUri);
+
+        IcebergRestCatalogFactory catalogFactory = (IcebergRestCatalogFactory) getCatalogFactory(restConfig);
+        RESTCatalog catalog = (RESTCatalog) catalogFactory.getCatalog(getSession().toConnectorSession());
+        Map<String, String> properties = catalog.properties();
+
+        assertNull(properties.get(AUTH_TYPE));
+        assertNull(properties.get(BASIC_USERNAME));
+        assertNull(properties.get(BASIC_PASSWORD));
+    }
+
+    @Test
+    public void testAllProxyProperties()
+    {
+        IcebergRestConfig restConfig = new IcebergRestConfig()
+                .setServerUri(serverUri)
+                .setProxyHostname("proxy.example.com")
+                .setProxyPort(8080)
+                .setProxyUsername("proxyUser")
+                .setProxyPassword("proxyPass");
+
+        IcebergRestCatalogFactory catalogFactory = (IcebergRestCatalogFactory) getCatalogFactory(restConfig);
+        Map<String, String> properties = catalogFactory.getCatalogProperties(getSession().toConnectorSession());
+
+        assertEquals(properties.get(REST_PROXY_HOSTNAME), "proxy.example.com");
+        assertEquals(properties.get(REST_PROXY_PORT), "8080");
+        assertEquals(properties.get(REST_PROXY_USERNAME), "proxyUser");
+        assertEquals(properties.get(REST_PROXY_PASSWORD), "proxyPass");
+    }
+
+    @Test
+    public void testProxyHostAndPortWithoutCredentials()
+    {
+        IcebergRestConfig restConfig = new IcebergRestConfig()
+                .setServerUri(serverUri)
+                .setProxyHostname("proxy.example.com")
+                .setProxyPort(8080);
+
+        IcebergRestCatalogFactory catalogFactory = (IcebergRestCatalogFactory) getCatalogFactory(restConfig);
+        Map<String, String> properties = catalogFactory.getCatalogProperties(getSession().toConnectorSession());
+
+        assertEquals(properties.get(REST_PROXY_HOSTNAME), "proxy.example.com");
+        assertEquals(properties.get(REST_PROXY_PORT), "8080");
+        assertNull(properties.get(REST_PROXY_USERNAME));
+        assertNull(properties.get(REST_PROXY_PASSWORD));
+    }
+
+    @Test
+    public void testProxyIgnoredWithoutPort()
+    {
+        IcebergRestConfig restConfig = new IcebergRestConfig()
+                .setServerUri(serverUri)
+                .setProxyHostname("proxy.example.com");
+
+        IcebergRestCatalogFactory catalogFactory = (IcebergRestCatalogFactory) getCatalogFactory(restConfig);
+        Map<String, String> properties = catalogFactory.getCatalogProperties(getSession().toConnectorSession());
+
+        assertNull(properties.get(REST_PROXY_HOSTNAME));
+        assertNull(properties.get(REST_PROXY_PORT));
+        assertNull(properties.get(REST_PROXY_USERNAME));
+        assertNull(properties.get(REST_PROXY_PASSWORD));
+    }
+
+    @Test
+    public void testNoProxy()
+    {
+        IcebergRestConfig restConfig = new IcebergRestConfig()
+                .setServerUri(serverUri);
+
+        IcebergRestCatalogFactory catalogFactory = (IcebergRestCatalogFactory) getCatalogFactory(restConfig);
+        Map<String, String> properties = catalogFactory.getCatalogProperties(getSession().toConnectorSession());
+
+        assertNull(properties.get(REST_PROXY_HOSTNAME));
+        assertNull(properties.get(REST_PROXY_PORT));
+        assertNull(properties.get(REST_PROXY_USERNAME));
+        assertNull(properties.get(REST_PROXY_PASSWORD));
+    }
+}

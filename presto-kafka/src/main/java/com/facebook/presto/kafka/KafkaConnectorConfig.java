@@ -13,41 +13,27 @@
  */
 package com.facebook.presto.kafka;
 
-import com.facebook.presto.spi.HostAddress;
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigDescription;
+import com.facebook.airlift.units.Duration;
+import com.facebook.airlift.units.MinDuration;
+import com.facebook.presto.kafka.schema.file.FileTableDescriptionSupplier;
+import com.facebook.presto.kafka.server.file.FileKafkaClusterMetadataSupplier;
 import com.google.common.base.Splitter;
-import com.google.common.collect.ImmutableSet;
-import io.airlift.configuration.Config;
-import io.airlift.units.DataSize;
-import io.airlift.units.DataSize.Unit;
-import io.airlift.units.Duration;
-import io.airlift.units.MinDuration;
-
-import javax.validation.constraints.NotNull;
-import javax.validation.constraints.Size;
+import com.google.common.collect.ImmutableList;
+import jakarta.validation.constraints.NotNull;
 
 import java.io.File;
-import java.util.Set;
+import java.util.List;
 
-import static com.google.common.collect.Iterables.transform;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 
 public class KafkaConnectorConfig
 {
-    private static final int KAFKA_DEFAULT_PORT = 9092;
-
-    /**
-     * Seed nodes for Kafka cluster. At least one must exist.
-     */
-    private Set<HostAddress> nodes = ImmutableSet.of();
-
     /**
      * Timeout to connect to Kafka.
      */
     private Duration kafkaConnectTimeout = Duration.valueOf("10s");
-
-    /**
-     * Buffer size for connecting to Kafka.
-     */
-    private DataSize kafkaBufferSize = new DataSize(64, Unit.KILOBYTE);
 
     /**
      * The schema name to use in the connector.
@@ -55,45 +41,36 @@ public class KafkaConnectorConfig
     private String defaultSchema = "default";
 
     /**
-     * Set of tables known to this connector. For each table, a description file may be present in the catalog folder which describes columns for the given topic.
-     */
-    private Set<String> tableNames = ImmutableSet.of();
-
-    /**
-     * Folder holding the JSON description files for Kafka topics.
-     */
-    private File tableDescriptionDir = new File("etc/kafka/");
-
-    /**
      * Whether internal columns are shown in table metadata or not. Default is no.
      */
     private boolean hideInternalColumns = true;
 
-    @NotNull
-    public File getTableDescriptionDir()
-    {
-        return tableDescriptionDir;
-    }
+    /**
+     * Maximum number of records per poll()
+     */
+    private int maxPollRecords = 500;
 
-    @Config("kafka.table-description-dir")
-    public KafkaConnectorConfig setTableDescriptionDir(File tableDescriptionDir)
-    {
-        this.tableDescriptionDir = tableDescriptionDir;
-        return this;
-    }
+    /**
+     * Maximum number of bytes from one partition per poll()
+     */
+    private int maxPartitionFetchBytes = 1024 * 1024;
 
-    @NotNull
-    public Set<String> getTableNames()
-    {
-        return tableNames;
-    }
+    /**
+     * The table description supplier to use, default is FILE
+     */
+    private String tableDescriptionSupplier = FileTableDescriptionSupplier.NAME;
 
-    @Config("kafka.table-names")
-    public KafkaConnectorConfig setTableNames(String tableNames)
-    {
-        this.tableNames = ImmutableSet.copyOf(Splitter.on(',').omitEmptyStrings().trimResults().split(tableNames));
-        return this;
-    }
+    /**
+     * The kafka cluster metadata supplier to use, default is FILE
+     */
+    private String clusterMetadataSupplier = FileKafkaClusterMetadataSupplier.NAME;
+
+    /**
+     * The resourceConfigFiles to use for additional properties, default is empty
+     */
+    private List<File> resourceConfigFiles = ImmutableList.of();
+
+    private boolean caseSensitiveNameMatching;
 
     @NotNull
     public String getDefaultSchema()
@@ -105,19 +82,6 @@ public class KafkaConnectorConfig
     public KafkaConnectorConfig setDefaultSchema(String defaultSchema)
     {
         this.defaultSchema = defaultSchema;
-        return this;
-    }
-
-    @Size(min = 1)
-    public Set<HostAddress> getNodes()
-    {
-        return nodes;
-    }
-
-    @Config("kafka.nodes")
-    public KafkaConnectorConfig setNodes(String nodes)
-    {
-        this.nodes = (nodes == null) ? null : parseNodes(nodes);
         return this;
     }
 
@@ -134,15 +98,53 @@ public class KafkaConnectorConfig
         return this;
     }
 
-    public DataSize getKafkaBufferSize()
+    public int getMaxPollRecords()
     {
-        return kafkaBufferSize;
+        return maxPollRecords;
     }
 
-    @Config("kafka.buffer-size")
-    public KafkaConnectorConfig setKafkaBufferSize(String kafkaBufferSize)
+    @Config("kafka.max-poll-records")
+    public KafkaConnectorConfig setMaxPollRecords(int maxPollRecords)
     {
-        this.kafkaBufferSize = DataSize.valueOf(kafkaBufferSize);
+        this.maxPollRecords = maxPollRecords;
+        return this;
+    }
+
+    public int getMaxPartitionFetchBytes()
+    {
+        return maxPartitionFetchBytes;
+    }
+
+    @Config("kafka.max-partition-fetch-bytes")
+    public KafkaConnectorConfig setMaxPartitionFetchBytes(int maxPartitionFetchBytes)
+    {
+        this.maxPartitionFetchBytes = maxPartitionFetchBytes;
+        return this;
+    }
+
+    @NotNull
+    public String getTableDescriptionSupplier()
+    {
+        return tableDescriptionSupplier;
+    }
+
+    @Config("kafka.table-description-supplier")
+    public KafkaConnectorConfig setTableDescriptionSupplier(String tableDescriptionSupplier)
+    {
+        this.tableDescriptionSupplier = tableDescriptionSupplier;
+        return this;
+    }
+
+    @NotNull
+    public String getClusterMetadataSupplier()
+    {
+        return clusterMetadataSupplier;
+    }
+
+    @Config("kafka.cluster-metadata-supplier")
+    public KafkaConnectorConfig setClusterMetadataSupplier(String clusterMetadataSupplier)
+    {
+        this.clusterMetadataSupplier = clusterMetadataSupplier;
         return this;
     }
 
@@ -158,14 +160,33 @@ public class KafkaConnectorConfig
         return this;
     }
 
-    public static ImmutableSet<HostAddress> parseNodes(String nodes)
+    @NotNull
+    public List<File> getResourceConfigFiles()
     {
-        Splitter splitter = Splitter.on(',').omitEmptyStrings().trimResults();
-        return ImmutableSet.copyOf(transform(splitter.split(nodes), KafkaConnectorConfig::toHostAddress));
+        return resourceConfigFiles;
     }
 
-    private static HostAddress toHostAddress(String value)
+    @Config("kafka.config.resources")
+    @ConfigDescription("Optional config files")
+    public KafkaConnectorConfig setResourceConfigFiles(String files)
     {
-        return HostAddress.fromString(value).withDefaultPort(KAFKA_DEFAULT_PORT);
+        this.resourceConfigFiles = Splitter.on(',').trimResults().omitEmptyStrings().splitToList(files).stream()
+                .map(File::new)
+                .collect(toImmutableList());
+        return this;
+    }
+
+    public boolean isCaseSensitiveNameMatching()
+    {
+        return caseSensitiveNameMatching;
+    }
+
+    @Config("case-sensitive-name-matching")
+    @ConfigDescription("Enable case-sensitive matching of schema, table names across the connector. " +
+            "When disabled, names are matched case-insensitively using lowercase normalization.")
+    public KafkaConnectorConfig setCaseSensitiveNameMatching(boolean caseSensitiveNameMatchingEnabled)
+    {
+        this.caseSensitiveNameMatching = caseSensitiveNameMatchingEnabled;
+        return this;
     }
 }

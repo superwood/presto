@@ -29,7 +29,7 @@ write your queries without a ``FROM`` clause or use the ``VALUES`` syntax.
 Presto Verifier
 ---------------
 
-There is a new project, :doc:`/installation/verifier`, which can be used to
+There is a new project, :doc:`/admin/verifier`, which can be used to
 verify a set of queries against two different clusters.
 
 Connector Improvements
@@ -55,9 +55,9 @@ parameters string which has the form ``key=value,key=value``
 General Changes
 ---------------
 
-* New comparison functions: :func:`greatest` and :func:`least`
+* New comparison functions: :func:`!greatest` and :func:`!least`
 
-* New window functions: :func:`first_value`, :func:`last_value`, and :func:`nth_value`
+* New window functions: :func:`!first_value`, :func:`!last_value`, and :func:`!nth_value`
 
 * We have added a config option to disable falling back to the interpreter when
   expressions fail to be compiled to bytecode. To set this option, add 

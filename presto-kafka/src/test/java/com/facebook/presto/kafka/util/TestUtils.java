@@ -13,28 +13,38 @@
  */
 package com.facebook.presto.kafka.util;
 
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.kafka.KafkaConnectorConfig;
 import com.facebook.presto.kafka.KafkaPlugin;
 import com.facebook.presto.kafka.KafkaTopicDescription;
-import com.facebook.presto.metadata.QualifiedObjectName;
+import com.facebook.presto.kafka.schema.MapBasedTableDescriptionSupplier;
+import com.facebook.presto.kafka.schema.TableDescriptionSupplier;
+import com.facebook.presto.kafka.server.KafkaClusterMetadataSupplier;
+import com.facebook.presto.kafka.server.file.FileKafkaClusterMetadataSupplier;
+import com.facebook.presto.kafka.server.file.FileKafkaClusterMetadataSupplierConfig;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.TestingPrestoClient;
-import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.ByteStreams;
-import io.airlift.json.JsonCodec;
+import org.apache.kafka.clients.producer.KafkaProducer;
 
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.util.AbstractMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 
-import static com.facebook.presto.kafka.util.EmbeddedKafka.CloseableProducer;
+import static com.facebook.airlift.configuration.ConditionalModule.installModuleIf;
+import static com.facebook.presto.kafka.ConfigurationAwareModules.combine;
 import static java.lang.String.format;
 
 public final class TestUtils
 {
+    private static final String TEST = "test";
+
     private TestUtils() {}
 
     public static int findUnusedPort()
@@ -54,42 +64,61 @@ public final class TestUtils
         return properties;
     }
 
-    public static void installKafkaPlugin(EmbeddedKafka embeddedKafka, QueryRunner queryRunner, Map<SchemaTableName, KafkaTopicDescription> topicDescriptions)
+    public static void installKafkaPlugin(EmbeddedKafka embeddedKafka, QueryRunner queryRunner, Map<SchemaTableName, KafkaTopicDescription> topicDescriptions, Map<String, String> connectorProperties)
     {
-        KafkaPlugin kafkaPlugin = new KafkaPlugin();
-        kafkaPlugin.setTableDescriptionSupplier(() -> topicDescriptions);
+        FileKafkaClusterMetadataSupplierConfig clusterMetadataSupplierConfig = new FileKafkaClusterMetadataSupplierConfig();
+        clusterMetadataSupplierConfig.setNodes(embeddedKafka.getConnectString());
+        KafkaPlugin kafkaPlugin = new KafkaPlugin(combine(
+                installModuleIf(
+                        KafkaConnectorConfig.class,
+                        kafkaConfig -> kafkaConfig.getTableDescriptionSupplier().equalsIgnoreCase(TEST),
+                        binder -> binder.bind(TableDescriptionSupplier.class)
+                                .toInstance(new MapBasedTableDescriptionSupplier(topicDescriptions))),
+                installModuleIf(
+                        KafkaConnectorConfig.class,
+                        kafkaConfig -> kafkaConfig.getClusterMetadataSupplier().equalsIgnoreCase(TEST),
+                        binder -> binder.bind(KafkaClusterMetadataSupplier.class)
+                                .toInstance(new FileKafkaClusterMetadataSupplier(clusterMetadataSupplierConfig)))));
+
         queryRunner.installPlugin(kafkaPlugin);
 
-        Map<String, String> kafkaConfig = ImmutableMap.of(
-                "kafka.nodes", embeddedKafka.getConnectString(),
-                "kafka.table-names", Joiner.on(",").join(topicDescriptions.keySet()),
-                "kafka.connect-timeout", "120s",
-                "kafka.default-schema", "default");
-        queryRunner.createCatalog("kafka", "kafka", kafkaConfig);
+        ImmutableMap.Builder<String, String> kafkaConfigBuilder = ImmutableMap.builder();
+        kafkaConfigBuilder.put("kafka.cluster-metadata-supplier", TEST);
+        kafkaConfigBuilder.put("kafka.table-description-supplier", TEST);
+        kafkaConfigBuilder.put("kafka.connect-timeout", "120s");
+        kafkaConfigBuilder.put("kafka.default-schema", "default");
+
+        kafkaConfigBuilder.putAll(connectorProperties);
+
+        queryRunner.createCatalog("kafka", "kafka", kafkaConfigBuilder.build());
+    }
+
+    public static void installKafkaPlugin(EmbeddedKafka embeddedKafka, QueryRunner queryRunner, Map<SchemaTableName, KafkaTopicDescription> topicDescriptions)
+    {
+        installKafkaPlugin(embeddedKafka, queryRunner, topicDescriptions, ImmutableMap.of());
     }
 
     public static void loadTpchTopic(EmbeddedKafka embeddedKafka, TestingPrestoClient prestoClient, String topicName, QualifiedObjectName tpchTableName)
     {
-        try (CloseableProducer<Long, Object> producer = embeddedKafka.createProducer();
+        try (KafkaProducer<Long, Object> producer = embeddedKafka.createProducer();
                 KafkaLoader tpchLoader = new KafkaLoader(producer, topicName, prestoClient.getServer(), prestoClient.getDefaultSession())) {
             tpchLoader.execute(format("SELECT * from %s", tpchTableName));
         }
     }
 
-    public static Map.Entry<SchemaTableName, KafkaTopicDescription> loadTpchTopicDescription(JsonCodec<KafkaTopicDescription> topicDescriptionJsonCodec, String topicName, SchemaTableName schemaTableName)
+    public static Map.Entry<SchemaTableName, KafkaTopicDescription> loadTpchTopicDescription(JsonCodec<KafkaTopicDescription> topicDescriptionJsonCodec, String topicName, SchemaTableName schemaTableName, String fileName)
             throws IOException
     {
-        KafkaTopicDescription tpchTemplate = topicDescriptionJsonCodec.fromJson(ByteStreams.toByteArray(TestUtils.class.getResourceAsStream(format("/tpch/%s.json", schemaTableName.getTableName()))));
+        KafkaTopicDescription tpchTemplate = topicDescriptionJsonCodec.fromJson(ByteStreams.toByteArray(TestUtils.class.getResourceAsStream(format("/tpch/%s.json", fileName))));
 
         return new AbstractMap.SimpleImmutableEntry<>(
                 schemaTableName,
-                new KafkaTopicDescription(schemaTableName.getTableName(), schemaTableName.getSchemaName(), topicName, tpchTemplate.getKey(), tpchTemplate.getMessage()));
+                new KafkaTopicDescription(schemaTableName.getTableName(), Optional.of(schemaTableName.getSchemaName()), topicName, tpchTemplate.getKey(), tpchTemplate.getMessage()));
     }
-
     public static Map.Entry<SchemaTableName, KafkaTopicDescription> createEmptyTopicDescription(String topicName, SchemaTableName schemaTableName)
     {
         return new AbstractMap.SimpleImmutableEntry<>(
                 schemaTableName,
-                new KafkaTopicDescription(schemaTableName.getTableName(), schemaTableName.getSchemaName(), topicName, null, null));
+                new KafkaTopicDescription(schemaTableName.getTableName(), Optional.of(schemaTableName.getSchemaName()), topicName, Optional.empty(), Optional.empty()));
     }
 }

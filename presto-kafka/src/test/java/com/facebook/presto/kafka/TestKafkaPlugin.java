@@ -13,148 +13,125 @@
  */
 package com.facebook.presto.kafka;
 
-import com.facebook.presto.spi.HostAddress;
-import com.facebook.presto.spi.Node;
-import com.facebook.presto.spi.NodeManager;
-import com.facebook.presto.spi.NodeState;
 import com.facebook.presto.spi.connector.Connector;
 import com.facebook.presto.spi.connector.ConnectorFactory;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
-import com.google.common.collect.ImmutableList;
+import com.facebook.presto.testing.TestingConnectorContext;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import org.testng.annotations.Test;
 
-import java.net.URI;
-import java.util.List;
-import java.util.Optional;
-import java.util.Set;
-import java.util.UUID;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
-import static org.testng.Assert.assertEquals;
+import static com.facebook.airlift.testing.Assertions.assertInstanceOf;
+import static com.google.common.collect.Iterables.getOnlyElement;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 import static org.testng.Assert.assertNotNull;
 
 @Test
 public class TestKafkaPlugin
 {
     @Test
-    public ConnectorFactory testConnectorExists()
-    {
-        KafkaPlugin plugin = new KafkaPlugin();
-        plugin.setTypeManager(new TestingTypeManager());
-        plugin.setNodeManager(new TestingNodeManager());
-
-        List<ConnectorFactory> factories = plugin.getServices(ConnectorFactory.class);
-        assertNotNull(factories);
-        assertEquals(factories.size(), 1);
-        ConnectorFactory factory = factories.get(0);
-        assertNotNull(factory);
-        return factory;
-    }
-
-    @Test
     public void testSpinup()
     {
-        ConnectorFactory factory = testConnectorExists();
-        Connector c = factory.create("test-connector", ImmutableMap.<String, String>builder()
-                .put("kafka.table-names", "test")
-                .put("kafka.nodes", "localhost:9092")
-                .build());
+        KafkaPlugin plugin = new KafkaPlugin();
+
+        ConnectorFactory factory = getOnlyElement(plugin.getConnectorFactories());
+        assertInstanceOf(factory, KafkaConnectorFactory.class);
+
+        Connector c = factory.create(
+                "test-connector",
+                ImmutableMap.<String, String>builder()
+                        .put("kafka.table-names", "test")
+                        .put("kafka.nodes", "localhost:9092")
+                        .build(),
+                new TestingConnectorContext());
         assertNotNull(c);
     }
 
-    private static class TestingTypeManager
-            implements TypeManager
+    @Test
+    public void testSslSpinup()
+            throws IOException
     {
-        @Override
-        public Type getType(TypeSignature signature)
-        {
-            return null;
-        }
+        KafkaPlugin plugin = new KafkaPlugin();
 
-        @Override
-        public Type getParameterizedType(String baseTypeName, List<TypeSignatureParameter> typeParameters)
-        {
-            return null;
-        }
+        ConnectorFactory factory = getOnlyElement(plugin.getConnectorFactories());
+        assertThat(factory).isInstanceOf(KafkaConnectorFactory.class);
 
-        @Override
-        public Type getParameterizedType(String baseTypeName, List<TypeSignature> typeParameters, List<String> literalParameters)
-        {
-            return null;
-        }
+        String secret = "confluent";
+        Path truststorePath = Files.createTempFile("truststore", ".jks");
 
-        @Override
-        public List<Type> getTypes()
-        {
-            return ImmutableList.of();
-        }
+        writeToFile(truststorePath, secret);
 
-        @Override
-        public Optional<Type> getCommonSuperType(List<? extends Type> types)
-        {
-            return Optional.empty();
-        }
-
-        @Override
-        public Optional<Type> getCommonSuperType(Type firstType, Type secondType)
-        {
-            return Optional.empty();
-        }
+        Connector connector = factory.create(
+                "test-connector",
+                ImmutableMap.<String, String>builder()
+                        .put("kafka.table-names", "test")
+                        .put("kafka.nodes", "localhost:9092")
+                        .put("kafka.security-protocol", "SASL_SSL")
+                        .put("kafka.sasl.jaas.config", "org.apache.kafka.common.security.scram.ScramLoginModule required username=\"testuser\" password=\"testpassword\"")
+                        .put("kafka.sasl.mechanism", "SCRAM-SHA-512")
+                        .put("kafka.truststore.type", "JKS")
+                        .put("kafka.truststore.path", truststorePath.toString())
+                        .put("kafka.truststore.password", "truststore-password")
+                        .buildOrThrow(),
+                new TestingConnectorContext());
+        assertThat(connector).isNotNull();
+        connector.shutdown();
     }
 
-    private static class TestingNodeManager
-            implements NodeManager
+    @Test
+    public void testConfigResourceSpinup()
+            throws IOException
     {
-        private static final Node LOCAL_NODE = new TestingNode();
+        KafkaPlugin plugin = new KafkaPlugin();
 
-        @Override
-        public Set<Node> getNodes(NodeState state)
-        {
-            return ImmutableSet.of(LOCAL_NODE);
-        }
+        ConnectorFactory factory = getOnlyElement(plugin.getConnectorFactories());
+        assertThat(factory).isInstanceOf(KafkaConnectorFactory.class);
 
-        @Override
-        public Set<Node> getActiveDatasourceNodes(String datasourceName)
-        {
-            return ImmutableSet.of(LOCAL_NODE);
-        }
+        String nativeContent = "security.protocol=SSL";
+        Path nativeKafkaResourcePath = Files.createTempFile("native_kafka", ".properties");
+        writeToFile(nativeKafkaResourcePath, nativeContent);
 
-        @Override
-        public Node getCurrentNode()
-        {
-            return LOCAL_NODE;
-        }
-
-        @Override
-        public Set<Node> getCoordinators()
-        {
-            return ImmutableSet.of(LOCAL_NODE);
-        }
+        Connector connector = factory.create(
+                "test-connector",
+                ImmutableMap.<String, String>builder()
+                        .put("kafka.table-names", "test")
+                        .put("kafka.nodes", "localhost:9092")
+                        .put("kafka.config.resources", nativeKafkaResourcePath.toString())
+                        .buildOrThrow(),
+                new TestingConnectorContext());
+        assertThat(connector).isNotNull();
+        connector.shutdown();
     }
 
-    private static class TestingNode
-            implements Node
+    @Test
+    public void testResourceConfigMissingFileSpindown()
     {
-        @Override
-        public HostAddress getHostAndPort()
-        {
-            return HostAddress.fromParts("localhost", 8080);
-        }
+        KafkaPlugin plugin = new KafkaPlugin();
 
-        @Override
-        public URI getHttpUri()
-        {
-            return URI.create("http://localhost:8080/");
-        }
+        ConnectorFactory factory = getOnlyElement(plugin.getConnectorFactories());
+        assertThat(factory).isInstanceOf(KafkaConnectorFactory.class);
 
-        @Override
-        public String getNodeIdentifier()
-        {
-            return UUID.randomUUID().toString();
+        assertThatThrownBy(() -> factory.create(
+                "test-connector",
+                ImmutableMap.<String, String>builder()
+                        .put("kafka.table-names", "test")
+                        .put("kafka.nodes", "localhost:9092")
+                        .put("kafka.security-protocol", "SASL_PLAINTEXT")
+                        .put("kafka.config.resources", "/not/a/real/path")
+                        .buildOrThrow(),
+                new TestingConnectorContext()))
+                .hasMessageContaining("IllegalArgumentException: File does not exist: /not/a/real/path");
+    }
+
+    private void writeToFile(Path filepath, String content)
+            throws IOException
+    {
+        try (FileWriter writer = new FileWriter(filepath.toFile())) {
+            writer.write(content);
         }
     }
 }

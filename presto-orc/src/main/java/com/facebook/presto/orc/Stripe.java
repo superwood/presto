@@ -14,10 +14,13 @@
 package com.facebook.presto.orc;
 
 import com.facebook.presto.orc.metadata.ColumnEncoding;
-import com.facebook.presto.orc.stream.StreamSources;
+import com.facebook.presto.orc.reader.LongDictionaryProvider;
+import com.facebook.presto.orc.stream.InputStreamSources;
 import com.google.common.collect.ImmutableList;
 
+import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
@@ -25,16 +28,20 @@ import static java.util.Objects.requireNonNull;
 public class Stripe
 {
     private final long rowCount;
-    private final List<ColumnEncoding> columnEncodings;
+    private final Map<Integer, ColumnEncoding> columnEncodings;
     private final List<RowGroup> rowGroups;
-    private final StreamSources dictionaryStreamSources;
+    private final InputStreamSources dictionaryStreamSources;
+    private final LongDictionaryProvider longDictionaryProvider;
+    private final ZoneId timezone;
 
-    public Stripe(long rowCount, List<ColumnEncoding> columnEncodings, List<RowGroup> rowGroups, StreamSources dictionaryStreamSources)
+    public Stripe(long rowCount, Map<Integer, ColumnEncoding> columnEncodings, List<RowGroup> rowGroups, InputStreamSources dictionaryStreamSources, ZoneId timezone)
     {
         this.rowCount = rowCount;
         this.columnEncodings = requireNonNull(columnEncodings, "columnEncodings is null");
         this.rowGroups = ImmutableList.copyOf(requireNonNull(rowGroups, "rowGroups is null"));
         this.dictionaryStreamSources = requireNonNull(dictionaryStreamSources, "dictionaryStreamSources is null");
+        this.longDictionaryProvider = new LongDictionaryProvider(this.dictionaryStreamSources);
+        this.timezone = requireNonNull(timezone, "timezone is null");
     }
 
     public long getRowCount()
@@ -42,7 +49,7 @@ public class Stripe
         return rowCount;
     }
 
-    public List<ColumnEncoding> getColumnEncodings()
+    public Map<Integer, ColumnEncoding> getColumnEncodings()
     {
         return columnEncodings;
     }
@@ -52,9 +59,19 @@ public class Stripe
         return rowGroups;
     }
 
-    public StreamSources getDictionaryStreamSources()
+    public InputStreamSources getDictionaryStreamSources()
     {
         return dictionaryStreamSources;
+    }
+
+    public LongDictionaryProvider getLongDictionaryProvider()
+    {
+        return longDictionaryProvider;
+    }
+
+    public ZoneId getTimezone()
+    {
+        return timezone;
     }
 
     @Override
@@ -65,6 +82,8 @@ public class Stripe
                 .add("columnEncodings", columnEncodings)
                 .add("rowGroups", rowGroups)
                 .add("dictionaryStreams", dictionaryStreamSources)
+                .add("longDictionaryProvider", longDictionaryProvider)
+                .add("timezone", timezone)
                 .toString();
     }
 }

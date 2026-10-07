@@ -13,97 +13,185 @@
  */
 package com.facebook.presto.cassandra;
 
+import com.facebook.presto.testing.MaterializedResult;
+import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestDistributedQueries;
-import io.airlift.tpch.TpchTable;
-import org.testng.annotations.Test;
+import com.google.common.collect.ImmutableMap;
+import org.testng.annotations.Optional;
 
-import static com.facebook.presto.cassandra.CassandraQueryRunner.createCassandraQueryRunner;
-import static com.facebook.presto.cassandra.CassandraQueryRunner.createSampledSession;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.testing.MaterializedResult.resultBuilder;
+import static com.facebook.presto.testing.assertions.Assert.assertEquals;
 
-@Test(singleThreaded = true)
+//Integrations tests fail when parallel, due to a bug or configuration error in the embedded
+//cassandra instance. This problem results in either a hang in Thrift calls or broken sockets.
+
 public class TestCassandraDistributed
         extends AbstractTestDistributedQueries
 {
-    public TestCassandraDistributed()
+    @Override
+    protected QueryRunner createQueryRunner()
             throws Exception
     {
-        super(createCassandraQueryRunner(TpchTable.getTables()), createSampledSession());
+        CassandraServer server = SharedCassandraServer.getInstance();
+        QueryRunner queryRunner = CassandraQueryRunner.createCassandraQueryRunner(server, ImmutableMap.of());
+        SharedCassandraServer.ensureTpchTablesCreated(queryRunner);
+        return queryRunner;
+    }
+    @Override
+    protected boolean supportsViews()
+    {
+        return false;
     }
 
     @Override
-    public void testGroupingSetMixedExpressionAndColumn()
-            throws Exception
+    protected boolean supportsNotNullColumns()
     {
-        // Cassandra does not support DATE
+        return false;
     }
 
-    @Override
-    public void testGroupingSetMixedExpressionAndOrdinal()
-            throws Exception
+    public void testJoinWithLessThanOnDatesInJoinClause()
     {
         // Cassandra does not support DATE
     }
 
     @Override
     public void testRenameTable()
-            throws Exception
     {
         // Cassandra does not support renaming tables
     }
 
     @Override
     public void testAddColumn()
-            throws Exception
     {
         // Cassandra does not support adding columns
     }
 
     @Override
     public void testRenameColumn()
-            throws Exception
     {
         // Cassandra does not support renaming columns
     }
 
     @Override
-    public void testView()
-            throws Exception
+    public void testDropColumn()
     {
-        // Cassandra connector currently does not support views
-    }
-
-    @Override
-    public void testCompatibleTypeChangeForView()
-            throws Exception
-    {
-        // Cassandra connector currently does not support views
-    }
-
-    @Override
-    public void testViewMetadata()
-            throws Exception
-    {
-        // Cassandra connector currently does not support views
+        // Cassandra does not support dropping columns
     }
 
     @Override
     public void testInsert()
-            throws Exception
     {
-        // Cassandra connector currently does not support insert
+        // TODO Cassandra connector supports inserts, but the test would fail
     }
 
     @Override
     public void testCreateTable()
-            throws Exception
     {
         // Cassandra connector currently does not support create table
     }
 
     @Override
     public void testDelete()
-            throws Exception
     {
         // Cassandra connector currently does not support delete
+    }
+
+    @Override
+    public void testNonAutoCommitTransactionWithFailAndRollback()
+    {
+        // Ignore since Cassandra connector currently does not support create table
+    }
+
+    @Override
+    public void testUpdate()
+    {
+        // Updates are not supported by the connector
+    }
+
+    @Override
+    public void testShowColumns(@Optional("PARQUET") String storageFormat)
+    {
+        MaterializedResult actual = computeActual("SHOW COLUMNS FROM orders");
+
+        MaterializedResult expectedParametrizedVarchar = resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR, BIGINT, BIGINT, BIGINT)
+                .row("orderkey", "bigint", "", "", Long.valueOf(19), null, null)
+                .row("custkey", "bigint", "", "", Long.valueOf(19), null, null)
+                .row("orderstatus", "varchar", "", "", null, null, Long.valueOf(2147483647))
+                .row("totalprice", "double", "", "", Long.valueOf(53), null, null)
+                .row("orderdate", "date", "", "", null, null, null)
+                .row("orderpriority", "varchar", "", "", null, null, Long.valueOf(2147483647))
+                .row("clerk", "varchar", "", "", null, null, Long.valueOf(2147483647))
+                .row("shippriority", "integer", "", "", Long.valueOf(10), null, null)
+                .row("comment", "varchar", "", "", null, null, Long.valueOf(2147483647))
+                .build();
+
+        assertEquals(actual, expectedParametrizedVarchar);
+    }
+
+    @Override
+    public void testDescribeOutput()
+    {
+        // this connector uses a non-canonical type for varchar columns in tpch
+    }
+
+    @Override
+    public void testDescribeOutputNamedAndUnnamed()
+    {
+        // this connector uses a non-canonical type for varchar columns in tpch
+    }
+
+    @Override
+    public void testWrittenStats()
+    {
+        // TODO Cassandra connector supports CTAS and inserts, but the test would fail
+    }
+
+    @Override
+    public void testPayloadJoinApplicability()
+    {
+        // no op -- test not supported due to lack of support for array types.
+    }
+
+    @Override
+    public void testPayloadJoinCorrectness()
+    {
+        // no op -- test not supported due to lack of support for array types.
+    }
+    @Override
+    public void testNonAutoCommitTransactionWithCommit()
+    {
+        // Connector only supports writes using ctas
+    }
+
+    @Override
+    public void testNonAutoCommitTransactionWithRollback()
+    {
+        // Connector only supports writes using ctas
+    }
+
+    @Override
+    public void testRemoveRedundantCastToVarcharInJoinClause()
+    {
+        // no op -- test not supported due to lack of support for array types.
+    }
+
+    @Override
+    public void testStringFilters()
+    {
+        // no op -- test not supported due to lack of support for char type.
+    }
+
+    @Override
+    public void testSubfieldAccessControl()
+    {
+        // no op -- test not supported due to lack of support for array types.
+    }
+
+    @Override
+    protected String getDateExpression(String storageFormat, String columnExpression)
+    {
+        return "cast(" + columnExpression + " as DATE)";
     }
 }

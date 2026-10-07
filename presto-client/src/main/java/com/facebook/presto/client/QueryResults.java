@@ -13,51 +13,26 @@
  */
 package com.facebook.presto.client;
 
-import com.facebook.presto.spi.type.NamedTypeSignature;
-import com.facebook.presto.spi.type.ParameterKind;
-import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
+import com.facebook.presto.spi.PrestoWarning;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.Immutable;
-import javax.validation.constraints.NotNull;
+import com.google.errorprone.annotations.Immutable;
+import jakarta.annotation.Nullable;
 
 import java.net.URI;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
-import static com.facebook.presto.spi.type.StandardTypes.ARRAY;
-import static com.facebook.presto.spi.type.StandardTypes.BIGINT;
-import static com.facebook.presto.spi.type.StandardTypes.BOOLEAN;
-import static com.facebook.presto.spi.type.StandardTypes.DATE;
-import static com.facebook.presto.spi.type.StandardTypes.DOUBLE;
-import static com.facebook.presto.spi.type.StandardTypes.INTERVAL_DAY_TO_SECOND;
-import static com.facebook.presto.spi.type.StandardTypes.INTERVAL_YEAR_TO_MONTH;
-import static com.facebook.presto.spi.type.StandardTypes.JSON;
-import static com.facebook.presto.spi.type.StandardTypes.MAP;
-import static com.facebook.presto.spi.type.StandardTypes.ROW;
-import static com.facebook.presto.spi.type.StandardTypes.TIME;
-import static com.facebook.presto.spi.type.StandardTypes.TIMESTAMP;
-import static com.facebook.presto.spi.type.StandardTypes.TIMESTAMP_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.StandardTypes.TIME_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.StandardTypes.VARCHAR;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.client.FixJsonDataUtils.fixData;
+import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.Iterables.unmodifiableIterable;
-import static java.util.Collections.unmodifiableList;
 import static java.util.Objects.requireNonNull;
 
 @Immutable
 public class QueryResults
+        implements QueryStatusInfo, QueryData
 {
     private final String id;
     private final URI infoUri;
@@ -65,8 +40,10 @@ public class QueryResults
     private final URI nextUri;
     private final List<Column> columns;
     private final Iterable<List<Object>> data;
+    private final Iterable<String> binaryData;
     private final StatementStats stats;
     private final QueryError error;
+    private final List<PrestoWarning> warnings;
     private final String updateType;
     private final Long updateCount;
 
@@ -78,12 +55,26 @@ public class QueryResults
             @JsonProperty("nextUri") URI nextUri,
             @JsonProperty("columns") List<Column> columns,
             @JsonProperty("data") List<List<Object>> data,
+            @JsonProperty("binaryData") List<String> binaryData,
             @JsonProperty("stats") StatementStats stats,
             @JsonProperty("error") QueryError error,
+            @JsonProperty("warnings") List<PrestoWarning> warnings,
             @JsonProperty("updateType") String updateType,
             @JsonProperty("updateCount") Long updateCount)
     {
-        this(id, infoUri, partialCancelUri, nextUri, columns, fixData(columns, data), stats, error, updateType, updateCount);
+        this(
+                id,
+                infoUri,
+                partialCancelUri,
+                nextUri,
+                columns,
+                fixData(columns, data),
+                binaryData,
+                stats,
+                error,
+                firstNonNull(warnings, ImmutableList.of()),
+                updateType,
+                updateCount);
     }
 
     public QueryResults(
@@ -93,8 +84,10 @@ public class QueryResults
             URI nextUri,
             List<Column> columns,
             Iterable<List<Object>> data,
+            Iterable<String> binaryData,
             StatementStats stats,
             QueryError error,
+            List<PrestoWarning> warnings,
             String updateType,
             Long updateCount)
     {
@@ -104,77 +97,145 @@ public class QueryResults
         this.nextUri = nextUri;
         this.columns = (columns != null) ? ImmutableList.copyOf(columns) : null;
         this.data = (data != null) ? unmodifiableIterable(data) : null;
+        this.binaryData = (binaryData != null) ? unmodifiableIterable(binaryData) : null;
+        checkArgument((data == null && binaryData == null) || columns != null, "data present without columns");
         this.stats = requireNonNull(stats, "stats is null");
         this.error = error;
+        this.warnings = ImmutableList.copyOf(requireNonNull(warnings, "warnings is null"));
         this.updateType = updateType;
         this.updateCount = updateCount;
     }
 
-    @NotNull
+    /**
+     * Returns identifier of query that produces this result set
+     */
     @JsonProperty
+    @Override
     public String getId()
     {
         return id;
     }
 
-    @NotNull
+    /**
+     * Returns the URI at the coordinator that provides information about the query
+     * @return {@link java.net.URI}
+     */
     @JsonProperty
+    @Override
     public URI getInfoUri()
     {
         return infoUri;
     }
 
+    /**
+     *  Returns URI to a leaf stage that is currently executing in order to issue a cancel signal
+     * @return {@link java.net.URI}
+     */
     @Nullable
     @JsonProperty
+    @Override
     public URI getPartialCancelUri()
     {
         return partialCancelUri;
     }
 
+    /**
+     *  Returns URI to get next batch of query results
+     * @return {@link java.net.URI}
+     */
     @Nullable
     @JsonProperty
+    @Override
     public URI getNextUri()
     {
         return nextUri;
     }
 
+    /**
+     * Returns list of columns (with corresponding data types) present in the result set
+     */
     @Nullable
     @JsonProperty
+    @Override
     public List<Column> getColumns()
     {
         return columns;
     }
 
+    /**
+     * Returns an iterator to the payload (results)
+     */
     @Nullable
     @JsonProperty
+    @Override
     public Iterable<List<Object>> getData()
     {
         return data;
     }
 
-    @NotNull
+    /**
+     * Returns an iterator to the payload (results) in binary format
+     */
+    @Nullable
     @JsonProperty
+    public Iterable<String> getBinaryData()
+    {
+        return binaryData;
+    }
+
+    /**
+     * Returns cumulative statistics on the query being executed
+     * @return {@link com.facebook.presto.client.StatementStats}
+     */
+    @JsonProperty
+    @Override
     public StatementStats getStats()
     {
         return stats;
     }
 
+    /**
+     * Returns error encountered in query execution to the client
+     * The client is expected to check this field before consuming results
+     * @return {@link com.facebook.presto.client.QueryError}
+     */
     @Nullable
     @JsonProperty
+    @Override
     public QueryError getError()
     {
         return error;
     }
 
+    /**
+     * Returns a list of warnings encountered in query execution to the client
+     * @return {@link com.facebook.presto.spi.PrestoWarning}
+     */
+    @JsonProperty
+    @Override
+    public List<PrestoWarning> getWarnings()
+    {
+        return warnings;
+    }
+
+    /**
+     * Returns the update type, if any, of the query as determined by the Analyzer
+     * Could be INSERT, DELETE, CREATE, etc.
+     */
     @Nullable
     @JsonProperty
+    @Override
     public String getUpdateType()
     {
         return updateType;
     }
 
+    /**
+     * Returns a count of number of rows updated by the query
+     */
     @Nullable
     @JsonProperty
+    @Override
     public Long getUpdateCount()
     {
         return updateCount;
@@ -190,105 +251,11 @@ public class QueryResults
                 .add("nextUri", nextUri)
                 .add("columns", columns)
                 .add("hasData", data != null)
+                .add("hasBinaryData", binaryData != null)
                 .add("stats", stats)
                 .add("error", error)
                 .add("updateType", updateType)
                 .add("updateCount", updateCount)
                 .toString();
-    }
-
-    private static Iterable<List<Object>> fixData(List<Column> columns, List<List<Object>> data)
-    {
-        if (data == null) {
-            return null;
-        }
-        requireNonNull(columns, "columns is null");
-        ImmutableList.Builder<List<Object>> rows = ImmutableList.builder();
-        for (List<Object> row : data) {
-            checkArgument(row.size() == columns.size(), "row/column size mismatch");
-            List<Object> newRow = new ArrayList<>();
-            for (int i = 0; i < row.size(); i++) {
-                newRow.add(fixValue(columns.get(i).getType(), row.get(i)));
-            }
-            rows.add(unmodifiableList(newRow)); // allow nulls in list
-        }
-        return rows.build();
-    }
-
-    /**
-     * Force values coming from Jackson to have the expected object type.
-     */
-    private static Object fixValue(String type, Object value)
-    {
-        if (value == null) {
-            return null;
-        }
-        TypeSignature signature = parseTypeSignature(type);
-        if (signature.getBase().equals(ARRAY)) {
-            List<Object> fixedValue = new ArrayList<>();
-            for (Object object : List.class.cast(value)) {
-                fixedValue.add(fixValue(signature.getTypeParametersAsTypeSignatures().get(0).toString(), object));
-            }
-            return fixedValue;
-        }
-        if (signature.getBase().equals(MAP)) {
-            String keyType = signature.getTypeParametersAsTypeSignatures().get(0).toString();
-            String valueType = signature.getTypeParametersAsTypeSignatures().get(1).toString();
-            Map<Object, Object> fixedValue = new HashMap<>();
-            for (Map.Entry<?, ?> entry : (Set<Map.Entry<?, ?>>) Map.class.cast(value).entrySet()) {
-                fixedValue.put(fixValue(keyType, entry.getKey()), fixValue(valueType, entry.getValue()));
-            }
-            return fixedValue;
-        }
-        if (signature.getBase().equals(ROW)) {
-            Map<String, Object> fixedValue = new LinkedHashMap<>();
-            List<Object> listValue = List.class.cast(value);
-            checkArgument(listValue.size() == signature.getParameters().size(), "Mismatched data values and row type");
-            for (int i = 0; i < listValue.size(); i++) {
-                TypeSignatureParameter parameter = signature.getParameters().get(i);
-                checkArgument(
-                        parameter.getKind() == ParameterKind.NAMED_TYPE,
-                        "Unexpected parameter [%s] for row type",
-                        parameter);
-                NamedTypeSignature namedTypeSignature = parameter.getNamedTypeSignature();
-                String key = namedTypeSignature.getName();
-                fixedValue.put(key, fixValue(namedTypeSignature.getTypeSignature().toString(), listValue.get(i)));
-            }
-            return fixedValue;
-        }
-        switch (signature.getBase()) {
-            case BIGINT:
-                if (value instanceof String) {
-                    return Long.parseLong((String) value);
-                }
-                return ((Number) value).longValue();
-            case DOUBLE:
-                if (value instanceof String) {
-                    return Double.parseDouble((String) value);
-                }
-                return ((Number) value).doubleValue();
-            case BOOLEAN:
-                if (value instanceof String) {
-                    return Boolean.parseBoolean((String) value);
-                }
-                return Boolean.class.cast(value);
-            case VARCHAR:
-            case JSON:
-            case TIME:
-            case TIME_WITH_TIME_ZONE:
-            case TIMESTAMP:
-            case TIMESTAMP_WITH_TIME_ZONE:
-            case DATE:
-            case INTERVAL_YEAR_TO_MONTH:
-            case INTERVAL_DAY_TO_SECOND:
-                return String.class.cast(value);
-            default:
-                // for now we assume that only the explicit types above are passed
-                // as a plain text and everything else is base64 encoded binary
-                if (value instanceof String) {
-                    return Base64.getDecoder().decode((String) value);
-                }
-                return value;
-        }
     }
 }

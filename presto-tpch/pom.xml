@@ -4,15 +4,17 @@
     <parent>
         <groupId>com.facebook.presto</groupId>
         <artifactId>presto-root</artifactId>
-        <version>0.143-SNAPSHOT</version>
+        <version>0.301-SNAPSHOT</version>
     </parent>
 
     <artifactId>presto-tpch</artifactId>
+    <name>presto-tpch</name>
     <description>Presto - TPC-H Connector</description>
     <packaging>presto-plugin</packaging>
 
     <properties>
         <air.main.basedir>${project.parent.basedir}</air.main.basedir>
+        <project.build.targetJdk>8</project.build.targetJdk>
     </properties>
 
     <dependencies>
@@ -34,15 +36,31 @@
         </dependency>
 
         <dependency>
+            <groupId>com.facebook.presto</groupId>
+            <artifactId>presto-common</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.facebook.airlift.drift</groupId>
+            <artifactId>drift-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
             <groupId>io.airlift</groupId>
             <artifactId>slice</artifactId>
             <scope>provided</scope>
         </dependency>
 
         <dependency>
-            <groupId>javax.inject</groupId>
-            <artifactId>javax.inject</artifactId>
-            <scope>provided</scope>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jdk8</artifactId>
         </dependency>
 
         <dependency>
@@ -53,8 +71,21 @@
 
         <!-- for testing -->
         <dependency>
+            <groupId>com.facebook.presto</groupId>
+            <artifactId>presto-testng-services</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
             <groupId>org.testng</groupId>
             <artifactId>testng</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>net.agkn</groupId>
+            <artifactId>hll</artifactId>
+            <version>1.6.0</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

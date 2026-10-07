@@ -13,9 +13,42 @@
  */
 package com.facebook.presto.spi;
 
+import com.facebook.drift.annotations.ThriftEnum;
+import com.facebook.drift.annotations.ThriftEnumValue;
+
+@ThriftEnum
 public enum NodeState
 {
-    ACTIVE,
-    INACTIVE,
-    SHUTTING_DOWN
+    ACTIVE(1),
+    INACTIVE(2),
+    SHUTTING_DOWN(3);
+
+    private final int value;
+
+    NodeState(int value)
+    {
+        this.value = value;
+    }
+
+    /**
+     * Recover NodeState from the ordinal.
+     * In general, ThriftEnum is the right annotation to use.
+     * But given the class is in SPI, use the following workaround.
+     */
+    public static NodeState valueOf(int value)
+    {
+        for (NodeState nodeState : values()) {
+            if (nodeState.getValue() == value) {
+                return nodeState;
+            }
+        }
+        throw new IllegalArgumentException("Invalid NodeState value: " + value);
+    }
+
+    // the value will be used for SerDe like thrift
+    @ThriftEnumValue
+    public int getValue()
+    {
+        return value;
+    }
 }

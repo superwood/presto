@@ -14,27 +14,64 @@
 package com.facebook.presto.orc.metadata;
 
 import com.google.common.collect.ImmutableList;
+import io.airlift.slice.Slice;
+import io.airlift.slice.Slices;
 
 import java.util.List;
+import java.util.Optional;
+import java.util.OptionalInt;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
 public class PostScript
 {
+    public static final Slice MAGIC = Slices.utf8Slice("ORC");
+
+    public enum HiveWriterVersion
+    {
+        ORIGINAL(0), ORC_HIVE_8732(1);
+
+        private final int orcWriterVersion;
+
+        HiveWriterVersion(int orcWriterVersion)
+        {
+            this.orcWriterVersion = orcWriterVersion;
+        }
+
+        public int getOrcWriterVersion()
+        {
+            return orcWriterVersion;
+        }
+    }
+
     private final List<Integer> version;
     private final long footerLength;
     private final long metadataLength;
     private final CompressionKind compression;
     private final long compressionBlockSize;
+    private final HiveWriterVersion hiveWriterVersion;
+    private final OptionalInt dwrfStripeCacheLength;
+    private final Optional<DwrfStripeCacheMode> dwrfStripeCacheMode;
 
-    public PostScript(List<Integer> version, long footerLength, long metadataLength, CompressionKind compression, long compressionBlockSize)
+    public PostScript(
+            List<Integer> version,
+            long footerLength,
+            long metadataLength,
+            CompressionKind compression,
+            long compressionBlockSize,
+            HiveWriterVersion hiveWriterVersion,
+            OptionalInt dwrfStripeCacheLength,
+            Optional<DwrfStripeCacheMode> dwrfStripeCacheMode)
     {
         this.version = ImmutableList.copyOf(requireNonNull(version, "version is null"));
         this.footerLength = footerLength;
         this.metadataLength = metadataLength;
         this.compression = requireNonNull(compression, "compressionKind is null");
         this.compressionBlockSize = compressionBlockSize;
+        this.hiveWriterVersion = requireNonNull(hiveWriterVersion, "hiveWriterVersion is null");
+        this.dwrfStripeCacheLength = requireNonNull(dwrfStripeCacheLength, "dwrfStripeCacheLength is null");
+        this.dwrfStripeCacheMode = requireNonNull(dwrfStripeCacheMode, "dwrfStripeCacheMode is null");
     }
 
     public List<Integer> getVersion()
@@ -62,6 +99,21 @@ public class PostScript
         return compressionBlockSize;
     }
 
+    public HiveWriterVersion getHiveWriterVersion()
+    {
+        return hiveWriterVersion;
+    }
+
+    public OptionalInt getDwrfStripeCacheLength()
+    {
+        return dwrfStripeCacheLength;
+    }
+
+    public Optional<DwrfStripeCacheMode> getDwrfStripeCacheMode()
+    {
+        return dwrfStripeCacheMode;
+    }
+
     @Override
     public String toString()
     {
@@ -71,6 +123,9 @@ public class PostScript
                 .add("metadataLength", metadataLength)
                 .add("compressionKind", compression)
                 .add("compressionBlockSize", compressionBlockSize)
+                .add("hiveWriterVersion", hiveWriterVersion)
+                .add("dwrfStripeCacheLength", dwrfStripeCacheLength)
+                .add("dwrfStripeCacheMode", dwrfStripeCacheMode)
                 .toString();
     }
 }

@@ -13,13 +13,15 @@
  */
 package com.facebook.presto.ml;
 
-import com.facebook.presto.operator.aggregation.AggregationFunction;
-import com.facebook.presto.operator.aggregation.CombineFunction;
-import com.facebook.presto.operator.aggregation.InputFunction;
-import com.facebook.presto.operator.aggregation.OutputFunction;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.type.SqlType;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.spi.function.AggregationFunction;
+import com.facebook.presto.spi.function.AggregationState;
+import com.facebook.presto.spi.function.CombineFunction;
+import com.facebook.presto.spi.function.InputFunction;
+import com.facebook.presto.spi.function.LiteralParameters;
+import com.facebook.presto.spi.function.OutputFunction;
+import com.facebook.presto.spi.function.SqlType;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 
@@ -27,7 +29,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.google.common.collect.Sets.union;
 import static io.airlift.slice.SizeOf.SIZE_OF_INT;
 import static java.lang.String.format;
@@ -38,13 +40,14 @@ public final class EvaluateClassifierPredictionsAggregation
     private EvaluateClassifierPredictionsAggregation() {}
 
     @InputFunction
-    public static void input(EvaluateClassifierPredictionsState state, @SqlType(StandardTypes.BIGINT) long truth, @SqlType(StandardTypes.BIGINT) long prediction)
+    public static void input(@AggregationState EvaluateClassifierPredictionsState state, @SqlType(StandardTypes.BIGINT) long truth, @SqlType(StandardTypes.BIGINT) long prediction)
     {
         input(state, Slices.utf8Slice(String.valueOf(truth)), Slices.utf8Slice(String.valueOf(prediction)));
     }
 
     @InputFunction
-    public static void input(EvaluateClassifierPredictionsState state, @SqlType(StandardTypes.VARCHAR) Slice truth, @SqlType(StandardTypes.VARCHAR) Slice prediction)
+    @LiteralParameters({"x", "y"})
+    public static void input(@AggregationState EvaluateClassifierPredictionsState state, @SqlType("varchar(x)") Slice truth, @SqlType("varchar(y)") Slice prediction)
     {
         if (truth.equals(prediction)) {
             String key = truth.toStringUtf8();
@@ -68,7 +71,7 @@ public final class EvaluateClassifierPredictionsAggregation
     }
 
     @CombineFunction
-    public static void combine(EvaluateClassifierPredictionsState state, EvaluateClassifierPredictionsState scratchState)
+    public static void combine(@AggregationState EvaluateClassifierPredictionsState state, @AggregationState EvaluateClassifierPredictionsState scratchState)
     {
         int size = 0;
         size += mergeMaps(state.getTruePositives(), scratchState.getTruePositives());
@@ -91,7 +94,7 @@ public final class EvaluateClassifierPredictionsAggregation
     }
 
     @OutputFunction(StandardTypes.VARCHAR)
-    public static void output(EvaluateClassifierPredictionsState state, BlockBuilder out)
+    public static void output(@AggregationState EvaluateClassifierPredictionsState state, BlockBuilder out)
     {
         StringBuilder sb = new StringBuilder();
         long correct = state.getTruePositives()
@@ -99,15 +102,15 @@ public final class EvaluateClassifierPredictionsAggregation
                 .stream()
                 .reduce(0, Integer::sum);
         long total = correct + state.getFalsePositives().values().stream().reduce(0, Integer::sum);
-        sb.append(format(Locale.US, "Accuracy: %d/%d (%.2f%%)\n", correct, total, 100.0 * correct / (double) total));
+        sb.append(format(Locale.US, "Accuracy: %d/%d (%.2f%%)%n", correct, total, 100.0 * correct / (double) total));
         Set<String> labels = union(union(state.getTruePositives().keySet(), state.getFalsePositives().keySet()), state.getFalseNegatives().keySet());
         for (String label : labels) {
             int truePositives = state.getTruePositives().getOrDefault(label, 0);
             int falsePositives = state.getFalsePositives().getOrDefault(label, 0);
             int falseNegatives = state.getFalseNegatives().getOrDefault(label, 0);
-            sb.append(format(Locale.US, "Class '%s'\n", label));
-            sb.append(format(Locale.US, "Precision: %d/%d (%.2f%%)\n", truePositives, truePositives + falsePositives, 100.0 * truePositives / (double) (truePositives + falsePositives)));
-            sb.append(format(Locale.US, "Recall: %d/%d (%.2f%%)\n", truePositives, truePositives + falseNegatives, 100.0 * truePositives / (double) (truePositives + falseNegatives)));
+            sb.append(format(Locale.US, "Class '%s'%n", label));
+            sb.append(format(Locale.US, "Precision: %d/%d (%.2f%%)%n", truePositives, truePositives + falsePositives, 100.0 * truePositives / (double) (truePositives + falsePositives)));
+            sb.append(format(Locale.US, "Recall: %d/%d (%.2f%%)%n", truePositives, truePositives + falseNegatives, 100.0 * truePositives / (double) (truePositives + falseNegatives)));
         }
 
         VARCHAR.writeString(out, sb.toString());

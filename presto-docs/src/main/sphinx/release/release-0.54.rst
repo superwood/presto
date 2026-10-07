@@ -6,13 +6,13 @@ Release 0.54
   the state of all nodes as seen by the coordinator's failure detector.
   Access ``/v1/node`` to see all nodes, or ``/v1/node/failed`` to see failed nodes.
 
-* Prevent the :doc:`/installation/cli` from hanging when the server goes away.
+* Prevent the :doc:`/clients/presto-cli` from hanging when the server goes away.
 
 * Add Hive connector ``hive-hadoop1`` for Apache Hadoop 1.x.
 
 * Add support for Snappy and LZ4 compression codecs for the ``hive-cdh4`` connector.
 
-* Add Example HTTP connector ``example-http`` that reads CSV data via HTTP.
+* Add Example HTTP connector ``example-http`` that reads CSV data by using HTTP.
   The connector requires a metadata URI that returns a JSON document
   describing the table metadata and the CSV files to read.
 

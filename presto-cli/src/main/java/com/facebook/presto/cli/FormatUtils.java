@@ -13,19 +13,20 @@
  */
 package com.facebook.presto.cli;
 
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
 import com.google.common.primitives.Ints;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
 
 import java.math.RoundingMode;
 import java.text.DecimalFormat;
 
+import static com.facebook.airlift.units.DataSize.Unit.BYTE;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.repeat;
-import static io.airlift.units.DataSize.Unit.BYTE;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.lang.String.format;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 public final class FormatUtils
@@ -160,6 +161,9 @@ public final class FormatUtils
     public static String formatTime(Duration duration)
     {
         int totalSeconds = Ints.saturatedCast(duration.roundTo(SECONDS));
+        if (totalSeconds == 0) {
+            return format("%sms", Ints.saturatedCast(duration.roundTo(MILLISECONDS)));
+        }
         int minutes = totalSeconds / 60;
         int seconds = totalSeconds % 60;
 
@@ -176,7 +180,7 @@ public final class FormatUtils
         int range = width - markerWidth; // "lower" must fall within this range for the marker to fit within the bar
         int lower = tick % range;
 
-        if (((tick / range) % 2) == 1) { // are we going or coming back?
+        if (((tick / range) % 2) != 0) { // are we going or coming back?
             lower = range - lower;
         }
 

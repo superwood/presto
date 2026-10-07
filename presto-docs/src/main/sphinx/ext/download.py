@@ -24,6 +24,10 @@ ARTIFACTS = {
     'jdbc': ('presto-jdbc', 'jar', None),
     'verifier': ('presto-verifier', 'jar', 'executable'),
     'benchmark-driver': ('presto-benchmark-driver', 'jar', 'executable'),
+    'spark-package': ('presto-spark-package', 'tar.gz', None),
+    'spark-launcher': ('presto-spark-launcher', 'jar', None),
+    'router': ('presto-router', 'tar.gz', None),
+    'flightshim': ('presto-flight-shim', 'tar.gz', None),
 }
 
 
@@ -38,23 +42,34 @@ def maven_download(group, artifact, version, packaging, classifier):
     filename = maven_filename(artifact, version, packaging, classifier)
     return base + '/'.join((group_path, artifact, version, filename))
 
+def github_download(group, artifact, version, packaging, classifier):
+    base = 'https://github.com/prestodb/presto/releases/download/'
+    filename = maven_filename(artifact, version, packaging, classifier)
+    return base + '/'.join((version, filename))
 
 def setup(app):
     # noinspection PyDefaultArgument,PyUnusedLocal
-    def download_link_role(role, rawtext, text, lineno, inliner, options={}, content=[]):
-        version = app.config.release
+    def create_download_role(download_func):
+        def download_link_role(role, rawtext, text, lineno, inliner, options={}, content=[]):
+            version = app.config.release
 
-        if not text in ARTIFACTS:
-            inliner.reporter.error('Unsupported download type: ' + text)
-            return [], []
+            if not text in ARTIFACTS:
+                inliner.reporter.error('Unsupported download type: ' + text)
+                return [], []
 
-        artifact, packaging, classifier = ARTIFACTS[text]
+            artifact, packaging, classifier = ARTIFACTS[text]
 
-        title = maven_filename(artifact, version, packaging, classifier)
-        uri = maven_download(GROUP_ID, artifact, version, packaging, classifier)
+            title = maven_filename(artifact, version, packaging, classifier)
+            uri = download_func(GROUP_ID, artifact, version, packaging, classifier)
 
-        node = nodes.reference(title, title, internal=False, refuri=uri)
+            node = nodes.reference(title, title, internal=False, refuri=uri)
 
-        return [node], []
+            return [node], []
+        return download_link_role
 
-    app.add_role('download', download_link_role)
+    app.add_role('maven_download', create_download_role(maven_download))
+    app.add_role('github_download', create_download_role(github_download))
+
+    return {
+        'parallel_read_safe': True,
+    }

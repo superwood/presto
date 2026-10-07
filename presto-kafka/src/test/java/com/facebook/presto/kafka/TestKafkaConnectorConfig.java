@@ -13,11 +13,11 @@
  */
 package com.facebook.presto.kafka;
 
+import com.facebook.airlift.configuration.testing.ConfigAssertions;
+import com.facebook.presto.kafka.schema.file.FileTableDescriptionSupplier;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.configuration.testing.ConfigAssertions;
 import org.testng.annotations.Test;
 
-import java.io.File;
 import java.util.Map;
 
 public class TestKafkaConnectorConfig
@@ -26,36 +26,45 @@ public class TestKafkaConnectorConfig
     public void testDefaults()
     {
         ConfigAssertions.assertRecordedDefaults(ConfigAssertions.recordDefaults(KafkaConnectorConfig.class)
-                .setNodes("")
                 .setKafkaConnectTimeout("10s")
-                .setKafkaBufferSize("64kB")
                 .setDefaultSchema("default")
-                .setTableNames("")
-                .setTableDescriptionDir(new File("etc/kafka/"))
-                .setHideInternalColumns(true));
+                .setClusterMetadataSupplier(FileTableDescriptionSupplier.NAME)
+                .setTableDescriptionSupplier(FileTableDescriptionSupplier.NAME)
+                .setHideInternalColumns(true)
+                .setMaxPartitionFetchBytes(1048576)
+                .setMaxPollRecords(500)
+                .setResourceConfigFiles("")
+                .setCaseSensitiveNameMatching(false));
     }
 
     @Test
     public void testExplicitPropertyMappings()
     {
+        String tempFile1 = "/temp/path/file1";
+        String tempFile2 = "/temp/path/file2";
+
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
-                .put("kafka.table-description-dir", "/var/lib/kafka")
-                .put("kafka.table-names", "table1, table2, table3")
+                .put("kafka.table-description-supplier", "test")
+                .put("kafka.cluster-metadata-supplier", "test")
                 .put("kafka.default-schema", "kafka")
-                .put("kafka.nodes", "localhost:12345,localhost:23456")
                 .put("kafka.connect-timeout", "1h")
-                .put("kafka.buffer-size", "1MB")
                 .put("kafka.hide-internal-columns", "false")
+                .put("kafka.max-partition-fetch-bytes", "1024")
+                .put("kafka.max-poll-records", "1000")
+                .put("kafka.config.resources", tempFile1 + "," + tempFile2)
+                .put("case-sensitive-name-matching", "true")
                 .build();
 
         KafkaConnectorConfig expected = new KafkaConnectorConfig()
-                .setTableDescriptionDir(new File("/var/lib/kafka"))
-                .setTableNames("table1, table2, table3")
+                .setTableDescriptionSupplier("test")
+                .setClusterMetadataSupplier("test")
                 .setDefaultSchema("kafka")
-                .setNodes("localhost:12345, localhost:23456")
                 .setKafkaConnectTimeout("1h")
-                .setKafkaBufferSize("1MB")
-                .setHideInternalColumns(false);
+                .setHideInternalColumns(false)
+                .setMaxPartitionFetchBytes(1024)
+                .setMaxPollRecords(1000)
+                .setResourceConfigFiles(tempFile1 + "," + tempFile2)
+                .setCaseSensitiveNameMatching(true);
 
         ConfigAssertions.assertFullMapping(properties, expected);
     }

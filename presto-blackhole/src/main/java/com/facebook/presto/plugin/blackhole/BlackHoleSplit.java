@@ -13,8 +13,11 @@
  */
 package com.facebook.presto.plugin.blackhole;
 
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.HostAddress;
+import com.facebook.presto.spi.NodeProvider;
+import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
@@ -22,6 +25,7 @@ import com.google.common.collect.ImmutableList;
 import java.util.List;
 import java.util.Objects;
 
+import static com.facebook.presto.spi.schedule.NodeSelectionStrategy.NO_PREFERENCE;
 import static java.util.Objects.requireNonNull;
 
 public final class BlackHoleSplit
@@ -30,16 +34,19 @@ public final class BlackHoleSplit
     private final int pagesCount;
     private final int rowsPerPage;
     private final int fieldsLength;
+    private final Duration pageProcessingDelay;
 
     @JsonCreator
     public BlackHoleSplit(
             @JsonProperty("pagesCount") int pagesCount,
             @JsonProperty("rowsPerPage") int rowsPerPage,
-            @JsonProperty("fieldsLength") int fieldsLength)
+            @JsonProperty("fieldsLength") int fieldsLength,
+            @JsonProperty("pageProcessingDelay") Duration pageProcessingDelay)
     {
-        this.rowsPerPage = requireNonNull(rowsPerPage, "rowsPerPage is null");
-        this.pagesCount = requireNonNull(pagesCount, "pagesCount is null");
-        this.fieldsLength = requireNonNull(fieldsLength, "fieldsLength is null");
+        this.rowsPerPage = rowsPerPage;
+        this.pagesCount = pagesCount;
+        this.fieldsLength = fieldsLength;
+        this.pageProcessingDelay = requireNonNull(pageProcessingDelay, "pageProcessingDelay is null");
     }
 
     @JsonProperty
@@ -60,14 +67,20 @@ public final class BlackHoleSplit
         return fieldsLength;
     }
 
-    @Override
-    public boolean isRemotelyAccessible()
+    @JsonProperty
+    public Duration getPageProcessingDelay()
     {
-        return true;
+        return pageProcessingDelay;
     }
 
     @Override
-    public List<HostAddress> getAddresses()
+    public NodeSelectionStrategy getNodeSelectionStrategy()
+    {
+        return NO_PREFERENCE;
+    }
+
+    @Override
+    public List<HostAddress> getPreferredNodes(NodeProvider nodeProvider)
     {
         return ImmutableList.of();
     }

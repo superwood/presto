@@ -16,11 +16,97 @@ package com.facebook.presto.spi.connector;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
+import com.facebook.presto.spi.WarningCollector;
+import com.facebook.presto.spi.function.table.ConnectorTableFunctionHandle;
+
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+import static java.util.Objects.requireNonNull;
 
 public interface ConnectorSplitManager
 {
-    default ConnectorSplitSource getSplits(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorTableLayoutHandle layout)
+    ConnectorSplitSource getSplits(
+            ConnectorTransactionHandle transactionHandle,
+            ConnectorSession session,
+            ConnectorTableLayoutHandle layout,
+            SplitSchedulingContext splitSchedulingContext);
+
+    default ConnectorSplitSource getSplits(
+            ConnectorTransactionHandle transactionHandle,
+            ConnectorSession session,
+            ConnectorTableLayoutHandle layout,
+            SplitSchedulingContext splitSchedulingContext,
+            DynamicFilter dynamicFilter)
     {
-        throw new UnsupportedOperationException("not yet implemented");
+        return getSplits(transactionHandle, session, layout, splitSchedulingContext);
+    }
+
+    enum SplitSchedulingStrategy
+    {
+        UNGROUPED_SCHEDULING,
+        GROUPED_SCHEDULING,
+        REWINDABLE_GROUPED_SCHEDULING,
+    }
+
+    class SplitSchedulingContext
+    {
+        private final SplitSchedulingStrategy splitSchedulingStrategy;
+        private final boolean schedulerUsesHostAddresses;
+        private final WarningCollector warningCollector;
+        private final Map<String, String> partitionColumnMapping;
+
+        public SplitSchedulingContext(SplitSchedulingStrategy splitSchedulingStrategy, boolean schedulerUsesHostAddresses, WarningCollector warningCollector)
+        {
+            this(splitSchedulingStrategy, schedulerUsesHostAddresses, warningCollector, Collections.emptyMap());
+        }
+
+        /**
+         * @param splitSchedulingStrategy the method by which splits are scheduled
+         * @param schedulerUsesHostAddresses whether host addresses are taken into account
+         * when choosing where to schedule remotely accessible splits. If this is false,
+         * the connector can return an empty list of addresses for remotely accessible
+         * splits without any performance loss.  Non-remotely accessible splits always
+         * need to provide host addresses.
+         * @param partitionColumnMapping mapping from actual partition column names to
+         * canonical column names for partition-aware grouped execution. Empty map when
+         * partition-aware scheduling is not active.
+         */
+        public SplitSchedulingContext(SplitSchedulingStrategy splitSchedulingStrategy, boolean schedulerUsesHostAddresses, WarningCollector warningCollector, Map<String, String> partitionColumnMapping)
+        {
+            this.splitSchedulingStrategy = requireNonNull(splitSchedulingStrategy, "splitSchedulingStrategy is null");
+            this.schedulerUsesHostAddresses = schedulerUsesHostAddresses;
+            this.warningCollector = requireNonNull(warningCollector, "warningCollector is null ");
+            this.partitionColumnMapping = Collections.unmodifiableMap(new LinkedHashMap<>(requireNonNull(partitionColumnMapping, "partitionColumnMapping is null")));
+        }
+
+        public SplitSchedulingStrategy getSplitSchedulingStrategy()
+        {
+            return splitSchedulingStrategy;
+        }
+
+        public boolean schedulerUsesHostAddresses()
+        {
+            return schedulerUsesHostAddresses;
+        }
+
+        public WarningCollector getWarningCollector()
+        {
+            return warningCollector;
+        }
+
+        public Map<String, String> getPartitionColumnMapping()
+        {
+            return partitionColumnMapping;
+        }
+    }
+
+    default ConnectorSplitSource getSplits(
+            ConnectorTransactionHandle transaction,
+            ConnectorSession session,
+            ConnectorTableFunctionHandle function)
+    {
+        throw new UnsupportedOperationException();
     }
 }

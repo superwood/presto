@@ -14,29 +14,30 @@
 package com.facebook.presto.server;
 
 import com.google.common.collect.ImmutableListMultimap;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ListMultimap;
-
-import javax.servlet.AsyncContext;
-import javax.servlet.DispatcherType;
-import javax.servlet.RequestDispatcher;
-import javax.servlet.ServletContext;
-import javax.servlet.ServletException;
-import javax.servlet.ServletInputStream;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
-import javax.servlet.http.Cookie;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-import javax.servlet.http.HttpSession;
-import javax.servlet.http.HttpUpgradeHandler;
-import javax.servlet.http.Part;
+import jakarta.servlet.AsyncContext;
+import jakarta.servlet.DispatcherType;
+import jakarta.servlet.RequestDispatcher;
+import jakarta.servlet.ServletConnection;
+import jakarta.servlet.ServletContext;
+import jakarta.servlet.ServletInputStream;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
+import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
+import jakarta.servlet.http.HttpUpgradeHandler;
+import jakarta.servlet.http.Part;
+import jakarta.ws.rs.core.UriBuilder;
 
 import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.UnsupportedEncodingException;
+import java.net.URI;
 import java.security.Principal;
 import java.util.Collection;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 
@@ -47,13 +48,32 @@ import static java.util.Objects.requireNonNull;
 public class MockHttpServletRequest
         implements HttpServletRequest
 {
+    private static final String DEFAULT_ADDRESS = "127.0.0.1";
     private final ListMultimap<String, String> headers;
     private final String remoteAddress;
+    private final Map<String, Object> attributes;
+    private final String requestUrl;
 
-    public MockHttpServletRequest(ListMultimap<String, String> headers, String remoteAddress)
+    public MockHttpServletRequest(ListMultimap<String, String> headers, String remoteAddress, Map<String, Object> attributes)
     {
         this.headers = ImmutableListMultimap.copyOf(requireNonNull(headers, "headers is null"));
         this.remoteAddress = requireNonNull(remoteAddress, "remoteAddress is null");
+        this.attributes = new HashMap<>(requireNonNull(attributes, "attributes is null"));
+        this.requestUrl = null;
+    }
+
+    public MockHttpServletRequest(ListMultimap<String, String> headers)
+    {
+        // Default remoteAddress and empty attributes
+        this(headers, DEFAULT_ADDRESS, ImmutableMap.of());
+    }
+
+    public MockHttpServletRequest(ListMultimap<String, String> headers, String remoteAddress, String requestUrl)
+    {
+        this.headers = ImmutableListMultimap.copyOf(requireNonNull(headers, "headers is null"));
+        this.remoteAddress = requireNonNull(remoteAddress, "remoteAddress is null");
+        this.requestUrl = requireNonNull(requestUrl, "requestUrl is null");
+        this.attributes = ImmutableMap.of();
     }
 
     @Override
@@ -99,6 +119,12 @@ public class MockHttpServletRequest
     }
 
     @Override
+    public Object getAttribute(String name)
+    {
+        return attributes.get(name);
+    }
+
+    @Override
     public int getIntHeader(String name)
     {
         throw new UnsupportedOperationException();
@@ -131,7 +157,12 @@ public class MockHttpServletRequest
     @Override
     public String getQueryString()
     {
-        throw new UnsupportedOperationException();
+        if (this.requestUrl == null) {
+            throw new UnsupportedOperationException();
+        }
+        URI uri = UriBuilder.fromUri(this.requestUrl).build();
+
+        return uri.getQuery();
     }
 
     @Override
@@ -167,7 +198,10 @@ public class MockHttpServletRequest
     @Override
     public StringBuffer getRequestURL()
     {
-        throw new UnsupportedOperationException();
+        if (this.requestUrl == null) {
+            throw new UnsupportedOperationException();
+        }
+        return new StringBuffer(this.requestUrl);
     }
 
     @Override
@@ -213,55 +247,37 @@ public class MockHttpServletRequest
     }
 
     @Override
-    public boolean isRequestedSessionIdFromUrl()
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
     public boolean authenticate(HttpServletResponse response)
-            throws IOException, ServletException
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
     public void login(String username, String password)
-            throws ServletException
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
     public void logout()
-            throws ServletException
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
     public Collection<Part> getParts()
-            throws IOException, ServletException
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public Part getPart(String name)
-            throws IOException, ServletException
+    public Part getPart(String s)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
     public <T extends HttpUpgradeHandler> T upgrade(Class<T> handlerClass)
-            throws IOException, ServletException
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public Object getAttribute(String name)
     {
         throw new UnsupportedOperationException();
     }
@@ -280,7 +296,6 @@ public class MockHttpServletRequest
 
     @Override
     public void setCharacterEncoding(String env)
-            throws UnsupportedEncodingException
     {
         throw new UnsupportedOperationException();
     }
@@ -305,7 +320,6 @@ public class MockHttpServletRequest
 
     @Override
     public ServletInputStream getInputStream()
-            throws IOException
     {
         throw new UnsupportedOperationException();
     }
@@ -343,7 +357,12 @@ public class MockHttpServletRequest
     @Override
     public String getScheme()
     {
-        throw new UnsupportedOperationException();
+        if (this.requestUrl == null) {
+            throw new UnsupportedOperationException();
+        }
+        URI uri = UriBuilder.fromUri(this.requestUrl).build();
+
+        return uri.getScheme();
     }
 
     @Override
@@ -360,7 +379,6 @@ public class MockHttpServletRequest
 
     @Override
     public BufferedReader getReader()
-            throws IOException
     {
         throw new UnsupportedOperationException();
     }
@@ -380,7 +398,7 @@ public class MockHttpServletRequest
     @Override
     public void setAttribute(String name, Object o)
     {
-        throw new UnsupportedOperationException();
+        attributes.put(name, o);
     }
 
     @Override
@@ -409,12 +427,6 @@ public class MockHttpServletRequest
 
     @Override
     public RequestDispatcher getRequestDispatcher(String path)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public String getRealPath(String path)
     {
         throw new UnsupportedOperationException();
     }
@@ -483,6 +495,24 @@ public class MockHttpServletRequest
 
     @Override
     public DispatcherType getDispatcherType()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public String getRequestId()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public String getProtocolRequestId()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public ServletConnection getServletConnection()
     {
         throw new UnsupportedOperationException();
     }

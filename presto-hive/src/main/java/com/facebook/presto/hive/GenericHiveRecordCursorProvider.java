@@ -13,47 +13,82 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.hive.cache.HiveCachingHdfsConfiguration;
 import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.RecordCursor;
+import jakarta.inject.Inject;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.RecordReader;
 import org.joda.time.DateTimeZone;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
 
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
+import static java.util.Objects.requireNonNull;
+
 public class GenericHiveRecordCursorProvider
         implements HiveRecordCursorProvider
 {
+    private final HdfsEnvironment hdfsEnvironment;
+
+    @Inject
+    public GenericHiveRecordCursorProvider(HdfsEnvironment hdfsEnvironment)
+    {
+        this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
+    }
+
     @Override
-    public Optional<HiveRecordCursor> createHiveRecordCursor(
-            String clientId,
+    public Optional<RecordCursor> createRecordCursor(
             Configuration configuration,
             ConnectorSession session,
-            Path path,
-            long start,
-            long length,
+            HiveFileSplit fileSplit,
             Properties schema,
             List<HiveColumnHandle> columns,
-            List<HivePartitionKey> partitionKeys,
             TupleDomain<HiveColumnHandle> effectivePredicate,
             DateTimeZone hiveStorageTimeZone,
-            TypeManager typeManager)
+            TypeManager typeManager,
+            boolean s3SelectPushdownEnabled)
     {
-        RecordReader<?, ?> recordReader = HiveUtil.createRecordReader(configuration, path, start, length, schema, columns);
+        // make sure the FileSystem is created with the proper Configuration object
+        Path path = new Path(fileSplit.getPath());
+        try {
+            if (!fileSplit.getCustomSplitInfo().isEmpty()) {
+                if (configuration instanceof HiveCachingHdfsConfiguration.CachingJobConf) {
+                    configuration = ((HiveCachingHdfsConfiguration.CachingJobConf) configuration).getConfig();
+                }
+                if (configuration instanceof CopyOnFirstWriteConfiguration) {
+                    configuration = ((CopyOnFirstWriteConfiguration) configuration).getConfig();
+                }
+            }
+            this.hdfsEnvironment.getFileSystem(session.getUser(), path, configuration);
+        }
+        catch (IOException e) {
+            throw new PrestoException(HIVE_FILESYSTEM_ERROR, "Failed getting FileSystem: " + path, e);
+        }
 
-        return Optional.<HiveRecordCursor>of(new GenericHiveRecordCursor<>(
-                genericRecordReader(recordReader),
-                length,
-                schema,
-                partitionKeys,
-                columns,
-                hiveStorageTimeZone,
-                typeManager));
+        Configuration actualConfiguration = configuration;
+
+        RecordReader<?, ?> recordReader = hdfsEnvironment.doAs(session.getUser(),
+                () -> HiveUtil.createRecordReader(actualConfiguration, path, fileSplit.getStart(), fileSplit.getLength(), schema, columns, fileSplit.getCustomSplitInfo()));
+        return hdfsEnvironment.doAs(session.getUser(),
+                () -> Optional.of(new GenericHiveRecordCursor<>(
+                        session,
+                        actualConfiguration,
+                        path,
+                        genericRecordReader(recordReader),
+                        fileSplit.getLength(),
+                        schema,
+                        columns,
+                        hiveStorageTimeZone,
+                        typeManager)));
     }
 
     @SuppressWarnings("unchecked")

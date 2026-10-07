@@ -13,6 +13,10 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.facebook.presto.spi.analyzer.UpdateInfo;
+import com.google.common.collect.ImmutableList;
+
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -56,6 +60,21 @@ public class Delete
     public <R, C> R accept(AstVisitor<R, C> visitor, C context)
     {
         return visitor.visitDelete(this, context);
+    }
+
+    @Override
+    public List<Node> getChildren()
+    {
+        ImmutableList.Builder<Node> nodes = ImmutableList.builder();
+        nodes.add(table);
+        where.ifPresent(nodes::add);
+        return nodes.build();
+    }
+
+    @Override
+    public UpdateInfo getUpdateInfo()
+    {
+        return new UpdateInfo("DELETE", table.getName().toString());
     }
 
     @Override

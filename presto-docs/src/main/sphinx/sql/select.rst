@@ -13,9 +13,11 @@ Synopsis
     [ WHERE condition ]
     [ GROUP BY [ ALL | DISTINCT ] grouping_element [, ...] ]
     [ HAVING condition]
-    [ UNION [ ALL | DISTINCT ] select ]
+    [ WINDOW window_definition [, ...] ]
+    [ { UNION | INTERSECT | EXCEPT } [ ALL | DISTINCT ] select ]
     [ ORDER BY expression [ ASC | DESC ] [, ...] ]
-    [ LIMIT [ count | ALL ] ]
+    [ OFFSET count [ { ROW | ROWS } ] ]
+    [ { LIMIT [ count | ALL ] } ]
 
 where ``from_item`` is one of
 
@@ -84,6 +86,11 @@ Additionally, the relations within a ``WITH`` clause can chain::
       z AS (SELECT b AS c FROM y)
     SELECT c FROM z;
 
+.. WARNING::
+    Currently, the SQL for the ``WITH`` clause will be inlined anywhere the named
+    relation is used. This means that if the relation is used more than once and the query
+    is non-deterministic, the results may be different each time.
+
 GROUP BY Clause
 ---------------
 
@@ -119,7 +126,7 @@ row counts for the ``customer`` table using the input column ``mktsegment``::
     (5 rows)
 
 When a ``GROUP BY`` clause is used in a ``SELECT`` statement all output
-expression must be either aggregate functions or columns present in
+expressions must be either aggregate functions or columns present in
 the ``GROUP BY`` clause.
 
 .. _complex_grouping_operations:
@@ -127,7 +134,7 @@ the ``GROUP BY`` clause.
 **Complex Grouping Operations**
 
 Presto also supports complex aggregations using the ``GROUPING SETS``, ``CUBE``
-and ``ROLLUP`` syntax. This syntax allows users to perform analysis that require
+and ``ROLLUP`` syntax. This syntax allows users to perform analysis that requires
 aggregation on multiple sets of columns in a single query. Complex grouping
 operations do not support grouping on expressions composed of input columns.
 Only column names or ordinals are allowed.
@@ -206,10 +213,10 @@ source is not deterministic.
 
 **CUBE**
 
-The ``CUBE`` operator generates all possible grouping sets (i.e. a power set)
+The ``CUBE`` operator generates all possible grouping sets (that is, a power set)
 for a given set of columns. For example, the query::
 
-    SELECT origin_state, origin_zip, destination_state, sum(package_weight)
+    SELECT origin_state, destination_state, sum(package_weight)
     FROM shipping
     GROUP BY CUBE (origin_state, destination_state);
 
@@ -222,6 +229,11 @@ is equivalent to::
         (origin_state),
         (destination_state),
         ());
+
+.. note::
+
+    ``CUBE`` supports at most 30 columns. This is because CUBE generates 2^n
+    grouping sets, and 2^30 (approximately 1 billion) is the practical limit.
 
 .. code-block:: none
 
@@ -266,7 +278,7 @@ columns. For example, the query::
 
 is equivalent to::
 
-    SELECT origin_state, destination_state, sum(package_weight)
+    SELECT origin_state, origin_zip, sum(package_weight)
     FROM shipping
     GROUP BY GROUPING SETS ((origin_state, origin_zip), (origin_state), ());
 
@@ -364,6 +376,48 @@ only unique grouping sets are generated::
 
 The default set quantifier is ``ALL``.
 
+**GROUPING Operation**
+
+``grouping(col1, ..., colN) -> bigint``
+
+The grouping operation returns a bit set converted to decimal, indicating which columns are present in a
+grouping. It must be used in conjunction with ``GROUPING SETS``, ``ROLLUP``, ``CUBE``  or ``GROUP BY``
+and its arguments must match exactly the columns referenced in the corresponding ``GROUPING SETS``,
+``ROLLUP``, ``CUBE`` or ``GROUP BY`` clause.
+
+To compute the resulting bit set for a particular row, bits are assigned to the argument columns with
+the rightmost column being the least significant bit. For a given grouping, a bit is set to 0 if the
+corresponding column is included in the grouping and to 1 otherwise. For example, consider the query
+below::
+
+    SELECT origin_state, origin_zip, destination_state, sum(package_weight),
+           grouping(origin_state, origin_zip, destination_state)
+    FROM shipping
+    GROUP BY GROUPING SETS (
+            (origin_state),
+            (origin_state, origin_zip),
+            (destination_state));
+
+.. code-block:: none
+
+    origin_state | origin_zip | destination_state | _col3 | _col4
+    --------------+------------+-------------------+-------+-------
+    California   | NULL       | NULL              |  1397 |     3
+    New Jersey   | NULL       | NULL              |   225 |     3
+    New York     | NULL       | NULL              |     3 |     3
+    California   |      94131 | NULL              |    60 |     1
+    New Jersey   |       7081 | NULL              |   225 |     1
+    California   |      90210 | NULL              |  1337 |     1
+    New York     |      10002 | NULL              |     3 |     1
+    NULL         | NULL       | New Jersey        |    58 |     6
+    NULL         | NULL       | Connecticut       |  1562 |     6
+    NULL         | NULL       | Colorado          |     5 |     6
+    (10 rows)
+
+The first grouping in the above result only includes the ``origin_state`` column and excludes
+the ``origin_zip`` and ``destination_state`` columns. The bit set constructed for that grouping
+is ``011`` where the most significant bit represents ``origin_state``.
+
 HAVING Clause
 -------------
 
@@ -396,25 +450,126 @@ with an account balance greater than the specified value::
       1247 | FURNITURE  |         8 |  5701952
     (7 rows)
 
-UNION Clause
-------------
+.. _window_clause:
 
-The ``UNION`` clause is used to combine the results of more than one
-select statement into a single result set:
+Named WINDOW Clause
+-------------------
+
+Presto supports the SQL:2003 ``WINDOW`` clause. It appears after ``HAVING`` and
+before the query's ``ORDER BY``, and allows multiple window functions to reuse a
+window specification::
+
+    WINDOW name AS (
+      [existing_window_name]
+      [PARTITION BY expression, ...]
+      [ORDER BY sort_item, ...]
+      [frame]
+    ) [, ...]
+
+A function can use the name directly with ``OVER name``, or refine it with
+``OVER (name ...)``::
+
+    WITH t(a, b) AS (
+      VALUES (1, 10), (1, 20), (2, 5)
+    )
+    SELECT
+      a,
+      b,
+      sum(b) OVER by_a AS partition_sum,
+      sum(b) OVER (ordered ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS rolling_sum
+    FROM t
+    WINDOW by_a AS (PARTITION BY a),
+           ordered AS (by_a ORDER BY b)
+    ORDER BY a, b
+
+The result is:
+
+.. code-block:: none
+
+     a | b  | partition_sum | rolling_sum
+    ---+----+---------------+-------------
+     1 | 10 |            30 |          10
+     1 | 20 |            30 |          30
+     2 |  5 |             5 |           5
+
+Named windows follow these rules:
+
+* Names are scoped to one query specification and compared case-insensitively.
+* A definition can reference only a definition that appears earlier in the
+  same ``WINDOW`` clause.
+* A derived specification cannot add ``PARTITION BY``.
+* A derived specification cannot add ``ORDER BY`` when the referenced window
+  already has one.
+* A derived specification cannot reference a window that has a frame.
+* A direct ``OVER name`` reference uses the complete named specification,
+  including its frame.
+* Expressions declared in the ``WINDOW`` clause resolve against query inputs.
+  Parts added inline in the query's ``ORDER BY`` can resolve ``SELECT`` aliases.
+
+Unreferenced Definitions
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Every definition is analyzed, including one that no ``OVER`` clause references.
+Window functions run after grouping and aggregation, so their specifications
+can use grouping keys and aggregates. An aggregate in a definition therefore
+belongs to the surrounding query block.
+
+For example, this query aggregates two input rows and then applies ``rank()`` to
+the single result row::
+
+    SELECT 1, rank() OVER w
+    FROM (VALUES 10, 20) AS t(x)
+    WINDOW w AS (ORDER BY sum(x))
+
+It returns ``(1, 1)``. Removing the window function leaves the aggregate in the
+query specification::
+
+    SELECT 1
+    FROM (VALUES 10, 20) AS t(x)
+    WINDOW w AS (ORDER BY sum(x))
+
+This query still returns one row. Selecting ``x`` instead fails grouping
+validation because ``x`` is neither grouped nor aggregated. The unreferenced
+definition itself produces no window operator.
+
+UNION | INTERSECT | EXCEPT Clause
+---------------------------------
+
+``UNION``  ``INTERSECT`` and ``EXCEPT`` are all set operations.  These clauses are used
+to combine the results of more than one select statement into a single result set:
 
 .. code-block:: none
 
     query UNION [ALL | DISTINCT] query
 
+.. code-block:: none
+
+    query INTERSECT [DISTINCT] query
+
+.. code-block:: none
+
+    query EXCEPT [DISTINCT] query
+
 The argument ``ALL`` or ``DISTINCT`` controls which rows are included in
 the final result set. If the argument ``ALL`` is specified all rows are
 included even if the rows are identical.  If the argument ``DISTINCT``
 is specified only unique rows are included in the combined result set.
-If neither is specified, the behavior defaults to ``DISTINCT``.
+If neither is specified, the behavior defaults to ``DISTINCT``.  The ``ALL``
+argument is not supported for ``INTERSECT`` or ``EXCEPT``.
 
-The following is an example of one of the simplest possible ``UNION``
-clauses. The following query selects the value ``13`` and combines
-this result set with a second query which selects the value ``42``::
+
+Multiple set operations are processed left to right, unless the order is explicitly
+specified with parentheses. Additionally, ``INTERSECT`` binds more tightly
+than ``EXCEPT`` and ``UNION``. That means ``A UNION B INTERSECT C EXCEPT D``
+is the same as ``A UNION (B INTERSECT C) EXCEPT D``.
+
+**UNION**
+
+``UNION`` combines all the rows that are in the result set from the
+first query with those that are in the result set for the second query.
+The following is an example of one of the simplest possible ``UNION`` clauses.
+It selects the value ``13`` and combines this result set with a second query
+that selects the value ``42``::
 
     SELECT 13
     UNION
@@ -428,8 +583,76 @@ this result set with a second query which selects the value ``42``::
         42
     (2 rows)
 
-Multiple unions are processed left to right, unless the order is explicitly
-specified via parentheses.
+The following query demonstrates the difference between ``UNION`` and ``UNION ALL``.
+It selects the value ``13`` and combines this result set with a second query that
+selects the values ``42`` and ``13``::
+
+    SELECT 13
+    UNION
+    SELECT * FROM (VALUES 42, 13);
+
+.. code-block:: none
+
+     _col0
+    -------
+        13
+        42
+    (2 rows)
+
+::
+
+    SELECT 13
+    UNION ALL
+    SELECT * FROM (VALUES 42, 13);
+
+.. code-block:: none
+
+     _col0
+    -------
+        13
+        42
+        13
+    (2 rows)
+
+**INTERSECT**
+
+``INTERSECT`` returns only the rows that are in the result sets of both the first and
+the second queries. The following is an example of one of the simplest
+possible ``INTERSECT`` clauses. It selects the values ``13`` and ``42`` and combines
+this result set with a second query that selects the value ``13``.  Since ``42``
+is only in the result set of the first query, it is not included in the final results.::
+
+    SELECT * FROM (VALUES 13, 42)
+    INTERSECT
+    SELECT 13;
+
+.. code-block:: none
+
+     _col0
+    -------
+        13
+    (2 rows)
+
+**EXCEPT**
+
+``EXCEPT`` returns the rows that are in the result set of the first query,
+but not the second. The following is an example of one of the simplest
+possible ``EXCEPT`` clauses. It selects the values ``13`` and ``42`` and combines
+this result set with a second query that selects the value ``13``.  Since ``13``
+is also in the result set of the second query, it is not included in the final result.::
+
+    SELECT * FROM (VALUES 13, 42)
+    EXCEPT
+    SELECT 13;
+
+.. code-block:: none
+
+     _col0
+    -------
+       42
+    (2 rows)
+
+.. _order-by-clause:
 
 ORDER BY Clause
 ---------------
@@ -443,15 +666,51 @@ output expressions:
 
 Each expression may be composed of output columns or it may be an ordinal
 number selecting an output column by position (starting at one). The
-``ORDER BY`` clause is evaluated as the last step of a query after any
-``GROUP BY`` or ``HAVING`` clause. The default null ordering is ``NULLS LAST``,
-regardless of the ordering direction.
+``ORDER BY`` clause is evaluated after any ``GROUP BY`` or ``HAVING`` clause
+and before any ``OFFSET``, ``LIMIT`` or ``FETCH FIRST`` clause.
+The default null ordering is ``NULLS LAST``, regardless of the ordering direction.
+
+.. _offset-clause:
+
+OFFSET Clause
+-------------
+
+The ``OFFSET`` clause is used to discard a number of leading rows
+from the result set:
+
+.. code-block:: none
+
+    OFFSET count [ ROW | ROWS ]
+
+If the ``ORDER BY`` clause is present, the ``OFFSET`` clause is evaluated
+over a sorted result set, and the set remains sorted after the
+leading rows are discarded::
+
+    SELECT name FROM nation ORDER BY name OFFSET 22;
+
+.. code-block:: none
+
+          name
+    ----------------
+     UNITED KINGDOM
+     UNITED STATES
+     VIETNAM
+    (3 rows)
+
+Otherwise, it is arbitrary which rows are discarded.
+If the count specified in the ``OFFSET`` clause equals or exceeds the size
+of the result set, the final result is empty.
 
 LIMIT Clause
 ------------
 
 The ``LIMIT`` clause restricts the number of rows in the result set.
 ``LIMIT ALL`` is the same as omitting the ``LIMIT`` clause.
+
+.. code-block:: none
+
+    LIMIT { count | ALL }
+
 The following example queries a large table, but the limit clause restricts
 the output to only have five rows (because the query lacks an ``ORDER BY``,
 exactly which rows are returned is arbitrary)::
@@ -468,6 +727,23 @@ exactly which rows are returned is arbitrary)::
      1995-11-12
      1992-04-26
     (5 rows)
+
+``LIMIT ALL`` is the same as omitting the ``LIMIT`` clause.
+
+If the ``OFFSET`` clause is present, the ``LIMIT`` clause is evaluated
+after the ``OFFSET`` clause::
+
+    SELECT * FROM (VALUES 5, 2, 4, 1, 3) t(x) ORDER BY x OFFSET 2 LIMIT 2;
+
+.. code-block:: none
+
+     x
+    ---
+     3
+     4
+    (2 rows)
+
+.. _sql-tablesample:
 
 TABLESAMPLE
 -----------
@@ -529,13 +805,13 @@ is added to the end.
 ``UNNEST`` is normally used with a ``JOIN`` and can reference columns
 from relations on the left side of the join.
 
-Using a single column::
+Using a single array column::
 
     SELECT student, score
     FROM tests
     CROSS JOIN UNNEST(scores) AS t (score);
 
-Using multiple columns::
+Using multiple array columns::
 
     SELECT numbers, animals, n, a
     FROM (
@@ -578,6 +854,29 @@ Using multiple columns::
      [7, 8, 9] | 9 | 3
     (5 rows)
 
+Using a single map column::
+
+    SELECT
+        animals, a, n
+    FROM (
+        VALUES
+            (MAP(ARRAY['dog', 'cat', 'bird'], ARRAY[1, 2, 0])),
+            (MAP(ARRAY['dog', 'cat'], ARRAY[4, 5]))
+    ) AS x (animals)
+    CROSS JOIN UNNEST(animals) AS t (a, n);
+
+.. code-block:: none
+
+               animals          |  a   | n
+    ----------------------------+------+---
+     {"cat":2,"bird":0,"dog":1} | dog  | 1 
+     {"cat":2,"bird":0,"dog":1} | cat  | 2 
+     {"cat":2,"bird":0,"dog":1} | bird | 0 
+     {"cat":5,"dog":4}          | dog  | 4 
+     {"cat":5,"dog":4}          | cat  | 5 
+    (5 rows)
+
+
 Joins
 -----
 
@@ -587,7 +886,7 @@ CROSS JOIN
 ^^^^^^^^^^
 
 A cross join returns the Cartesian product (all combinations) of two
-relations. Cross joins can either be specified using the explit
+relations. Cross joins can either be specified using the explicit
 ``CROSS JOIN`` syntax or by specifying multiple relations in the
 ``FROM`` clause.
 
@@ -622,6 +921,20 @@ so a cross join between the two tables produces 125 rows::
     ...
     (125 rows)
 
+Lateral
+^^^^^^^
+
+Subqueries appearing in the FROM clause can be preceded by the keyword ``LATERAL``. This allows them to reference columns provided by preceding ``FROM`` items.
+
+INNER and LEFT OUTER lateral joins are supported in Presto.
+
+.. code-block:: none
+
+    SELECT name, x, y
+    FROM nation
+    CROSS JOIN LATERAL (SELECT name || ' :-' AS x)
+    CROSS JOIN LATERAL (SELECT x || ')' AS y);
+
 Qualifying Column Names
 ^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -646,3 +959,117 @@ The following query will fail with the error ``Column 'name' is ambiguous``::
     SELECT name
     FROM nation
     CROSS JOIN region;
+
+
+USING
+^^^^^
+The ``USING`` clause allows you to write shorter queries when both tables you 
+are joining have the same name for the join key.
+
+For example::
+
+    SELECT *
+    FROM table_1 
+    JOIN table_2
+    ON table_1.key_A = table_2.key_A AND table_1.key_B = table_2.key_B
+
+can be rewritten to::
+
+    SELECT *
+    FROM table_1
+    JOIN table_2
+    USING (key_A, key_B)
+
+
+The output of doing ``JOIN`` with ``USING`` will be one copy of the join key 
+columns (``key_A`` and ``key_B`` in the example above) followed by the remaining columns
+in ``table_1`` and then the remaining columns in ``table_2``. Note that the join keys are not
+included in the list of columns from the origin tables for the purpose of
+referencing them in the query. You cannot access them with a table prefix and 
+if you run ``SELECT table_1.*, table_2.*``, the join columns are not included in the output.
+
+The following two queries are equivalent::
+
+    SELECT *
+    FROM (
+        VALUES
+            (1, 3, 10),
+            (2, 4, 20)
+    ) AS table_1 (key_A, key_B, y1)
+    LEFT JOIN (
+        VALUES
+            (1, 3, 100),
+            (2, 4, 200)
+    ) AS table_2 (key_A, key_B, y2) 
+    USING (key_A, key_B)
+
+    -----------------------------
+
+    SELECT key_A, key_B, table_1.*, table_2.*
+    FROM (
+        VALUES
+            (1, 3, 10),
+            (2, 4, 20)
+    ) AS table_1 (key_A, key_B, y1)
+    LEFT JOIN (
+        VALUES
+            (1, 3, 100),
+            (2, 4, 200)
+    ) AS table_2 (key_A, key_B, y2) 
+    USING (key_A, key_B)
+
+And produce the output:
+
+.. code-block:: none
+
+     key_A | key_B | y1 | y2  
+    -------+-------+----+-----
+         1 |     3 | 10 | 100 
+         2 |     4 | 20 | 200 
+    (2 rows)
+
+
+
+Subqueries
+----------
+
+A subquery is an expression which is composed of a query. The subquery
+is correlated when it refers to columns outside of the subquery.
+Logically, the subquery will be evaluated for each row in the surrounding
+query. The referenced columns will thus be constant during any single
+evaluation of the subquery.
+
+.. note:: Support for correlated subqueries is limited. Not every standard form is supported.
+
+EXISTS
+^^^^^^
+
+The ``EXISTS`` predicate determines if a subquery returns any rows::
+
+    SELECT name
+    FROM nation
+    WHERE EXISTS (SELECT * FROM region WHERE region.regionkey = nation.regionkey)
+
+IN
+^^
+
+The ``IN`` predicate determines if any values produced by the subquery
+are equal to the provided expression. The result of ``IN`` follows the
+standard rules for nulls. The subquery must produce exactly one column::
+
+    SELECT name
+    FROM nation
+    WHERE regionkey IN (SELECT regionkey FROM region)
+
+Scalar Subquery
+^^^^^^^^^^^^^^^
+
+A scalar subquery is a non-correlated subquery that returns zero or
+one row. It is an error for the subquery to produce more than one
+row. The returned value is ``NULL`` if the subquery produces no rows::
+
+    SELECT name
+    FROM nation
+    WHERE regionkey = (SELECT max(regionkey) FROM region)
+
+.. note:: Currently only single column can be returned from the scalar subquery.

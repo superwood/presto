@@ -7,14 +7,14 @@ General Changes
 
 * Add support for :doc:`/sql/create-table` (in addition to :doc:`/sql/create-table-as`).
 * Add ``IF EXISTS`` support to :doc:`/sql/drop-table` and :doc:`/sql/drop-view`.
-* Add :func:`array_agg` function.
-* Add :func:`array_intersect` function.
-* Add :func:`array_position` function.
-* Add :func:`regexp_split` function.
-* Add support for ``millisecond`` to :func:`date_diff` and :func:`date_add`.
-* Fix excessive memory usage in :func:`map_agg`.
+* Add :func:`!array_agg` function.
+* Add :func:`!array_intersect` function.
+* Add :func:`!array_position` function.
+* Add :func:`!regexp_split` function.
+* Add support for ``millisecond`` to :func:`!date_diff` and :func:`!date_add`.
+* Fix excessive memory usage in :func:`!map_agg`.
 * Fix excessive memory usage in queries that perform partitioned top-N operations
-  with :func:`row_number`.
+  with :func:`!row_number`.
 * Optimize :ref:`array_type` comparison operators.
 * Fix analysis of ``UNION`` queries for tables with hidden columns.
 * Fix ``JOIN`` associativity to be left-associative instead of right-associative.
@@ -24,7 +24,7 @@ General Changes
   (``errorCode`` previously existed but was always zero).
 * Fix ``DatabaseMetaData.getIdentifierQuoteString()`` in JDBC driver.
 * Handle thread interruption in JDBC driver ``ResultSet``.
-* Add ``history`` command and support for running previous commands via ``!n`` to the CLI.
+* Add ``history`` command and support for running previous commands with ``!n`` to the CLI.
 * Change Driver to make as much progress as possible before blocking.  This improves
   responsiveness of some limit queries.
 * Add predicate push down support to JMX connector.
@@ -39,7 +39,7 @@ Web UI Changes
 --------------
 
 The main page of the web UI has been completely rewritten to use ReactJS. It also has
-a number of new features, such as the ability to pause auto-refresh via the "Z" key and
+a number of new features, such as the ability to pause auto-refresh by using the "Z" key and
 also with a toggle in the UI.
 
 Hive Changes

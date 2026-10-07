@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.orc;
 
-import io.airlift.units.DataSize;
+import com.facebook.airlift.units.DataSize;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -25,10 +25,10 @@ public class FileOrcDataSource
 {
     private final RandomAccessFile input;
 
-    public FileOrcDataSource(File path, DataSize maxMergeDistance, DataSize maxReadSize, DataSize streamBufferSize)
+    public FileOrcDataSource(File path, DataSize maxMergeDistance, DataSize maxReadSize, DataSize streamBufferSize, boolean lazyReadSmallRanges)
             throws FileNotFoundException
     {
-        super(path.getPath(), path.length(), maxMergeDistance, maxReadSize, streamBufferSize);
+        super(new OrcDataSourceId(path.getPath()), path.length(), maxMergeDistance, maxReadSize, streamBufferSize, lazyReadSmallRanges);
         this.input = new RandomAccessFile(path, "r");
     }
 

@@ -2,7 +2,18 @@
 Cassandra Connector
 ===================
 
-The Cassandra connector allows querying data stored in Cassandra.
+The Cassandra connector allows querying data stored in Apache Cassandra® or in Cassandra-compatible cluster like Astra DB, ScyllaDB, or Instaclustr.
+
+Compatibility
+-------------
+
+Connector is compatible with all Cassandra versions starting from 2.1.5 and uses the DataStax Java Driver 4.19.3. Latest ScyllaDB tested is 5.1.11.
+
+.. note::
+
+    The connector has been upgraded from Cassandra Java Driver 3.x to 4.19.3, which provides improved performance,
+    better connection management, and support for newer Cassandra features. The upgrade is backward compatible
+    with Cassandra 2.1.5+ and does not require any configuration changes for existing deployments except for ones noted below.
 
 Configuration
 -------------
@@ -20,13 +31,16 @@ nodes used to discovery the cluster topology:
 You will also need to set ``cassandra.native-protocol-port`` if your
 Cassandra nodes are not using the default port (9042).
 
-Multiple Cassandra Clusters
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
+For ScyllaDB you don't need to add any additional configuration.
+ScyllaDB uses the same port as Cassandra by default.
+Just point to ScyllaDB nodes in ``cassandra.contact-points`` config property.
+
+Multiple Cassandra or Cassandra-compatible service Clusters
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 You can have as many catalogs as you need, so if you have additional
-Cassandra clusters, simply add another properties file to ``etc/catalog``
-with a different name (making sure it ends in ``.properties``). For
-example, if you name the property file ``sales.properties``, Presto
+Cassandra or Cassandra-compatible service clusters, add another ``.properties`` file to ``etc/catalog``
+with a different name. For example, if you name the property file ``sales.properties``, Presto
 will create a catalog named ``sales`` using the configured connector.
 
 Configuration Properties
@@ -41,37 +55,25 @@ Property Name                                      Description
                                                    driver will use these contact points to discover cluster topology.
                                                    At least one Cassandra host is required.
 
+``cassandra.cloud.secure-connect-bundle``          Path to the secure connect bundle for connecting to managed services
+                                                   cloud. This is required when connecting to Astra DB in the cloud.
+                                                   ``cassandra.contact-points`` should be avoided when this property is set.
+                                                   More information about secure connect bundle can be found in
+                                                   `Download and use a Secure Connect Bundle (SCB) with an Astra DB Serverless database`_. This property is optional.
+
 ``cassandra.native-protocol-port``                 The Cassandra server port running the native client protocol
                                                    (defaults to ``9042``).
-
-``cassandra.thrift-port``                          The Cassandra server port running the Thrift client protocol
-                                                   (defaults to ``9160``).
-
-``cassandra.limit-for-partition-key-select``       Limit of rows to read for finding all partition keys. If a
-                                                   Cassandra table has more rows than this value, splits based on
-                                                   token ranges are used instead. Note that for larger values you
-                                                   may need to adjust read timeout for Cassandra.
-
-``cassandra.max-schema-refresh-threads``           Maximum number of schema cache refresh threads. This property
-                                                   corresponds to the maximum number of parallel requests.
-
-``cassandra.schema-cache-ttl``                     Maximum time that information about a schema will be cached
-                                                   (defaults to ``1h``).
-
-``cassandra.schema-refresh-interval``              The schema information cache will be refreshed in the background
-                                                   when accessed if the cached data is at least this old
-                                                   (defaults to ``2m``).
 
 ``cassandra.consistency-level``                    Consistency levels in Cassandra refer to the level of consistency
                                                    to be used for both read and write operations.  More information
                                                    about consistency levels can be found in the
                                                    `Cassandra consistency`_ documentation. This property defaults to
-                                                   a consistency level of ``ONE``. Possible values include ``ALL``,
+                                                   a consistency level of ``LOCAL_ONE``. Possible values include ``ALL``,
                                                    ``EACH_QUORUM``, ``QUORUM``, ``LOCAL_QUORUM``, ``ONE``, ``TWO``,
                                                    ``THREE``, ``LOCAL_ONE``, ``ANY``, ``SERIAL``, ``LOCAL_SERIAL``.
 
 ``cassandra.allow-drop-table``                     Set to ``true`` to allow dropping Cassandra tables from Presto
-                                                   via :doc:`/sql/drop-table` (defaults to ``false``).
+                                                   by using :doc:`/sql/drop-table` (defaults to ``false``).
 
 ``cassandra.username``                             Username used for authentication to the Cassandra cluster.
                                                    This is a global setting used for all connections, regardless
@@ -80,68 +82,112 @@ Property Name                                      Description
 ``cassandra.password``                             Password used for authentication to the Cassandra cluster.
                                                    This is a global setting used for all connections, regardless
                                                    of the user who is connected to Presto.
+
+``cassandra.protocol-version``                     Optionally force the native protocol version (for example ``V3``,
+                                                   ``V4``, ``V5``). Normally leave this unset: the Cassandra Java Driver
+                                                   4.x negotiates the protocol version automatically, including across
+                                                   mixed-version clusters (it inspects ``system.peers`` and uses the
+                                                   minimum version the nodes report), so forcing it is rarely needed.
+                                                   Provided as an escape hatch.
+
+``case-sensitive-name-matching``                   Enable case sensitive identifier support for schema, table, and column names for the connector.
+                                                   When disabled, names are matched case-insensitively using lowercase normalization.
+                                                   Defaults to ``false``.
 ================================================== ======================================================================
 
-.. _Cassandra consistency: http://www.datastax.com/documentation/cassandra/2.0/cassandra/dml/dml_config_consistency_c.html
+.. note::
+
+        If authorization is enabled, ``cassandra.username`` must have enough permissions to perform ``SELECT`` queries on
+        the ``system.size_estimates`` table.
+
+.. _Cassandra consistency: https://docs.datastax.com/en/cassandra-oss/3.x/cassandra/dml/dmlConfigConsistency.html
+.. _Download and use a Secure Connect Bundle (SCB) with an Astra DB Serverless database: https://docs.datastax.com/en/astra-db-serverless/databases/secure-connect-bundle.html
 
 The following advanced configuration properties are available:
 
-================================================== ======================================================================
-Property Name                                      Description
-================================================== ======================================================================
-``cassandra.fetch-size``                           Number of rows fetched at a time in a Cassandra query.
+============================================================= ======================================================================
+Property Name                                                 Description
+============================================================= ======================================================================
+``cassandra.fetch-size``                                      Number of rows fetched at a time in a Cassandra query.
 
-``cassandra.fetch-size-for-partition-key-select``  Number of rows fetched at a time in a Cassandra query that
-                                                   selects partition keys.
+``cassandra.partition-size-for-batch-select``                 Number of partitions batched together into a single select for a
+                                                              single partition key column table.
 
-``cassandra.partition-size-for-batch-select``      Number of partitions batched together into a single select for a
-                                                   single partion key column table.
+``cassandra.split-size``                                      Number of keys per split when querying Cassandra.
 
-``cassandra.split-size``                           Number of keys per split when querying Cassandra.
+``cassandra.splits-per-node``                                 Number of splits per node. By default, the values from the
+                                                              ``system.size_estimates`` table are used. Only override when
+                                                              connecting to Cassandra versions < 2.1.5, which lacks
+                                                              the ``system.size_estimates`` table.
 
-``cassandra.partitioner``                          Partitioner to use for hashing and data distribution. This
-                                                   property defaults to ``Murmur3Partitioner``. The other supported
-                                                   values are ``RandomPartitioner`` and ``ByteOrderedPartitioner``.
+``cassandra.client.read-timeout``                             Maximum time the Cassandra driver will wait for an
+                                                              answer to a query from one Cassandra node. Note that the underlying
+                                                              Cassandra driver may retry a query against more than one node in
+                                                              the event of a read timeout. Increasing this may help with queries
+                                                              that use an index.
 
-``cassandra.thrift-connection-factory-class``      Allows for the specification of a custom implementation of
-                                                   ``org.apache.cassandra.thrift.ITransportFactory`` to be used to
-                                                   connect to Cassandra using the Thrift protocol.
+``cassandra.client.connect-timeout``                          Maximum time the Cassandra driver will wait to establish
+                                                              a connection to a Cassandra node. Increasing this may help with
+                                                              heavily loaded Cassandra clusters.
 
-``cassandra.transport-factory-options``            Allows for the specification of arbitrary options to be passed to
-                                                   the Thrift connection factory.
+``cassandra.client.so-linger``                                Number of seconds to linger on close if unsent data is queued.
+                                                              If set to zero, the socket will be closed immediately.
+                                                              When this option is non-zero, a socket will linger that many
+                                                              seconds for an acknowledgement that all data was written to a
+                                                              peer. This option can be used to avoid consuming sockets on a
+                                                              Cassandra server by immediately closing connections when they
+                                                              are no longer needed.
 
-``cassandra.client.read-timeout``                  Maximum time the Cassandra driver will wait for an
-                                                   answer to a query from one Cassandra node. Note that the underlying
-                                                   Cassandra driver may retry a query against more than one node in
-                                                   the event of a read timeout. Increasing this may help with queries
-                                                   that use an index.
+``cassandra.retry-policy``                                    Policy used to retry failed requests to Cassandra. This property
+                                                              defaults to ``DEFAULT``. Using ``BACKOFF`` may help when
+                                                              queries fail with *"not enough replicas"*. The other possible
+                                                              values are ``DOWNGRADING_CONSISTENCY`` and ``FALLTHROUGH``.
 
-``cassandra.client.connect-timeout``               Maximum time the Cassandra driver will wait to establish
-                                                   a connection to a Cassandra node. Increasing this may help with
-                                                   heavily loaded Cassandra clusters.
+``cassandra.load-policy.use-dc-aware``                        Set to ``true`` to use ``DCAwareRoundRobinPolicy``
+                                                              (defaults to ``false``).
 
-``cassandra.client.so-linger``                     Number of seconds to linger on close if unsent data is queued.
-                                                   If set to zero, the socket will be closed immediately.
-                                                   When this option is non-zero, a socket will linger that many
-                                                   seconds for an acknowledgement that all data was written to a
-                                                   peer. This option can be used to avoid consuming sockets on a
-                                                   Cassandra server by immediately closing connections when they
-                                                   are no longer needed.
+``cassandra.load-policy.dc-aware.local-dc``                   The name of the local datacenter for ``DCAwareRoundRobinPolicy``.
 
-``cassandra.retry-policy``                         Policy used to retry failed requests to Cassandra. This property
-                                                   defaults to ``DEFAULT``. Using ``BACKOFF`` may help when
-                                                   queries fail with *"not enough replicas"*. The other possible
-                                                   values are ``DOWNGRADING_CONSISTENCY`` and ``FALLTHROUGH``.
-================================================== ======================================================================
+``cassandra.load-policy.dc-aware.used-hosts-per-remote-dc``   Uses the provided number of host per remote datacenter
+                                                              as failover for the local hosts for ``DCAwareRoundRobinPolicy``.
 
-Querying Cassandra Tables
--------------------------
+``cassandra.load-policy.dc-aware.allow-remote-dc-for-local``  Set to ``true`` to allow to use hosts of
+                                                              remote datacenter for local consistency level.
+
+``cassandra.load-policy.use-token-aware``                     Set to ``true`` to use ``TokenAwarePolicy`` (defaults to ``false``).
+
+``cassandra.load-policy.shuffle-replicas``                    Set to ``true`` to use ``TokenAwarePolicy`` with shuffling of replicas
+                                                              (defaults to ``false``).
+
+``cassandra.no-host-available-retry-timeout``                 Retry timeout for ``NoHostAvailableException`` (defaults to ``1m``).
+
+``cassandra.speculative-execution.limit``                     The number of speculative executions (defaults to ``1``).
+
+``cassandra.speculative-execution.delay``                     The delay between each speculative execution (defaults to ``500ms``).
+
+``cassandra.tls.enabled``                                     Whether TLS security is enabled (defaults to ``false``).
+
+``cassandra.tls.keystore-path``                               Path to the PEM or JKS key store.
+
+``cassandra.tls.truststore-path``                             Path to the PEM or JKS trust store.
+
+``cassandra.tls.keystore-password``                           Password for the key store.
+
+``cassandra.tls.truststore-password``                         Password for the trust store.
+
+``cassandra.vector.max-dimensions``                           Maximum number of dimensions allowed for a Cassandra ``vector``
+                                                              column (defaults to ``8192``, Cassandra's maximum). A column whose
+                                                              declared dimension exceeds this value is rejected with a clear error.
+============================================================= ======================================================================
+
+Querying Cassandra or Cassandra-compatible service Tables
+---------------------------------------------------------
 
 The ``users`` table is an example Cassandra table from the Cassandra
 `Getting Started`_ guide. It can be created along with the ``mykeyspace``
 keyspace using Cassandra's cqlsh (CQL interactive terminal):
 
-.. _Getting Started: https://wiki.apache.org/cassandra/GettingStarted
+.. _Getting Started: https://cassandra.apache.org/doc/latest/cassandra/getting-started/index.html
 
 .. code-block:: none
 
@@ -160,13 +206,122 @@ This table can be described in Presto::
 
 .. code-block:: none
 
-     Column  |  Type   | Null | Partition Key | Comment
-    ---------+---------+------+---------------+---------
-     user_id | bigint  | true | true          |
-     fname   | varchar | true | false         |
-     lname   | varchar | true | false         |
+     Column  |  Type   | Extra | Comment
+    ---------+---------+-------+---------
+     user_id | bigint  |       |
+     fname   | varchar |       |
+     lname   | varchar |       |
     (3 rows)
 
 This table can then be queried in Presto::
 
     SELECT * FROM cassandra.mykeyspace.users;
+
+Data types
+----------
+
+The data types mappings are as follows:
+
+================  ======
+Cassandra         Presto
+================  ======
+ASCII             VARCHAR
+BIGINT            BIGINT
+BLOB              VARBINARY
+BOOLEAN           BOOLEAN
+DECIMAL           DOUBLE
+DOUBLE            DOUBLE
+FLOAT             REAL
+INET              VARCHAR(45)
+INT               INTEGER
+LIST<?>           VARCHAR
+MAP<?, ?>         VARCHAR
+SET<?>            VARCHAR
+TEXT              VARCHAR
+TIMESTAMP         TIMESTAMP
+TIMEUUID          VARCHAR
+TUPLE             VARCHAR
+VARCHAR           VARCHAR
+VARINT            VARCHAR
+SMALLINT          INTEGER
+TINYINT           INTEGER
+DATE              DATE
+VECTOR<?>         ARRAY
+================  ======
+
+Any collection (LIST/MAP/SET) can be designated as FROZEN, and the value is
+mapped to VARCHAR. Additionally, blobs have the limitation that they cannot be empty.
+
+A Cassandra ``vector<subtype, n>`` is mapped to a Presto ``ARRAY`` of the corresponding
+element type. The common ``vector<float, n>`` maps to ``ARRAY(REAL)``, so the column can be
+used directly with Presto's vector similarity functions (``cosine_similarity``, ``dot_product``,
+``l2_squared``) and :doc:`/sql/create-vector-index`. Vector element types other than the
+numeric types (``FLOAT``, ``DOUBLE``, ``INT``, ``BIGINT``, ``SMALLINT``, ``TINYINT``) are not
+supported. The maximum allowed dimension is controlled by ``cassandra.vector.max-dimensions``.
+
+Data types not listed in the table above, such as UDT, are not supported.
+
+Partition keys can only be of the following types:
+
+* ASCII
+* TEXT
+* VARCHAR
+* BIGINT
+* BOOLEAN
+* DOUBLE
+* INET
+* INT
+* FLOAT
+* DECIMAL
+* TIMESTAMP
+* UUID
+* TIMEUUID
+* SMALLINT
+* TINYINT
+* DATE
+
+Limitations
+-----------
+
+* Queries without filters containing the partition key result in fetching all partitions.
+  This causes a full scan of the entire data set, therefore it's much slower compared to a similar
+  query with a partition key as a filter.
+* ``IN`` list filters are only allowed on index (that is, partition key or clustering key) columns.
+* Range (``<`` or ``>`` and ``BETWEEN``) filters can be applied only to the partition keys.
+
+
+Migration from Driver 3.x
+-------------------------
+
+If you are upgrading from a previous version of Presto that used Cassandra Java Driver 3.x, please note the following changes:
+
+Removed Configuration Properties
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The following configuration properties are **no longer supported** in driver 4.x and must be removed from your configuration:
+
+* ``cassandra.load-policy.use-white-list`` - WhiteListPolicy does not exist in driver 4.x
+* ``cassandra.load-policy.white-list.addresses`` - WhiteListPolicy does not exist in driver 4.x
+
+**If you were using whitelist policy**, you have these alternatives:
+
+1. **Network-level filtering**: Use firewall rules or network policies to restrict which Cassandra nodes are accessible.
+
+2. **Contact points selection**: Specify only the desired nodes in ``cassandra.contact-points``. The driver will discover the cluster topology from these nodes.
+
+3. **Custom load balancing**: Implement a custom load balancing policy if you need advanced node filtering logic.
+
+**Action Required**: Remove these properties from your ``cassandra.properties`` configuration file:
+
+.. code-block:: properties
+
+    # REMOVE THESE LINES if present:
+    # cassandra.load-policy.use-white-list=true
+    # cassandra.load-policy.white-list.addresses=node1,node2,node3
+
+Protocol Version Changes
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+* Protocol V2 is no longer supported. Minimum supported version is V3.
+* The driver automatically negotiates the highest common protocol version, so manual configuration is rarely needed.
+* Protocol V5 is supported for Cassandra 4.0+.

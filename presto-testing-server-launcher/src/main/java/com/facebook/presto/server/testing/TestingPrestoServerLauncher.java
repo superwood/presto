@@ -19,8 +19,7 @@ import io.airlift.airline.Command;
 import io.airlift.airline.Help;
 import io.airlift.airline.HelpOption;
 import io.airlift.airline.model.CommandMetadata;
-
-import javax.inject.Inject;
+import jakarta.inject.Inject;
 
 import static io.airlift.airline.SingleCommand.singleCommand;
 
@@ -51,7 +50,7 @@ public class TestingPrestoServerLauncher
     {
         try (TestingPrestoServer server = new TestingPrestoServer()) {
             for (String pluginClass : options.getPluginClassNames()) {
-                Plugin plugin = (Plugin) Class.forName(pluginClass).newInstance();
+                Plugin plugin = (Plugin) Class.forName(pluginClass).getConstructor().newInstance();
                 server.installPlugin(plugin);
             }
 

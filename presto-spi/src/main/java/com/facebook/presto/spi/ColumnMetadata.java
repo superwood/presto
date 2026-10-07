@@ -13,37 +13,66 @@
  */
 package com.facebook.presto.spi;
 
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.spi.derivedcolumns.DerivedColumnSpec;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
-import static java.util.Locale.ENGLISH;
+import static com.facebook.presto.spi.SchemaUtil.checkNotEmpty;
+import static java.util.Collections.emptyMap;
+import static java.util.Collections.unmodifiableMap;
+import static java.util.Objects.requireNonNull;
 
 public class ColumnMetadata
 {
+    public static final String DEFAULT_VALUE_PROPERTY = "default_value";
+
     private final String name;
     private final Type type;
+    private final boolean nullable;
     private final String comment;
+    private final String extraInfo;
     private final boolean hidden;
+    private final Map<String, Object> properties;
+    private final Optional<DerivedColumnSpec> derivedColumnSpec;
 
-    public ColumnMetadata(String name, Type type)
+    private ColumnMetadata(
+            String name,
+            Type type,
+            boolean nullable,
+            String comment,
+            String extraInfo,
+            boolean hidden,
+            Map<String, Object> properties,
+            Optional<DerivedColumnSpec> derivedColumnSpec)
     {
-        this(name, type, null, false);
+        checkNotEmpty(name, "name");
+        requireNonNull(type, "type is null");
+        requireNonNull(properties, "properties is null");
+
+        this.name = name;
+        this.type = type;
+        this.nullable = nullable;
+        this.comment = comment;
+        this.extraInfo = extraInfo;
+        this.hidden = hidden;
+        this.properties = properties.isEmpty() ? emptyMap() : unmodifiableMap(new LinkedHashMap<>(properties));
+        this.derivedColumnSpec = derivedColumnSpec;
     }
 
-    public ColumnMetadata(String name, Type type, String comment, boolean hidden)
+    protected ColumnMetadata(Builder builder)
     {
-        if (name == null || name.isEmpty()) {
-            throw new NullPointerException("name is null or empty");
-        }
-        if (type == null) {
-            throw new NullPointerException("type is null");
-        }
-
-        this.name = name.toLowerCase(ENGLISH);
-        this.type = type;
-        this.comment = comment;
-        this.hidden = hidden;
+        this(builder.name,
+                builder.type,
+                builder.nullable,
+                builder.comment.orElse(null),
+                builder.extraInfo.orElse(null),
+                builder.hidden,
+                builder.properties,
+                builder.derivedColumnSpec);
     }
 
     public String getName()
@@ -56,14 +85,52 @@ public class ColumnMetadata
         return type;
     }
 
-    public String getComment()
+    public boolean isNullable()
     {
-        return comment;
+        return nullable;
+    }
+
+    public Optional<String> getComment()
+    {
+        return Optional.ofNullable(comment);
+    }
+
+    public Optional<String> getExtraInfo()
+    {
+        return Optional.ofNullable(extraInfo);
     }
 
     public boolean isHidden()
     {
         return hidden;
+    }
+
+    public Map<String, Object> getProperties()
+    {
+        return properties;
+    }
+
+    public Optional<Object> getDefaultValue()
+    {
+        return Optional.ofNullable(properties.get(DEFAULT_VALUE_PROPERTY));
+    }
+
+    public Optional<DerivedColumnSpec> getDerivedColumnSpec()
+    {
+        return derivedColumnSpec;
+    }
+
+    public Builder toBuilder()
+    {
+        return ColumnMetadata.builder()
+                .setName(getName())
+                .setType(getType())
+                .setNullable(isNullable())
+                .setComment(getComment().orElse(null))
+                .setExtraInfo(getExtraInfo().orElse(null))
+                .setHidden(isHidden())
+                .setDerivedColumnSpec(derivedColumnSpec)
+                .setProperties(getProperties());
     }
 
     @Override
@@ -72,11 +139,21 @@ public class ColumnMetadata
         StringBuilder sb = new StringBuilder("ColumnMetadata{");
         sb.append("name='").append(name).append('\'');
         sb.append(", type=").append(type);
+        sb.append(", ").append(nullable ? "nullable" : "nonnull");
         if (comment != null) {
             sb.append(", comment='").append(comment).append('\'');
         }
+        if (extraInfo != null) {
+            sb.append(", extraInfo='").append(extraInfo).append('\'');
+        }
         if (hidden) {
             sb.append(", hidden");
+        }
+        if (!properties.isEmpty()) {
+            sb.append(", properties=").append(properties);
+        }
+        if (derivedColumnSpec.isPresent()) {
+            sb.append(", derivedColumnSpec=").append(derivedColumnSpec);
         }
         sb.append('}');
         return sb.toString();
@@ -85,7 +162,7 @@ public class ColumnMetadata
     @Override
     public int hashCode()
     {
-        return Objects.hash(name, type, comment, hidden);
+        return Objects.hash(name, type, nullable, comment, extraInfo, hidden, derivedColumnSpec);
     }
 
     @Override
@@ -100,7 +177,82 @@ public class ColumnMetadata
         ColumnMetadata other = (ColumnMetadata) obj;
         return Objects.equals(this.name, other.name) &&
                 Objects.equals(this.type, other.type) &&
+                Objects.equals(this.nullable, other.nullable) &&
                 Objects.equals(this.comment, other.comment) &&
-                Objects.equals(this.hidden, other.hidden);
+                Objects.equals(this.extraInfo, other.extraInfo) &&
+                Objects.equals(this.hidden, other.hidden) &&
+                Objects.equals(this.derivedColumnSpec, other.derivedColumnSpec);
+    }
+
+    public static Builder builder()
+    {
+        return new Builder();
+    }
+
+    public static class Builder
+    {
+        private String name;
+        private Type type;
+        private boolean nullable = true;
+        private Optional<String> comment = Optional.empty();
+        private Optional<String> extraInfo = Optional.empty();
+        private boolean hidden;
+        private Map<String, Object> properties = emptyMap();
+        private Optional<DerivedColumnSpec> derivedColumnSpec = Optional.empty();
+
+        private Builder() {}
+
+        public Builder setName(String name)
+        {
+            this.name = requireNonNull(name, "name is null");
+            return this;
+        }
+
+        public Builder setType(Type type)
+        {
+            this.type = requireNonNull(type, "type is null");
+            return this;
+        }
+
+        public Builder setNullable(boolean nullable)
+        {
+            this.nullable = nullable;
+            return this;
+        }
+
+        public Builder setComment(String comment)
+        {
+            this.comment = Optional.ofNullable(comment);
+            return this;
+        }
+
+        public Builder setExtraInfo(String extraInfo)
+        {
+            this.extraInfo = Optional.ofNullable(extraInfo);
+            return this;
+        }
+
+        public Builder setHidden(boolean hidden)
+        {
+            this.hidden = hidden;
+            return this;
+        }
+
+        public Builder setProperties(Map<String, Object> properties)
+        {
+            this.properties = requireNonNull(properties, "properties is null");
+            return this;
+        }
+
+        public Builder setDerivedColumnSpec(Optional<DerivedColumnSpec> derivedColumnSpec)
+        {
+            this.derivedColumnSpec = requireNonNull(derivedColumnSpec, "derivedColumnSpec is null");
+            return this;
+        }
+
+        public ColumnMetadata build()
+        {
+            return new ColumnMetadata(this);
+        }
     }
 }

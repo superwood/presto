@@ -13,8 +13,9 @@
  */
 package com.facebook.presto.jdbc;
 
-import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.common.type.TypeSignatureParameter;
+import com.facebook.presto.common.type.VarcharType;
 import com.google.common.collect.ImmutableList;
 
 import java.sql.Types;
@@ -24,7 +25,7 @@ import static java.util.Objects.requireNonNull;
 
 class ColumnInfo
 {
-    private static final int VARCHAR_MAX = 1024 * 1024 * 1024;
+    private static final int VARCHAR_MAX = VarcharType.UNBOUNDED_LENGTH;
     private static final int VARBINARY_MAX = 1024 * 1024 * 1024;
     private static final int TIME_ZONE_MAX = 40; // current longest time zone is 32
     private static final int TIME_MAX = "HH:mm:ss.SSS".length();
@@ -93,7 +94,7 @@ class ColumnInfo
             parameterTypes.add(getType(parameter));
         }
         builder.setColumnParameterTypes(parameterTypes.build());
-        switch (type.toString()) {
+        switch (type.getBase()) {
             case "boolean":
                 builder.setColumnDisplaySize(5);
                 break;
@@ -103,17 +104,47 @@ class ColumnInfo
                 builder.setScale(0);
                 builder.setColumnDisplaySize(20);
                 break;
+            case "integer":
+                builder.setSigned(true);
+                builder.setPrecision(10);
+                builder.setScale(0);
+                builder.setColumnDisplaySize(11);
+                break;
+            case "smallint":
+                builder.setSigned(true);
+                builder.setPrecision(5);
+                builder.setScale(0);
+                builder.setColumnDisplaySize(6);
+                break;
+            case "tinyint":
+                builder.setSigned(true);
+                builder.setPrecision(3);
+                builder.setScale(0);
+                builder.setColumnDisplaySize(4);
+                break;
+            case "real":
+                builder.setSigned(true);
+                builder.setPrecision(9);
+                builder.setScale(0);
+                builder.setColumnDisplaySize(16);
+                break;
             case "double":
                 builder.setSigned(true);
                 builder.setPrecision(17);
                 builder.setScale(0);
                 builder.setColumnDisplaySize(24);
                 break;
-            case "varchar":
-                builder.setSigned(true);
-                builder.setPrecision(VARCHAR_MAX);
+            case "char":
+                builder.setSigned(false);
+                builder.setPrecision(type.getParameters().get(0).getLongLiteral().intValue());
+                builder.setColumnDisplaySize(type.getParameters().get(0).getLongLiteral().intValue());
                 builder.setScale(0);
-                builder.setColumnDisplaySize(VARCHAR_MAX);
+                break;
+            case "varchar":
+                builder.setSigned(false);
+                builder.setPrecision(Math.min(type.getParameters().get(0).getLongLiteral().intValue(), VARCHAR_MAX));
+                builder.setColumnDisplaySize(Math.min(type.getParameters().get(0).getLongLiteral().intValue(), VARCHAR_MAX));
+                builder.setScale(0);
                 break;
             case "varbinary":
                 builder.setSigned(true);
@@ -156,6 +187,12 @@ class ColumnInfo
             case "interval day to second":
                 builder.setColumnDisplaySize(TIMESTAMP_MAX);
                 break;
+            case "decimal":
+                builder.setSigned(true);
+                builder.setColumnDisplaySize(type.getParameters().get(0).getLongLiteral().intValue() + 2); // dot and sign
+                builder.setPrecision(type.getParameters().get(0).getLongLiteral().intValue());
+                builder.setScale(type.getParameters().get(1).getLongLiteral().intValue());
+                break;
         }
     }
 
@@ -171,20 +208,29 @@ class ColumnInfo
 
     private static int getType(TypeSignature type)
     {
-        if (type.getBase().equals("array")) {
-            return Types.ARRAY;
-        }
         switch (type.getBase()) {
+            case "array":
+                return Types.ARRAY;
             case "boolean":
                 return Types.BOOLEAN;
             case "bigint":
                 return Types.BIGINT;
+            case "integer":
+                return Types.INTEGER;
+            case "smallint":
+                return Types.SMALLINT;
+            case "tinyint":
+                return Types.TINYINT;
+            case "real":
+                return Types.REAL;
             case "double":
                 return Types.DOUBLE;
             case "varchar":
-                return Types.LONGNVARCHAR;
+                return Types.VARCHAR;
+            case "char":
+                return Types.CHAR;
             case "varbinary":
-                return Types.LONGVARBINARY;
+                return Types.VARBINARY;
             case "time":
                 return Types.TIME;
             case "time with time zone":
@@ -195,6 +241,10 @@ class ColumnInfo
                 return Types.TIMESTAMP;
             case "date":
                 return Types.DATE;
+            case "decimal":
+                return Types.DECIMAL;
+            case "unknown":
+                return Types.NULL;
             default:
                 return Types.JAVA_OBJECT;
         }

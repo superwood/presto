@@ -13,7 +13,8 @@
  */
 package com.facebook.presto.hive.util;
 
-import java.util.concurrent.CompletableFuture;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
 
 public interface ResumableTask
 {
@@ -23,27 +24,27 @@ public interface ResumableTask
      * @return a finished status if the task is complete, otherwise includes a continuation future to indicate
      * when it should be continued to be processed.
      */
-    TaskStatus process();
+    ResumableTaskStatus process();
 
-    class TaskStatus
+    class ResumableTaskStatus
     {
         private final boolean finished;
-        private final CompletableFuture<?> continuationFuture;
+        private final ListenableFuture<?> continuationFuture;
 
-        private TaskStatus(boolean finished, CompletableFuture<?> continuationFuture)
+        private ResumableTaskStatus(boolean finished, ListenableFuture<?> continuationFuture)
         {
             this.finished = finished;
             this.continuationFuture = continuationFuture;
         }
 
-        public static TaskStatus finished()
+        public static ResumableTaskStatus finished()
         {
-            return new TaskStatus(true, CompletableFuture.completedFuture(null));
+            return new ResumableTaskStatus(true, Futures.immediateFuture(null));
         }
 
-        public static TaskStatus continueOn(CompletableFuture<?> continuationFuture)
+        public static ResumableTaskStatus continueOn(ListenableFuture<?> continuationFuture)
         {
-            return new TaskStatus(false, continuationFuture);
+            return new ResumableTaskStatus(false, continuationFuture);
         }
 
         public boolean isFinished()
@@ -51,7 +52,7 @@ public interface ResumableTask
             return finished;
         }
 
-        public CompletableFuture<?> getContinuationFuture()
+        public ListenableFuture<?> getContinuationFuture()
         {
             return continuationFuture;
         }

@@ -13,17 +13,38 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.facebook.presto.spi.PrestoException;
+
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
+
+import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 
 public abstract class GroupingElement
         extends Node
 {
-    public GroupingElement(Optional<NodeLocation> location)
+    protected GroupingElement(Optional<NodeLocation> location)
     {
         super(location);
     }
 
-    public abstract List<Set<Expression>> enumerateGroupingSets();
+    public abstract List<Expression> getExpressions();
+
+    @Override
+    protected <R, C> R accept(AstVisitor<R, C> visitor, C context)
+    {
+        return visitor.visitGroupingElement(this, context);
+    }
+
+    void validateExpressions(List<Expression> expressions)
+    {
+        expressions.forEach(expression -> ExpressionTreeRewriter.rewriteWith(new ExpressionRewriter<Void>()
+        {
+            @Override
+            public Expression rewriteLambdaExpression(LambdaExpression node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
+            {
+                throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "GROUP BY does not support lambda expressions, please use GROUP BY # instead");
+            }
+        }, expression, null));
+    }
 }

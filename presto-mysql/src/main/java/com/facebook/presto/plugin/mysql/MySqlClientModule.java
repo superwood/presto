@@ -13,22 +13,35 @@
  */
 package com.facebook.presto.plugin.mysql;
 
+import com.facebook.airlift.configuration.AbstractConfigurationAwareModule;
 import com.facebook.presto.plugin.jdbc.BaseJdbcConfig;
 import com.facebook.presto.plugin.jdbc.JdbcClient;
 import com.google.inject.Binder;
-import com.google.inject.Module;
 import com.google.inject.Scopes;
+import com.mysql.cj.conf.ConnectionUrl;
+import com.mysql.cj.conf.ConnectionUrlParser;
+import com.mysql.cj.util.StringUtils;
 
-import static io.airlift.configuration.ConfigBinder.configBinder;
+import static com.facebook.airlift.configuration.ConfigBinder.configBinder;
+import static com.google.common.base.Preconditions.checkArgument;
 
 public class MySqlClientModule
-        implements Module
+        extends AbstractConfigurationAwareModule
 {
     @Override
-    public void configure(Binder binder)
+    protected void setup(Binder binder)
     {
         binder.bind(JdbcClient.class).to(MySqlClient.class).in(Scopes.SINGLETON);
-        configBinder(binder).bindConfig(BaseJdbcConfig.class);
+        configBinder(binder).bindConfigDefaults(BaseJdbcConfig.class, baseJdbcConfig -> {
+            baseJdbcConfig.setlistSchemasIgnoredSchemas("information_schema,mysql");
+        });
+        ensureCatalogIsEmpty(buildConfigObject(BaseJdbcConfig.class).getConnectionUrl());
         configBinder(binder).bindConfig(MySqlConfig.class);
+    }
+
+    private static void ensureCatalogIsEmpty(String connectionUrl)
+    {
+        checkArgument(ConnectionUrlParser.isConnectionStringSupported(connectionUrl), "Invalid JDBC URL for MySQL connector");
+        checkArgument(StringUtils.isNullOrEmpty(ConnectionUrl.getConnectionUrlInstance(connectionUrl, null).getDatabase()), "Database (catalog) must not be specified in JDBC URL for MySQL connector");
     }
 }

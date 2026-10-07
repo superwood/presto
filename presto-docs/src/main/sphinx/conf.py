@@ -15,19 +15,13 @@
 #
 # Presto documentation build configuration file
 #
-# This file is execfile()d with the current directory set to its containing dir.
-#
 
 import os
 import sys
 import xml.dom.minidom
 
-try:
-    sys.dont_write_bytecode = True
-except:
-    pass
-
-sys.path.insert(0, os.path.abspath('ext'))
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.abspath("ext"))
 
 
 def child_node(node, name):
@@ -45,53 +39,125 @@ def maven_version(pom):
     dom = xml.dom.minidom.parse(pom)
     project = dom.childNodes[0]
 
-    version = child_node(project, 'version')
+    version = child_node(project, "version")
     if version:
         return node_text(version)
 
-    parent = child_node(project, 'parent')
-    version = child_node(parent, 'version')
+    parent = child_node(project, "parent")
+    version = child_node(parent, "version")
     return node_text(version)
 
 
 def get_version():
-    version = os.environ.get('PRESTO_VERSION', '').strip()
-    return version or maven_version('../../../pom.xml')
+    presto_version = os.environ.get("PRESTO_VERSION", "").strip()
+    return presto_version or maven_version("../../../pom.xml")
 
 # -- General configuration -----------------------------------------------------
 
-needs_sphinx = '1.1'
 
-extensions = ['download']
+needs_sphinx = "8.2.1"
 
-templates_path = ['_templates']
+extensions = [
+    "sphinx_immaterial",
+    "download",
+    "issue",
+    "pr",
+    "sphinx.ext.autosectionlabel"
+]
 
-source_suffix = '.rst'
+copyright = "The Presto Foundation. All rights reserved. Presto is a registered trademark of LF Projects, LLC"
 
-master_doc = 'index'
+templates_path = ["_templates"]
 
-project = u'Presto'
+source_suffix = ".rst"
+
+project = "Presto"
+
+# Set Author blank to avoid default value of "unknown"
+author = ""
 
 version = get_version()
 release = version
 
-exclude_patterns = ['_build', 'rest*', 'overview/concepts*']
+exclude_patterns = ["_build"]
 
-pygments_style = 'sphinx'
+highlight_language = "sql"
 
-highlight_language = 'sql'
-
-rst_epilog = """
+rst_epilog = f"""
 .. |presto_server_release| replace:: ``presto-server-{release}``
-""".replace('{release}', release)
+.. |presto_router_release| replace:: ``presto-router-{release}``
+.. |presto_flight_shim_release| replace:: ``presto-flight-shim-{release}``
+"""
+
+# "xelatex" natively supports Unicode
+latex_engine = "xelatex"
+
+autosectionlabel_prefix_document = True
 
 # -- Options for HTML output ---------------------------------------------------
 
-html_theme_path = ['./themes']
-html_theme = 'presto'
+html_theme = "sphinx_immaterial"
 
-html_title = '%s %s Documentation' % (project, release)
+# Set link name generated in the top bar.
+html_title = f"{project} {release} Documentation"
+html_logo = "images/logo.png"
+html_favicon = "images/favicon.ico"
 
-html_add_permalinks = ''
-html_show_copyright = False
+html_static_path = ["."]
+
+# Set the primary domain to js because if left as the default python
+# the theme errors when functions are not available in a python module
+primary_domain = "js"
+
 html_show_sphinx = False
+
+object_description_options = [
+    ("js:.*", dict(toc_icon_class=None, include_fields_in_toc=False)),
+]
+
+html_theme_options = {
+
+    # Set your GA account ID to enable tracking
+    "analytics": {
+        "provider": "google",
+        "property": "G-K7GB6F0LBZ"
+    },
+    "features": [
+        "toc.follow",
+        "toc.sticky",
+        "content.code.copy",
+    ],
+    "palette": [
+        {
+            "media": "(prefers-color-scheme: light)",
+            "scheme": "default",
+            "primary": "black",
+            "accent": "cyan",
+            "toggle": {
+                "icon": "material/toggle-switch-off-outline",
+                "name": "Switch to dark mode",
+            }
+        },
+        {
+            "media": "(prefers-color-scheme: dark)",
+            "scheme": "slate",
+            "primary": "light-blue",
+            "accent": "deep-orange",
+            "toggle": {
+                "icon": "material/toggle-switch",
+                "name": "Switch to light mode",
+            }
+        },
+    ],
+    "edit_uri": "blob/master/presto-docs/src/main/sphinx",
+    "repo_url": "https://github.com/prestodb/presto",
+    "repo_name": "Presto",
+    # If true, TOC entries that are not ancestors of the current page are collapsed
+    "globaltoc_collapse": True,
+    "social": [
+        {
+            "icon": "fontawesome/brands/github",
+            "link": "https://github.com/prestodb/presto",
+        },
+    ],
+}

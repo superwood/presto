@@ -1,0 +1,54 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "presto_cpp/main/types/TypeParser.h"
+
+#include "presto_cpp/main/common/Configs.h"
+#include "velox/functions/prestosql/types/parser/TypeParser.h"
+
+namespace facebook::presto {
+
+velox::TypePtr TypeParser::parse(const std::string& text) const {
+  if (SystemConfig::instance()->charNToVarcharImplicitCast()) {
+    if (text.starts_with("char(") || text.starts_with("CHAR(")) {
+      return velox::VARCHAR();
+    }
+  }
+  if (!SystemConfig::instance()->enumTypesEnabled()) {
+    if (text.find("BigintEnum") != std::string::npos ||
+        text.find("VarcharEnum") != std::string::npos) {
+      VELOX_UNSUPPORTED("Unsupported type: {}", text);
+    }
+  }
+  // Varchar-backed Presto logical types that have no Velox type. Native
+  // normally never parses these: PrestoToVeloxExpr unwraps the inline cast(...
+  // as <T>) (or, for LIKE, the cast(... as LikePattern)) down to the inner
+  // varchar. But when such a value is materialized into a projection column —
+  // e.g. a remote (RPC) function result feeding LIKE, regexp, or json_extract,
+  // where the optimizer hoists the constant pattern below the RPC node — the
+  // column's declared type and references to it reach this parser. Their
+  // runtime value is the varchar pattern/path, so resolve them to varchar.
+  if (text == "LikePattern" || text == "Re2JRegExp" || text == "JsonPath" ||
+      text == "CodePoints") {
+    return velox::VARCHAR();
+  }
+  auto it = cache_.find(text);
+  if (it != cache_.end()) {
+    return it->second;
+  }
+
+  auto result = velox::functions::prestosql::parseType(text);
+  cache_.insert({text, result});
+  return result;
+}
+} // namespace facebook::presto

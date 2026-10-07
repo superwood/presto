@@ -13,26 +13,73 @@
  */
 package com.facebook.presto.hive;
 
-import com.facebook.presto.spi.type.StandardTypes;
-import io.airlift.json.JsonCodec;
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.presto.common.type.StandardTypes;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import java.util.Optional;
+
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.hive.BaseHiveColumnHandle.ColumnType.PARTITION_KEY;
+import static com.facebook.presto.hive.BaseHiveColumnHandle.ColumnType.REGULAR;
+import static com.facebook.presto.hive.BaseHiveColumnHandle.ColumnType.SYNTHESIZED;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertTrue;
 
 public class TestHiveColumnHandle
 {
     private final JsonCodec<HiveColumnHandle> codec = JsonCodec.jsonCodec(HiveColumnHandle.class);
 
     @Test
-    public void testRoundTrip()
+    public void testHiddenColumn()
     {
-        HiveColumnHandle expected = new HiveColumnHandle("client", "name", HiveType.HIVE_FLOAT, parseTypeSignature(StandardTypes.DOUBLE), 88, true);
+        HiveColumnHandle hiddenColumn = HiveColumnHandle.pathColumnHandle();
+        testRoundTrip(hiddenColumn);
+    }
 
+    @Test
+    public void testRowIdHiddenColumn()
+    {
+        HiveColumnHandle rowIdColumn = HiveColumnHandle.rowIdColumnHandle();
+        testRoundTrip(rowIdColumn);
+    }
+
+    @Test
+    public void testRowIdIsSynthesized()
+    {
+        HiveColumnHandle rowIdColumn = HiveColumnHandle.rowIdColumnHandle();
+        assertEquals(rowIdColumn.getColumnType(), SYNTHESIZED);
+    }
+
+    @Test
+    public void testIsRowIdColumnHandle()
+    {
+        HiveColumnHandle rowIdColumn = HiveColumnHandle.rowIdColumnHandle();
+        assertTrue(HiveColumnHandle.isRowIdColumnHandle(rowIdColumn));
+        HiveColumnHandle pathColumn = HiveColumnHandle.pathColumnHandle();
+        assertFalse(HiveColumnHandle.isRowIdColumnHandle(pathColumn));
+    }
+
+    @Test
+    public void testRegularColumn()
+    {
+        HiveColumnHandle expectedPartitionColumn = new HiveColumnHandle("name", HiveType.HIVE_FLOAT, parseTypeSignature(StandardTypes.DOUBLE), 88, PARTITION_KEY, Optional.empty(), Optional.empty());
+        testRoundTrip(expectedPartitionColumn);
+    }
+
+    @Test
+    public void testPartitionKeyColumn()
+    {
+        HiveColumnHandle expectedRegularColumn = new HiveColumnHandle("name", HiveType.HIVE_FLOAT, parseTypeSignature(StandardTypes.DOUBLE), 88, REGULAR, Optional.empty(), Optional.empty());
+        testRoundTrip(expectedRegularColumn);
+    }
+
+    private void testRoundTrip(HiveColumnHandle expected)
+    {
         String json = codec.toJson(expected);
         HiveColumnHandle actual = codec.fromJson(json);
 
-        assertEquals(actual.getClientId(), expected.getClientId());
         assertEquals(actual.getName(), expected.getName());
         assertEquals(actual.getHiveType(), expected.getHiveType());
         assertEquals(actual.getHiveColumnIndex(), expected.getHiveColumnIndex());

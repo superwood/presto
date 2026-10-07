@@ -14,13 +14,13 @@
 package com.facebook.presto.benchmark;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.metadata.InMemoryNodeManager;
 import com.facebook.presto.testing.LocalQueryRunner;
 import com.facebook.presto.tpch.TpchConnectorFactory;
 import com.google.common.collect.ImmutableMap;
 
+import java.util.Map;
+
 import static com.facebook.presto.Session.SessionBuilder;
-import static com.facebook.presto.testing.LocalQueryRunner.queryRunnerWithInitialTransaction;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 
@@ -32,29 +32,27 @@ public final class BenchmarkQueryRunner
 
     public static LocalQueryRunner createLocalQueryRunnerHashEnabled()
     {
-        return createLocalQueryRunner(true);
+        return createLocalQueryRunner(ImmutableMap.of("optimizer.optimize_hash_generation", "true"));
     }
 
     public static LocalQueryRunner createLocalQueryRunner()
     {
-        return createLocalQueryRunner(false);
+        return createLocalQueryRunner(ImmutableMap.of());
     }
-    public static LocalQueryRunner createLocalQueryRunner(boolean hashingEnabled)
+
+    public static LocalQueryRunner createLocalQueryRunner(Map<String, String> extraSessionProperties)
     {
         SessionBuilder sessionBuilder = testSessionBuilder()
                 .setCatalog("tpch")
                 .setSchema(TINY_SCHEMA_NAME);
 
-        if (hashingEnabled) {
-            sessionBuilder.setSystemProperties(ImmutableMap.of("optimizer.optimize_hash_generation", "true"));
-        }
+        extraSessionProperties.forEach(sessionBuilder::setSystemProperty);
 
         Session session = sessionBuilder.build();
-        LocalQueryRunner localQueryRunner = queryRunnerWithInitialTransaction(session);
+        LocalQueryRunner localQueryRunner = new LocalQueryRunner(session);
 
         // add tpch
-        InMemoryNodeManager nodeManager = localQueryRunner.getNodeManager();
-        localQueryRunner.createCatalog("tpch", new TpchConnectorFactory(nodeManager, 1), ImmutableMap.<String, String>of());
+        localQueryRunner.createCatalog("tpch", new TpchConnectorFactory(1), ImmutableMap.of());
 
         return localQueryRunner;
     }

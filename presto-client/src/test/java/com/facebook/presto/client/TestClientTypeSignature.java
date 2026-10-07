@@ -13,17 +13,20 @@
  */
 package com.facebook.presto.client;
 
-import com.facebook.presto.spi.type.NamedTypeSignature;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.airlift.json.JsonCodecFactory;
+import com.facebook.airlift.json.JsonObjectMapperProvider;
+import com.facebook.presto.common.type.NamedTypeSignature;
+import com.facebook.presto.common.type.RowFieldName;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.common.type.TypeSignatureParameter;
 import com.google.common.collect.ImmutableList;
-import io.airlift.json.JsonCodec;
-import io.airlift.json.JsonCodecFactory;
-import io.airlift.json.ObjectMapperProvider;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import java.util.Optional;
+
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static org.testng.Assert.assertEquals;
 
 public class TestClientTypeSignature
@@ -31,7 +34,7 @@ public class TestClientTypeSignature
     public static final JsonCodec<ClientTypeSignature> CLIENT_TYPE_SIGNATURE_CODEC;
 
     static {
-        ObjectMapperProvider provider = new ObjectMapperProvider();
+        JsonObjectMapperProvider provider = new JsonObjectMapperProvider();
         JsonCodecFactory codecFactory = new JsonCodecFactory(provider);
         CLIENT_TYPE_SIGNATURE_CODEC = codecFactory.jsonCodec(ClientTypeSignature.class);
     }
@@ -50,8 +53,8 @@ public class TestClientTypeSignature
         assertJsonRoundTrip(new ClientTypeSignature(
                 "row",
                 ImmutableList.of(
-                        new ClientTypeSignatureParameter(TypeSignatureParameter.of(new NamedTypeSignature("foo", bigint))),
-                        new ClientTypeSignatureParameter(TypeSignatureParameter.of(new NamedTypeSignature("bar", bigint))))));
+                        new ClientTypeSignatureParameter(TypeSignatureParameter.of(new NamedTypeSignature(Optional.of(new RowFieldName("foo", false)), bigint))),
+                        new ClientTypeSignatureParameter(TypeSignatureParameter.of(new NamedTypeSignature(Optional.of(new RowFieldName("bar", false)), bigint))))));
     }
 
     @Test

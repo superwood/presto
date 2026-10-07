@@ -1,0 +1,222 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.facebook.presto.hive.metastore.glue;
+
+import com.facebook.presto.hive.aws.metrics.AwsSdkClientStats;
+import org.weakref.jmx.Flatten;
+import org.weakref.jmx.Managed;
+import org.weakref.jmx.Nested;
+import software.amazon.awssdk.metrics.MetricPublisher;
+
+public class GlueMetastoreStats
+{
+    private final GlueCatalogApiStats createDatabase = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats updateDatabase = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats deleteDatabase = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats getDatabases = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats getDatabase = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats createTable = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats updateTable = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats deleteTable = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats getTables = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats getTable = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats batchCreatePartitions = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats batchGetPartitions = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats batchUpdatePartitions = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats updatePartition = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats deletePartition = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats getPartitions = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats getPartition = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats getColumnStatisticsForTable = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats getColumnStatisticsForPartition = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats updateColumnStatisticsForTable = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats deleteColumnStatisticsForTable = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats updateColumnStatisticsForPartition = new GlueCatalogApiStats();
+    private final GlueCatalogApiStats deleteColumnStatisticsForPartition = new GlueCatalogApiStats();
+
+    private final AwsSdkClientStats awsSdkClientStats = new AwsSdkClientStats();
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getCreateDatabase()
+    {
+        return createDatabase;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getUpdateDatabase()
+    {
+        return updateDatabase;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getDeleteDatabase()
+    {
+        return deleteDatabase;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getGetDatabases()
+    {
+        return getDatabases;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getGetDatabase()
+    {
+        return getDatabase;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getCreateTable()
+    {
+        return createTable;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getUpdateTable()
+    {
+        return updateTable;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getDeleteTable()
+    {
+        return deleteTable;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getGetTables()
+    {
+        return getTables;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getGetTable()
+    {
+        return getTable;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getBatchCreatePartitions()
+    {
+        return batchCreatePartitions;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getBatchGetPartitions()
+    {
+        return batchGetPartitions;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getBatchUpdatePartitions()
+    {
+        return batchUpdatePartitions;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getUpdatePartition()
+    {
+        return updatePartition;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getDeletePartition()
+    {
+        return deletePartition;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getGetPartitions()
+    {
+        return getPartitions;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getGetPartition()
+    {
+        return getPartition;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getGetColumnStatisticsForTable()
+    {
+        return getColumnStatisticsForTable;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getGetColumnStatisticsForPartition()
+    {
+        return getColumnStatisticsForPartition;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getUpdateColumnStatisticsForTable()
+    {
+        return updateColumnStatisticsForTable;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getDeleteColumnStatisticsForTable()
+    {
+        return deleteColumnStatisticsForTable;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getUpdateColumnStatisticsForPartition()
+    {
+        return updateColumnStatisticsForPartition;
+    }
+
+    @Managed
+    @Nested
+    public GlueCatalogApiStats getDeleteColumnStatisticsForPartition()
+    {
+        return deleteColumnStatisticsForPartition;
+    }
+
+    @Managed
+    @Flatten
+    public AwsSdkClientStats getAwsSdkClientStats()
+    {
+        return awsSdkClientStats;
+    }
+
+    public MetricPublisher newRequestMetricPublisher()
+    {
+        return awsSdkClientStats.newRequestMetricsPublisher();
+    }
+}

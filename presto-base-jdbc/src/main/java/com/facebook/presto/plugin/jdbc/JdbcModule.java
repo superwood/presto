@@ -13,12 +13,19 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.presto.plugin.jdbc.procedure.ExecuteProcedure;
+import com.facebook.presto.spi.connector.ConnectorAccessControl;
+import com.facebook.presto.spi.procedure.Procedure;
 import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Scopes;
 
-import static io.airlift.configuration.ConfigBinder.configBinder;
+import static com.facebook.airlift.configuration.ConfigBinder.configBinder;
+import static com.google.inject.multibindings.Multibinder.newSetBinder;
+import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
 import static java.util.Objects.requireNonNull;
+import static org.weakref.jmx.ObjectNames.generatedNameOf;
+import static org.weakref.jmx.guice.ExportBinder.newExporter;
 
 public class JdbcModule
         implements Module
@@ -33,12 +40,22 @@ public class JdbcModule
     @Override
     public void configure(Binder binder)
     {
+        newOptionalBinder(binder, ConnectorAccessControl.class);
+        newSetBinder(binder, Procedure.class).addBinding().toProvider(ExecuteProcedure.class).in(Scopes.SINGLETON);
         binder.bind(JdbcConnectorId.class).toInstance(new JdbcConnectorId(connectorId));
-        binder.bind(JdbcMetadata.class).in(Scopes.SINGLETON);
+
+        binder.bind(JdbcMetadataCache.class).in(Scopes.SINGLETON);
+        binder.bind(JdbcMetadataCacheStats.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(JdbcMetadataCacheStats.class).as(generatedNameOf(JdbcMetadataCacheStats.class, connectorId));
+
+        binder.bind(JdbcMetadataFactory.class).in(Scopes.SINGLETON);
         binder.bind(JdbcSplitManager.class).in(Scopes.SINGLETON);
         binder.bind(JdbcRecordSetProvider.class).in(Scopes.SINGLETON);
-        binder.bind(JdbcRecordSinkProvider.class).in(Scopes.SINGLETON);
+        binder.bind(JdbcPageSinkProvider.class).in(Scopes.SINGLETON);
+        newOptionalBinder(binder, JdbcSessionPropertiesProvider.class);
         binder.bind(JdbcConnector.class).in(Scopes.SINGLETON);
         configBinder(binder).bindConfig(JdbcMetadataConfig.class);
+        configBinder(binder).bindConfig(BaseJdbcConfig.class);
+        binder.bind(TableLocationProvider.class).to(DefaultTableLocationProvider.class).in(Scopes.SINGLETON);
     }
 }

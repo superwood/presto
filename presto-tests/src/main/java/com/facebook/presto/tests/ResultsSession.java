@@ -13,14 +13,19 @@
  */
 package com.facebook.presto.tests;
 
-import com.facebook.presto.client.QueryResults;
+import com.facebook.presto.client.QueryData;
+import com.facebook.presto.client.QueryStatusInfo;
+import com.facebook.presto.spi.PrestoWarning;
+import com.facebook.presto.spi.analyzer.UpdateInfo;
+import jakarta.annotation.Nullable;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 public interface ResultsSession<T>
 {
-    default void setUpdateType(String type)
+    default void setUpdateInfo(UpdateInfo type)
     {
         throw new UnsupportedOperationException();
     }
@@ -30,7 +35,12 @@ public interface ResultsSession<T>
         throw new UnsupportedOperationException();
     }
 
-    void addResults(QueryResults result);
+    default void setWarnings(List<PrestoWarning> warnings)
+    {
+        throw new UnsupportedOperationException();
+    }
 
-    T build(Map<String, String> setSessionProperties, Set<String> resetSessionProperties);
+    void addResults(QueryStatusInfo statusInfo, QueryData data);
+
+    T build(Map<String, String> setSessionProperties, Set<String> resetSessionProperties, @Nullable String startTransactionId, boolean clearTransactionId);
 }

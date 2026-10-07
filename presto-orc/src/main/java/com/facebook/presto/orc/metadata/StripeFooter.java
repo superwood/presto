@@ -14,23 +14,38 @@
 package com.facebook.presto.orc.metadata;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import io.airlift.slice.Slice;
 
+import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 
 public class StripeFooter
 {
     private final List<Stream> streams;
-    private final List<ColumnEncoding> columnEncodings;
+    private final Map<Integer, ColumnEncoding> columnEncodings;
 
-    public StripeFooter(List<Stream> streams, List<ColumnEncoding> columnEncodings)
+    // encrypted StripeEncryptionGroups
+    private final List<Slice> stripeEncryptionGroups;
+    private final Optional<ZoneId> timezone;
+
+    public StripeFooter(
+            List<Stream> streams,
+            Map<Integer, ColumnEncoding> columnEncodings,
+            List<Slice> stripeEncryptionGroups,
+            Optional<ZoneId> timezone)
     {
         this.streams = ImmutableList.copyOf(requireNonNull(streams, "streams is null"));
-        this.columnEncodings = ImmutableList.copyOf(requireNonNull(columnEncodings, "columnEncodings is null"));
+        this.columnEncodings = ImmutableMap.copyOf(requireNonNull(columnEncodings, "columnEncodings is null"));
+        this.stripeEncryptionGroups = ImmutableList.copyOf(requireNonNull(stripeEncryptionGroups, "stripeEncryptionGroups is null"));
+        this.timezone = requireNonNull(timezone, "timezone is null");
     }
 
-    public List<ColumnEncoding> getColumnEncodings()
+    public Map<Integer, ColumnEncoding> getColumnEncodings()
     {
         return columnEncodings;
     }
@@ -38,5 +53,15 @@ public class StripeFooter
     public List<Stream> getStreams()
     {
         return streams;
+    }
+
+    public List<Slice> getStripeEncryptionGroups()
+    {
+        return stripeEncryptionGroups;
+    }
+
+    public Optional<ZoneId> getTimezone()
+    {
+        return timezone;
     }
 }

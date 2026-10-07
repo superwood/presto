@@ -17,6 +17,7 @@ import com.facebook.presto.Session;
 import com.facebook.presto.tests.DistributedQueryRunner;
 import com.facebook.presto.tpch.TpchPlugin;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.tpch.TpchTable;
 
 import java.sql.Connection;
@@ -25,10 +26,10 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Map;
 
+import static com.facebook.airlift.testing.Closeables.closeAllSuppress;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.tests.QueryAssertions.copyTpchTables;
 import static com.facebook.presto.tpch.TpchMetadata.TINY_SCHEMA_NAME;
-import static io.airlift.testing.Closeables.closeAllSuppress;
 
 public final class JdbcQueryRunner
 {
@@ -41,10 +42,16 @@ public final class JdbcQueryRunner
     public static DistributedQueryRunner createJdbcQueryRunner(TpchTable<?>... tables)
             throws Exception
     {
-        return createJdbcQueryRunner(ImmutableList.copyOf(tables));
+        return createJdbcQueryRunner(ImmutableMap.of(), ImmutableList.copyOf(tables));
     }
 
-    public static DistributedQueryRunner createJdbcQueryRunner(Iterable<TpchTable<?>> tables)
+    public static DistributedQueryRunner createJdbcQueryRunner(Map<String, String> extraProperties, TpchTable<?>... tables)
+            throws Exception
+    {
+        return createJdbcQueryRunner(extraProperties, ImmutableList.copyOf(tables));
+    }
+
+    public static DistributedQueryRunner createJdbcQueryRunner(Map<String, String> extraProperties, Iterable<TpchTable<?>> tables)
             throws Exception
     {
         DistributedQueryRunner queryRunner = null;
@@ -55,10 +62,14 @@ public final class JdbcQueryRunner
             queryRunner.createCatalog("tpch", "tpch");
 
             Map<String, String> properties = TestingH2JdbcModule.createProperties();
+            Map<String, String> catalogProperties = ImmutableMap.<String, String>builder()
+                    .putAll(properties)
+                    .putAll(extraProperties)
+                    .build();
             createSchema(properties, "tpch");
 
             queryRunner.installPlugin(new JdbcPlugin("base-jdbc", new TestingH2JdbcModule()));
-            queryRunner.createCatalog("jdbc", "base-jdbc", properties);
+            queryRunner.createCatalog("jdbc", "base-jdbc", catalogProperties);
 
             copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, createSession(), tables);
 

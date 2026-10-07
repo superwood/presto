@@ -14,8 +14,7 @@
 package com.facebook.presto.cli;
 
 import com.google.common.collect.ImmutableList;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.io.FilterOutputStream;
 import java.io.IOException;
@@ -23,8 +22,8 @@ import java.io.OutputStream;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
+import static com.facebook.airlift.concurrent.MoreFutures.unmodifiableFuture;
 import static com.google.common.base.Preconditions.checkState;
-import static io.airlift.concurrent.MoreFutures.unmodifiableFuture;
 
 public class Pager
         extends FilterOutputStream
@@ -163,10 +162,10 @@ public class Pager
 
     private static Pager createNullPager()
     {
-        return new Pager(uncloseableOutputStream(System.out), null);
+        return new Pager(unclosableOutputStream(System.out), null);
     }
 
-    private static OutputStream uncloseableOutputStream(OutputStream out)
+    private static OutputStream unclosableOutputStream(OutputStream out)
     {
         return new FilterOutputStream(out)
         {

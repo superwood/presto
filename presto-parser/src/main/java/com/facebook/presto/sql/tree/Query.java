@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.google.common.collect.ImmutableList;
+
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -25,51 +27,51 @@ public class Query
 {
     private final Optional<With> with;
     private final QueryBody queryBody;
-    private final List<SortItem> orderBy;
+    private final Optional<OrderBy> orderBy;
     private final Optional<String> limit;
-    private final Optional<Approximate> approximate;
+    private final Optional<Offset> offset;
 
     public Query(
             Optional<With> with,
             QueryBody queryBody,
-            List<SortItem> orderBy,
-            Optional<String> limit,
-            Optional<Approximate> approximate)
+            Optional<OrderBy> orderBy,
+            Optional<Offset> offset,
+            Optional<String> limit)
     {
-        this(Optional.empty(), with, queryBody, orderBy, limit, approximate);
+        this(Optional.empty(), with, queryBody, orderBy, offset, limit);
     }
 
     public Query(
             NodeLocation location,
             Optional<With> with,
             QueryBody queryBody,
-            List<SortItem> orderBy,
-            Optional<String> limit,
-            Optional<Approximate> approximate)
+            Optional<OrderBy> orderBy,
+            Optional<Offset> offset,
+            Optional<String> limit)
     {
-        this(Optional.of(location), with, queryBody, orderBy, limit, approximate);
+        this(Optional.of(location), with, queryBody, orderBy, offset, limit);
     }
 
     private Query(
             Optional<NodeLocation> location,
             Optional<With> with,
             QueryBody queryBody,
-            List<SortItem> orderBy,
-            Optional<String> limit,
-            Optional<Approximate> approximate)
+            Optional<OrderBy> orderBy,
+            Optional<Offset> offset,
+            Optional<String> limit)
     {
         super(location);
         requireNonNull(with, "with is null");
         requireNonNull(queryBody, "queryBody is null");
         requireNonNull(orderBy, "orderBy is null");
+        requireNonNull(offset, "offset is null");
         requireNonNull(limit, "limit is null");
-        requireNonNull(approximate, "approximate is null");
 
         this.with = with;
         this.queryBody = queryBody;
         this.orderBy = orderBy;
+        this.offset = offset;
         this.limit = limit;
-        this.approximate = approximate;
     }
 
     public Optional<With> getWith()
@@ -82,7 +84,7 @@ public class Query
         return queryBody;
     }
 
-    public List<SortItem> getOrderBy()
+    public Optional<OrderBy> getOrderBy()
     {
         return orderBy;
     }
@@ -92,9 +94,9 @@ public class Query
         return limit;
     }
 
-    public Optional<Approximate> getApproximate()
+    public Optional<Offset> getOffset()
     {
-        return approximate;
+        return offset;
     }
 
     @Override
@@ -104,14 +106,25 @@ public class Query
     }
 
     @Override
+    public List<Node> getChildren()
+    {
+        ImmutableList.Builder<Node> nodes = ImmutableList.builder();
+        with.ifPresent(nodes::add);
+        nodes.add(queryBody);
+        orderBy.ifPresent(nodes::add);
+        offset.ifPresent(nodes::add);
+        return nodes.build();
+    }
+
+    @Override
     public String toString()
     {
         return toStringHelper(this)
                 .add("with", with.orElse(null))
                 .add("queryBody", queryBody)
                 .add("orderBy", orderBy)
+                .add("offset", offset.orElse(null))
                 .add("limit", limit.orElse(null))
-                .add("approximate", approximate.orElse(null))
                 .omitNullValues()
                 .toString();
     }
@@ -129,13 +142,13 @@ public class Query
         return Objects.equals(with, o.with) &&
                 Objects.equals(queryBody, o.queryBody) &&
                 Objects.equals(orderBy, o.orderBy) &&
-                Objects.equals(limit, o.limit) &&
-                Objects.equals(approximate, o.approximate);
+                Objects.equals(offset, o.offset) &&
+                Objects.equals(limit, o.limit);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(with, queryBody, orderBy, limit, approximate);
+        return Objects.hash(with, queryBody, orderBy, offset, limit);
     }
 }

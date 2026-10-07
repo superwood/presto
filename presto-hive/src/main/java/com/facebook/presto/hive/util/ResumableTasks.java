@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.hive.util;
 
-import io.airlift.log.Logger;
+import com.facebook.airlift.log.Logger;
+import com.facebook.presto.hive.util.ResumableTask.ResumableTaskStatus;
 
 import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicReference;
 
 public final class ResumableTasks
 {
@@ -28,25 +28,28 @@ public final class ResumableTasks
 
     public static void submit(Executor executor, ResumableTask task)
     {
-        AtomicReference<Runnable> runnableReference = new AtomicReference<>();
-        Runnable runnable = () -> {
-            ResumableTask.TaskStatus status = safeProcessTask(task);
-            if (!status.isFinished()) {
-                status.getContinuationFuture().thenRun(() -> executor.execute(runnableReference.get()));
+        executor.execute(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                ResumableTaskStatus status = safeProcessTask(task);
+                if (!status.isFinished()) {
+                    // if task is not complete, schedule it it to run again when the future finishes
+                    status.getContinuationFuture().addListener(this, executor);
+                }
             }
-        };
-        runnableReference.set(runnable);
-        executor.execute(runnable);
+        });
     }
 
-    private static ResumableTask.TaskStatus safeProcessTask(ResumableTask task)
+    private static ResumableTaskStatus safeProcessTask(ResumableTask task)
     {
         try {
             return task.process();
         }
         catch (Throwable t) {
             log.warn(t, "ResumableTask completed exceptionally");
-            return ResumableTask.TaskStatus.finished();
+            return ResumableTaskStatus.finished();
         }
     }
 }

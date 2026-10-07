@@ -7,7 +7,7 @@ General Changes
 
 * Fix race in memory tracking of ``JOIN`` which could cause the cluster to become over
   committed and possibly crash.
-* The :func:`approx_percentile` aggregation now also accepts an array of percentages.
+* The :func:`!approx_percentile` aggregation now also accepts an array of percentages.
 * Allow nested row type references.
 * Fix correctness for some queries with ``IN`` lists. When all constants in the
   list are in the range of 32-bit signed integers but the test value can be
@@ -20,9 +20,9 @@ General Changes
   Note that Presto currently does not ship with any system access controller
   implementations.
 * Add support for ``WITH NO DATA`` syntax in ``CREATE TABLE ... AS SELECT``.
-* Fix issue where invalid plans are generated for queries with multiple aggregations 
+* Fix issue where invalid plans are generated for queries with multiple aggregations
   that require input values to be cast in different ways.
-* Fix performance issue due to redundant processing in queries involving ``DISTINCT`` 
+* Fix performance issue due to redundant processing in queries involving ``DISTINCT``
   and ``LIMIT``.
 * Add optimization that can reduce the amount of data sent over the network
   for grouped aggregation queries. This feature can be enabled by

@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.facebook.presto.spi.analyzer.UpdateInfo;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -59,6 +60,18 @@ public final class Call
     public <R, C> R accept(AstVisitor<R, C> visitor, C context)
     {
         return visitor.visitCall(this, context);
+    }
+
+    @Override
+    public List<? extends Node> getChildren()
+    {
+        return arguments;
+    }
+
+    @Override
+    public UpdateInfo getUpdateInfo()
+    {
+        return new UpdateInfo("CALL", name.toString());
     }
 
     @Override

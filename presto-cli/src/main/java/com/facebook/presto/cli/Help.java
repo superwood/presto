@@ -28,10 +28,9 @@ public final class Help
                 "DESCRIBE <table>\n" +
                 "SHOW COLUMNS FROM <table>\n" +
                 "SHOW FUNCTIONS\n" +
-                "SHOW CATALOGS\n" +
-                "SHOW SCHEMAS\n" +
-                "SHOW TABLES [LIKE <pattern>]\n" +
-                "SHOW PARTITIONS FROM <table> [WHERE ...] [ORDER BY ...] [LIMIT n]\n" +
+                "SHOW CATALOGS [LIKE <pattern>]\n" +
+                "SHOW SCHEMAS [FROM <catalog>] [LIKE <pattern>]\n" +
+                "SHOW TABLES [FROM <schema>] [LIKE <pattern>]\n" +
                 "USE [<catalog>.]<schema>\n" +
                 "";
     }

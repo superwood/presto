@@ -15,10 +15,8 @@ package com.facebook.presto.client;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.Immutable;
-import javax.validation.constraints.NotNull;
+import com.google.errorprone.annotations.Immutable;
+import jakarta.annotation.Nullable;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 
@@ -30,6 +28,7 @@ public class QueryError
     private final int errorCode;
     private final String errorName;
     private final String errorType;
+    private final boolean retriable;
     private final ErrorLocation errorLocation;
     private final FailureInfo failureInfo;
 
@@ -40,6 +39,7 @@ public class QueryError
             @JsonProperty("errorCode") int errorCode,
             @JsonProperty("errorName") String errorName,
             @JsonProperty("errorType") String errorType,
+            @JsonProperty("retriable") boolean retriable,
             @JsonProperty("errorLocation") ErrorLocation errorLocation,
             @JsonProperty("failureInfo") FailureInfo failureInfo)
     {
@@ -48,11 +48,11 @@ public class QueryError
         this.errorCode = errorCode;
         this.errorName = errorName;
         this.errorType = errorType;
+        this.retriable = retriable;
         this.errorLocation = errorLocation;
         this.failureInfo = failureInfo;
     }
 
-    @NotNull
     @JsonProperty
     public String getMessage()
     {
@@ -72,18 +72,22 @@ public class QueryError
         return errorCode;
     }
 
-    @NotNull
     @JsonProperty
     public String getErrorName()
     {
         return errorName;
     }
 
-    @NotNull
     @JsonProperty
     public String getErrorType()
     {
         return errorType;
+    }
+
+    @JsonProperty
+    public boolean isRetriable()
+    {
+        return retriable;
     }
 
     @Nullable
@@ -109,6 +113,7 @@ public class QueryError
                 .add("errorCode", errorCode)
                 .add("errorName", errorName)
                 .add("errorType", errorType)
+                .add("retriable", retriable)
                 .add("errorLocation", errorLocation)
                 .add("failureInfo", failureInfo)
                 .toString();

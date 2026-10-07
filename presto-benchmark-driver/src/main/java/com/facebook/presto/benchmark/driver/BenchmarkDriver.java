@@ -18,7 +18,9 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.net.HostAndPort;
 
 import java.io.Closeable;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
@@ -48,7 +50,6 @@ public class BenchmarkDriver
     }
 
     public void run(Suite suite)
-            throws Exception
     {
         // select queries to run
         List<BenchmarkQuery> queries = suite.selectQueries(this.queries);
@@ -56,7 +57,12 @@ public class BenchmarkDriver
             return;
         }
 
-        ClientSession session = ClientSession.withSessionProperties(clientSession, suite.getSessionProperties());
+        Map<String, String> properties = new HashMap<>();
+        properties.putAll(clientSession.getProperties());
+        properties.putAll(suite.getSessionProperties());
+        ClientSession session = ClientSession.builder(clientSession)
+                .withProperties(properties)
+                .build();
 
         // select schemas to use
         List<BenchmarkSchema> benchmarkSchemas;
@@ -73,7 +79,10 @@ public class BenchmarkDriver
 
         for (BenchmarkSchema benchmarkSchema : benchmarkSchemas) {
             for (BenchmarkQuery benchmarkQuery : queries) {
-                session = ClientSession.withCatalogAndSchema(session, session.getCatalog(), benchmarkSchema.getName());
+                session = ClientSession.builder(session)
+                        .withCatalog(session.getCatalog())
+                        .withSchema(benchmarkSchema.getName())
+                        .build();
                 BenchmarkQueryResult result = queryRunner.execute(suite, session, benchmarkQuery);
 
                 resultsStore.store(benchmarkSchema, result);

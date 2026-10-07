@@ -13,57 +13,54 @@
  */
 package com.facebook.presto.spi;
 
+import com.facebook.presto.spi.constraints.TableConstraint;
+import com.facebook.presto.spi.constraints.TableConstraintsHolder;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
+import static java.util.Collections.emptyList;
 import static java.util.Collections.emptyMap;
+import static java.util.Objects.requireNonNull;
 
 public class ConnectorTableMetadata
 {
     private final SchemaTableName table;
+    private final Optional<String> comment;
     private final List<ColumnMetadata> columns;
     private final Map<String, Object> properties;
-    /* nullable */
-    private final String owner;
-    private final boolean sampled;
+    private final TableConstraintsHolder tableConstraintsHolder;
 
     public ConnectorTableMetadata(SchemaTableName table, List<ColumnMetadata> columns)
     {
-        this(table, columns, emptyMap(), null);
+        this(table, columns, emptyMap());
     }
 
     public ConnectorTableMetadata(SchemaTableName table, List<ColumnMetadata> columns, Map<String, Object> properties)
     {
-        this(table, columns, properties, null);
+        this(table, columns, properties, Optional.empty(), emptyList(), Collections.emptyMap());
     }
 
-    public ConnectorTableMetadata(SchemaTableName table, List<ColumnMetadata> columns, Map<String, Object> properties, String owner)
+    public ConnectorTableMetadata(SchemaTableName table, List<ColumnMetadata> columns, Map<String, Object> properties, Optional<String> comment)
     {
-        this(table, columns, properties, owner, false);
+        this(table, columns, properties, comment, emptyList(), Collections.emptyMap());
     }
 
-    public ConnectorTableMetadata(SchemaTableName table, List<ColumnMetadata> columns, Map<String, Object> properties, String owner, boolean sampled)
+    public ConnectorTableMetadata(SchemaTableName table, List<ColumnMetadata> columns, Map<String, Object> properties, Optional<String> comment, List<TableConstraint<String>> tableConstraints, Map<String, ColumnHandle> columnNameToHandleAssignments)
     {
-        if (table == null) {
-            throw new NullPointerException("table is null or empty");
-        }
-        if (columns == null) {
-            throw new NullPointerException("columns is null");
-        }
+        requireNonNull(table, "table is null");
+        requireNonNull(columns, "columns is null");
+        requireNonNull(comment, "comment is null");
 
         this.table = table;
         this.columns = Collections.unmodifiableList(new ArrayList<>(columns));
         this.properties = Collections.unmodifiableMap(new LinkedHashMap<>(properties));
-        this.owner = owner;
-        this.sampled = sampled;
-    }
-
-    public boolean isSampled()
-    {
-        return sampled;
+        this.comment = comment;
+        this.tableConstraintsHolder = new TableConstraintsHolder(tableConstraints, columnNameToHandleAssignments);
     }
 
     public SchemaTableName getTable()
@@ -81,12 +78,14 @@ public class ConnectorTableMetadata
         return properties;
     }
 
-    /**
-     * @return table owner or null
-     */
-    public String getOwner()
+    public Optional<String> getComment()
     {
-        return owner;
+        return comment;
+    }
+
+    public TableConstraintsHolder getTableConstraintsHolder()
+    {
+        return tableConstraintsHolder;
     }
 
     @Override
@@ -95,8 +94,9 @@ public class ConnectorTableMetadata
         StringBuilder sb = new StringBuilder("ConnectorTableMetadata{");
         sb.append("table=").append(table);
         sb.append(", columns=").append(columns);
+        sb.append(", tableConstraints=").append(tableConstraintsHolder.getTableConstraints());
         sb.append(", properties=").append(properties);
-        sb.append(", owner=").append(owner);
+        comment.ifPresent(value -> sb.append(", comment='").append(value).append("'"));
         sb.append('}');
         return sb.toString();
     }

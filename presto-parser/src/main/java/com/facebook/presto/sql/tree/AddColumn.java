@@ -13,6 +13,10 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.facebook.presto.spi.analyzer.UpdateInfo;
+import com.google.common.collect.ImmutableList;
+
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -23,23 +27,40 @@ public class AddColumn
         extends Statement
 {
     private final QualifiedName name;
-    private final TableElement column;
+    private final ColumnDefinition column;
+    private final Optional<ColumnPosition> position;
+    private final boolean tableExists;
+    private final boolean columnNotExists;
 
-    public AddColumn(QualifiedName name, TableElement column)
+    public AddColumn(QualifiedName name, ColumnDefinition column, boolean tableExists, boolean columnNotExists)
+
     {
-        this(Optional.empty(), name, column);
+        this(Optional.empty(), name, column, Optional.empty(), tableExists, columnNotExists);
     }
 
-    public AddColumn(NodeLocation location, QualifiedName name, TableElement column)
+    public AddColumn(NodeLocation location, QualifiedName name, ColumnDefinition column, boolean tableExists, boolean columnNotExists)
     {
-        this(Optional.of(location), name, column);
+        this(Optional.of(location), name, column, Optional.empty(), tableExists, columnNotExists);
     }
 
-    private AddColumn(Optional<NodeLocation> location, QualifiedName name, TableElement column)
+    public AddColumn(QualifiedName name, ColumnDefinition column, Optional<ColumnPosition> position, boolean tableExists, boolean columnNotExists)
+    {
+        this(Optional.empty(), name, column, position, tableExists, columnNotExists);
+    }
+
+    public AddColumn(NodeLocation location, QualifiedName name, ColumnDefinition column, Optional<ColumnPosition> position, boolean tableExists, boolean columnNotExists)
+    {
+        this(Optional.of(location), name, column, position, tableExists, columnNotExists);
+    }
+
+    private AddColumn(Optional<NodeLocation> location, QualifiedName name, ColumnDefinition column, Optional<ColumnPosition> position, boolean tableExists, boolean columnNotExists)
     {
         super(location);
         this.name = requireNonNull(name, "table is null");
         this.column = requireNonNull(column, "column is null");
+        this.position = requireNonNull(position, "position is null");
+        this.tableExists = tableExists;
+        this.columnNotExists = columnNotExists;
     }
 
     public QualifiedName getName()
@@ -47,9 +68,24 @@ public class AddColumn
         return name;
     }
 
-    public TableElement getColumn()
+    public ColumnDefinition getColumn()
     {
         return column;
+    }
+
+    public Optional<ColumnPosition> getPosition()
+    {
+        return position;
+    }
+
+    public boolean isTableExists()
+    {
+        return tableExists;
+    }
+
+    public boolean isColumnNotExists()
+    {
+        return columnNotExists;
     }
 
     @Override
@@ -59,9 +95,26 @@ public class AddColumn
     }
 
     @Override
+    public List<Node> getChildren()
+    {
+        ImmutableList.Builder<Node> nodes = ImmutableList.builder();
+        nodes.add(column);
+        if (position.isPresent() && (position.get() instanceof ColumnPosition.After)) {
+            nodes.add(((ColumnPosition.After) position.get()).getColumn());
+        }
+        return nodes.build();
+    }
+
+    @Override
+    public UpdateInfo getUpdateInfo()
+    {
+        return new UpdateInfo("ADD COLUMN", name.toString());
+    }
+
+    @Override
     public int hashCode()
     {
-        return Objects.hash(name, column);
+        return Objects.hash(name, column, position, tableExists, columnNotExists);
     }
 
     @Override
@@ -75,7 +128,10 @@ public class AddColumn
         }
         AddColumn o = (AddColumn) obj;
         return Objects.equals(name, o.name) &&
-                Objects.equals(column, o.column);
+                Objects.equals(column, o.column) &&
+                Objects.equals(position, o.position) &&
+                Objects.equals(tableExists, o.tableExists) &&
+                Objects.equals(columnNotExists, o.columnNotExists);
     }
 
     @Override
@@ -84,6 +140,9 @@ public class AddColumn
         return toStringHelper(this)
                 .add("name", name)
                 .add("column", column)
+                .add("position", position)
+                .add("tableExists", tableExists)
+                .add("columnNotExists", columnNotExists)
                 .toString();
     }
 }

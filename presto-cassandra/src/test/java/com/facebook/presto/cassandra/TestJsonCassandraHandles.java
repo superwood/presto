@@ -13,24 +13,26 @@
  */
 package com.facebook.presto.cassandra;
 
+import com.facebook.airlift.json.JsonObjectMapperProvider;
 import com.facebook.presto.spi.SchemaTableName;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.json.ObjectMapperProvider;
 import org.testng.annotations.Test;
 
 import java.util.Map;
 
-import static io.airlift.testing.Assertions.assertEqualsIgnoreOrder;
+import static com.facebook.airlift.testing.Assertions.assertEqualsIgnoreOrder;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 
 @Test
 public class TestJsonCassandraHandles
 {
-    private static final Map<String, Object> TABLE_HANDLE_AS_MAP = ImmutableMap.<String, Object>of(
+    private static final Map<String, Object> TABLE_HANDLE_AS_MAP = ImmutableMap.of(
             "connectorId", "cassandra",
             "schemaName", "cassandra_schema",
             "tableName", "cassandra_table");
@@ -58,7 +60,7 @@ public class TestJsonCassandraHandles
             .put("hidden", false)
             .build();
 
-    private final ObjectMapper objectMapper = new ObjectMapperProvider().get();
+    private final ObjectMapper objectMapper = new JsonObjectMapperProvider().get();
 
     @Test
     public void testTableHandleSerialize()
@@ -127,9 +129,9 @@ public class TestJsonCassandraHandles
         assertEquals(columnHandle.getName(), "column");
         assertEquals(columnHandle.getOrdinalPosition(), 42);
         assertEquals(columnHandle.getCassandraType(), CassandraType.BIGINT);
-        assertEquals(columnHandle.getTypeArguments(), null);
-        assertEquals(columnHandle.isPartitionKey(), false);
-        assertEquals(columnHandle.isClusteringKey(), true);
+        assertNull(columnHandle.getTypeArguments());
+        assertFalse(columnHandle.isPartitionKey());
+        assertTrue(columnHandle.isClusteringKey());
     }
 
     @Test

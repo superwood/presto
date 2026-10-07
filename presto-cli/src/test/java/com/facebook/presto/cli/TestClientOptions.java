@@ -13,17 +13,17 @@
  */
 package com.facebook.presto.cli;
 
+import com.facebook.presto.cli.ClientOptions.ClientResourceEstimate;
 import com.facebook.presto.cli.ClientOptions.ClientSessionProperty;
 import com.facebook.presto.client.ClientSession;
-import com.facebook.presto.sql.parser.SqlParser;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
 
 import java.util.Optional;
 
 import static io.airlift.airline.SingleCommand.singleCommand;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertTrue;
 
 public class TestClientOptions
 {
@@ -34,7 +34,6 @@ public class TestClientOptions
         assertEquals(session.getServer().toString(), "http://localhost:8080");
         assertEquals(session.getSource(), "presto-cli");
     }
-
     @Test
     public void testSource()
     {
@@ -89,6 +88,27 @@ public class TestClientOptions
     }
 
     @Test
+    public void testResourceEstimates()
+    {
+        Console console = singleCommand(Console.class).parse("--resource-estimate", "resource1=1B", "--resource-estimate", "resource2=2.2h");
+
+        ClientOptions options = console.clientOptions;
+        assertEquals(options.resourceEstimates, ImmutableList.of(
+                new ClientResourceEstimate("resource1", "1B"),
+                new ClientResourceEstimate("resource2", "2.2h")));
+    }
+
+    @Test
+    public void testExtraCredentials()
+    {
+        Console console = singleCommand(Console.class).parse("--extra-credential", "test.token.foo=foo", "--extra-credential", "test.token.bar=bar");
+        ClientOptions options = console.clientOptions;
+        assertEquals(options.extraCredentials, ImmutableList.of(
+                new ClientOptions.ClientExtraCredential("test.token.foo", "foo"),
+                new ClientOptions.ClientExtraCredential("test.token.bar", "bar")));
+    }
+
+    @Test
     public void testSessionProperties()
     {
         Console console = singleCommand(Console.class).parse("--session", "system=system-value", "--session", "catalog.name=catalog-property");
@@ -103,6 +123,28 @@ public class TestClientOptions
 
         // empty values are allowed
         assertEquals(new ClientSessionProperty("foo="), new ClientSessionProperty(Optional.empty(), "foo", ""));
+    }
+
+    @Test
+    public void testDisableCompression()
+    {
+        Console console = singleCommand(Console.class).parse("--disable-compression");
+        assertTrue(console.clientOptions.disableCompression);
+        assertTrue(console.clientOptions.toClientSession().isCompressionDisabled());
+    }
+
+    @Test
+    public void testDisableFollowingRedirects()
+    {
+        Console console = singleCommand(Console.class).parse("--disable-redirects");
+        assertTrue(console.clientOptions.disableRedirects);
+    }
+
+    @Test
+    public void testRunTimeStat()
+    {
+        Console console = singleCommand(Console.class).parse("--runtime-stats");
+        assertTrue(console.clientOptions.runtime);
     }
 
     @Test(expectedExceptions = IllegalArgumentException.class)
@@ -135,31 +177,19 @@ public class TestClientOptions
         new ClientSessionProperty(Optional.of("cat=alog"), "name", "value");
     }
 
-    @Test
-    public void testUpdateSessionParameters()
-            throws Exception
+    @Test(expectedExceptions = IllegalArgumentException.class, expectedExceptionsMessageRegExp = "Multiple entries with same key: test.token.foo=bar and test.token.foo=foo")
+    public void testDuplicateExtraCredentialKey()
     {
-        ClientOptions options = new ClientOptions();
-        ClientSession session = options.toClientSession();
-        SqlParser sqlParser = new SqlParser();
+        Console console = singleCommand(Console.class).parse("--extra-credential", "test.token.foo=foo", "--extra-credential", "test.token.foo=bar");
+        ClientOptions options = console.clientOptions;
+        options.toClientSession();
+    }
 
-        ImmutableMap<String, String> existingProperties = ImmutableMap.of("query_max_memory", "10GB", "distributed_join", "true");
-        session = Console.processSessionParameterChange(sqlParser.createStatement("USE test_catalog.test_schema"), session, existingProperties);
-        assertEquals(session.getCatalog(), "test_catalog");
-        assertEquals(session.getSchema(), "test_schema");
-        assertEquals(session.getProperties().get("query_max_memory"), "10GB");
-        assertEquals(session.getProperties().get("distributed_join"), "true");
-
-        session = Console.processSessionParameterChange(sqlParser.createStatement("USE test_schema_b"), session, existingProperties);
-        assertEquals(session.getCatalog(), "test_catalog");
-        assertEquals(session.getSchema(), "test_schema_b");
-        assertEquals(session.getProperties().get("query_max_memory"), "10GB");
-        assertEquals(session.getProperties().get("distributed_join"), "true");
-
-        session = Console.processSessionParameterChange(sqlParser.createStatement("USE test_catalog_2.test_schema"), session, existingProperties);
-        assertEquals(session.getCatalog(), "test_catalog_2");
-        assertEquals(session.getSchema(), "test_schema");
-        assertEquals(session.getProperties().get("query_max_memory"), "10GB");
-        assertEquals(session.getProperties().get("distributed_join"), "true");
+    @Test
+    public void testValidateNextUriSource()
+    {
+        Console console = singleCommand(Console.class).parse("--validate-nexturi-source");
+        assertTrue(console.clientOptions.validateNextUriSource);
+        assertTrue(console.clientOptions.toClientSession().validateNextUriSource());
     }
 }

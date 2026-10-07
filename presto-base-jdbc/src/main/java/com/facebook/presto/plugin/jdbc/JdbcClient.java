@@ -13,51 +13,95 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.plugin.jdbc.mapping.ReadMapping;
+import com.facebook.presto.plugin.jdbc.mapping.WriteMapping;
+import com.facebook.presto.spi.ColumnHandle;
+import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.SchemaTableName;
-import io.airlift.slice.Slice;
-
-import javax.annotation.Nullable;
+import com.facebook.presto.spi.statistics.TableStatistics;
+import jakarta.annotation.Nullable;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.sql.Statement;
-import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 public interface JdbcClient
 {
-    Set<String> getSchemaNames();
+    default boolean schemaExists(ConnectorSession session, JdbcIdentity identity, String schema)
+    {
+        return getSchemaNames(session, identity).contains(schema);
+    }
 
-    List<SchemaTableName> getTableNames(@Nullable String schema);
+    String getIdentifierQuote();
+
+    Set<String> getSchemaNames(ConnectorSession session, JdbcIdentity identity);
+
+    List<SchemaTableName> getTableNames(ConnectorSession session, JdbcIdentity identity, Optional<String> schema);
 
     @Nullable
-    JdbcTableHandle getTableHandle(SchemaTableName schemaTableName);
+    JdbcTableHandle getTableHandle(ConnectorSession session, JdbcIdentity identity, SchemaTableName schemaTableName);
 
-    List<JdbcColumnHandle> getColumns(JdbcTableHandle tableHandle);
+    List<JdbcColumnHandle> getColumns(ConnectorSession session, JdbcTableHandle tableHandle);
 
-    ConnectorSplitSource getSplits(JdbcTableLayoutHandle layoutHandle);
+    Optional<ReadMapping> toPrestoType(ConnectorSession session, JdbcTypeHandle typeHandle);
 
-    Connection getConnection(JdbcSplit split)
+    WriteMapping toWriteMapping(ConnectorSession session, Type type);
+
+    ConnectorSplitSource getSplits(ConnectorSession session, JdbcIdentity identity, JdbcTableLayoutHandle layoutHandle);
+
+    Connection getConnection(ConnectorSession session, JdbcIdentity identity, JdbcSplit split)
             throws SQLException;
 
-    PreparedStatement buildSql(JdbcSplit split, List<JdbcColumnHandle> columnHandles)
+    default void abortReadConnection(Connection connection)
+            throws SQLException
+    {
+        // most drivers do not need this
+    }
+
+    PreparedStatement buildSql(ConnectorSession session, Connection connection, JdbcSplit split, List<JdbcColumnHandle> columnHandles)
             throws SQLException;
 
-    JdbcOutputTableHandle beginCreateTable(ConnectorTableMetadata tableMetadata);
+    void addColumn(ConnectorSession session, JdbcIdentity identity, JdbcTableHandle handle, ColumnMetadata column);
 
-    void commitCreateTable(JdbcOutputTableHandle handle, Collection<Slice> fragments);
+    void dropColumn(ConnectorSession session, JdbcIdentity identity, JdbcTableHandle handle, JdbcColumnHandle column);
 
-    void dropTable(JdbcTableHandle jdbcTableHandle);
+    void renameColumn(ConnectorSession session, JdbcIdentity identity, JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName);
 
-    String buildInsertSql(JdbcOutputTableHandle handle);
+    void renameTable(ConnectorSession session, JdbcIdentity identity, JdbcTableHandle handle, SchemaTableName newTableName);
 
-    Connection getConnection(JdbcOutputTableHandle handle)
+    void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata);
+
+    JdbcOutputTableHandle beginCreateTable(ConnectorSession session, ConnectorTableMetadata tableMetadata);
+
+    void commitCreateTable(ConnectorSession session, JdbcIdentity identity, JdbcOutputTableHandle handle);
+
+    JdbcOutputTableHandle beginInsertTable(ConnectorSession session, ConnectorTableMetadata tableMetadata);
+
+    void finishInsertTable(ConnectorSession session, JdbcIdentity identity, JdbcOutputTableHandle handle);
+
+    void dropTable(ConnectorSession session, JdbcIdentity identity, JdbcTableHandle jdbcTableHandle);
+
+    void truncateTable(ConnectorSession session, JdbcIdentity identity, JdbcTableHandle jdbcTableHandle);
+
+    void rollbackCreateTable(ConnectorSession session, JdbcIdentity identity, JdbcOutputTableHandle handle);
+
+    String buildInsertSql(ConnectorSession session, JdbcOutputTableHandle handle);
+
+    Connection getConnection(ConnectorSession session, JdbcIdentity identity, JdbcOutputTableHandle handle)
             throws SQLException;
 
-    Statement getStatement(Connection connection)
+    PreparedStatement getPreparedStatement(ConnectorSession session, Connection connection, String sql)
             throws SQLException;
+
+    TableStatistics getTableStatistics(ConnectorSession session, JdbcTableHandle handle, List<JdbcColumnHandle> columnHandles, TupleDomain<ColumnHandle> tupleDomain);
+
+    String normalizeIdentifier(ConnectorSession session, String identifier);
 }

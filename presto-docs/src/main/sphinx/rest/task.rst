@@ -24,7 +24,7 @@ execution of queries on a Presto installation.
 
    **Example response**:
 
-   .. sourcecode:: http
+   .. sourcecode:: json
 
       [ {
         "taskId" : "20131222_183944_00011_dk5x2.1.0",
@@ -50,7 +50,6 @@ execution of queries on a Presto installation.
           "memoryReservation" : "0B",
           "totalScheduledTime" : "0.00ns",
           "totalCpuTime" : "0.00ns",
-          "totalUserTime" : "0.00ns",
           "totalBlockedTime" : "0.00ns",
           "rawInputDataSize" : "0B",
           "rawInputPositions" : 0,
@@ -90,7 +89,7 @@ execution of queries on a Presto installation.
 
    **Example response**:
 
-   .. sourcecode:: http
+   .. sourcecode:: json
 
       {
 	"taskId" : "20140115_170528_00004_dk5x2.0.0",
@@ -123,7 +122,6 @@ execution of queries on a Presto installation.
 	  "memoryReservation" : "174.76kB",
 	  "totalScheduledTime" : "4.19ms",
 	  "totalCpuTime" : "4.09ms",
-	  "totalUserTime" : "0.00ns",
 	  "totalBlockedTime" : "29.50ms",
 	  "rawInputDataSize" : "10.90kB",
 	  "rawInputPositions" : 154,
@@ -173,7 +171,6 @@ execution of queries on a Presto installation.
 	    },
 	    "totalScheduledTime" : "4.19ms",
 	    "totalCpuTime" : "4.09ms",
-	    "totalUserTime" : "0.00ns",
 	    "totalBlockedTime" : "29.50ms",
 	    "rawInputDataSize" : "10.90kB",
 	    "rawInputPositions" : 154,

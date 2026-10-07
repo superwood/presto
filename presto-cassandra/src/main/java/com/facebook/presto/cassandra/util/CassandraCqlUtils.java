@@ -13,9 +13,8 @@
  */
 package com.facebook.presto.cassandra.util;
 
-import com.datastax.driver.core.querybuilder.QueryBuilder;
-import com.datastax.driver.core.querybuilder.Select;
-import com.datastax.driver.core.querybuilder.Select.Selection;
+import com.datastax.oss.driver.api.querybuilder.QueryBuilder;
+import com.datastax.oss.driver.api.querybuilder.select.Select;
 import com.facebook.presto.cassandra.CassandraColumnHandle;
 import com.facebook.presto.cassandra.CassandraTableHandle;
 import com.facebook.presto.cassandra.CassandraType;
@@ -28,7 +27,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import static java.util.Locale.ENGLISH;
+import static com.facebook.presto.common.type.DateTimeEncoding.unpackMillisUtc;
 
 public final class CassandraCqlUtils
 {
@@ -39,11 +38,11 @@ public final class CassandraCqlUtils
     private static final String[] KEYWORDS = {"ADD", "ALL", "ALLOW", "ALTER", "AND", "APPLY",
             "ASC", "ASCII", "AUTHORIZE", "BATCH", "BEGIN", "BIGINT", "BLOB", "BOOLEAN", "BY",
             "CLUSTERING", "COLUMNFAMILY", "COMPACT", "COUNT", "COUNTER", "CREATE", "DECIMAL",
-            "DELETE", "DESC", "DOUBLE", "DROP", "FILTERING", "FLOAT", "FROM", "GRANT", "IN",
+            "DATE", "DELETE", "DESC", "DOUBLE", "DROP", "FILTERING", "FLOAT", "FROM", "GRANT", "IN",
             "INDEX", "INET", "INSERT", "INT", "INTO", "KEY", "KEYSPACE", "KEYSPACES", "LIMIT",
             "LIST", "MAP", "MODIFY", "NORECURSIVE", "NOSUPERUSER", "OF", "ON", "ORDER", "PASSWORD",
             "PERMISSION", "PERMISSIONS", "PRIMARY", "RENAME", "REVOKE", "SCHEMA", "SELECT", "SET",
-            "STORAGE", "SUPERUSER", "TABLE", "TEXT", "TIMESTAMP", "TIMEUUID", "TO", "TOKEN",
+            "SMALLINT", "STORAGE", "SUPERUSER", "TABLE", "TEXT", "TIMESTAMP", "TIMEUUID", "TINYINT", "TO", "TOKEN",
             "TRUNCATE", "TTL", "TYPE", "UNLOGGED", "UPDATE", "USE", "USER", "USERS", "USING",
             "UUID", "VALUES", "VARCHAR", "VARINT", "WHERE", "WITH", "WRITETIME"};
 
@@ -53,12 +52,12 @@ public final class CassandraCqlUtils
 
     public static String validSchemaName(String identifier)
     {
-        return validIdentifier(identifier);
+        return quoteIdentifier(identifier);
     }
 
     public static String validTableName(String identifier)
     {
-        return validIdentifier(identifier);
+        return quoteIdentifier(identifier);
     }
 
     public static String validColumnName(String identifier)
@@ -67,19 +66,7 @@ public final class CassandraCqlUtils
             return "\"\"";
         }
 
-        return validIdentifier(identifier);
-    }
-
-    private static String validIdentifier(String identifier)
-    {
-        if (!identifier.equals(identifier.toLowerCase(ENGLISH))) {
-            return quoteIdentifier(identifier);
-        }
-
-        if (keywords.contains(identifier.toUpperCase(ENGLISH))) {
-            return quoteIdentifier(identifier);
-        }
-        return identifier;
+        return quoteIdentifier(identifier);
     }
 
     private static String quoteIdentifier(String identifier)
@@ -131,42 +118,55 @@ public final class CassandraCqlUtils
         return name;
     }
 
-    public static Selection select(List<CassandraColumnHandle> columns)
-    {
-        Selection selection = QueryBuilder.select();
-        for (CassandraColumnHandle column : columns) {
-            selection.column(validColumnName(column.getName()));
-        }
-        return selection;
-    }
-
     public static Select selectFrom(CassandraTableHandle tableHandle, List<CassandraColumnHandle> columns)
-    {
-        return from(select(columns), tableHandle);
-    }
-
-    public static Select from(Selection selection, CassandraTableHandle tableHandle)
     {
         String schema = validSchemaName(tableHandle.getSchemaName());
         String table = validTableName(tableHandle.getTableName());
-        return selection.from(schema, table);
+
+        // Driver 4.x requires explicit column list or use .all() for SELECT *
+        // Empty array to .columns() generates invalid CQL: "SELECT FROM table"
+        if (columns.isEmpty()) {
+            return QueryBuilder.selectFrom(schema, table).all();
+        }
+
+        String[] columnNames = columns.stream()
+                .map(column -> validColumnName(column.getName()))
+                .toArray(String[]::new);
+
+        return QueryBuilder.selectFrom(schema, table).columns(columnNames);
     }
 
     public static Select selectDistinctFrom(CassandraTableHandle tableHandle, List<CassandraColumnHandle> columns)
     {
-        return from(select(columns).distinct(), tableHandle);
+        String schema = validSchemaName(tableHandle.getSchemaName());
+        String table = validTableName(tableHandle.getTableName());
+
+        // Driver 4.x requires explicit column list or use .all() for SELECT DISTINCT *
+        // Empty array to .columns() generates invalid CQL: "SELECT DISTINCT FROM table"
+        if (columns.isEmpty()) {
+            return QueryBuilder.selectFrom(schema, table).distinct().all();
+        }
+
+        String[] columnNames = columns.stream()
+                .map(column -> validColumnName(column.getName()))
+                .toArray(String[]::new);
+
+        return QueryBuilder.selectFrom(schema, table).distinct().columns(columnNames);
     }
 
     public static Select selectCountAllFrom(CassandraTableHandle tableHandle)
     {
         String schema = validSchemaName(tableHandle.getSchemaName());
         String table = validTableName(tableHandle.getTableName());
-        return QueryBuilder.select().countAll().from(schema, table);
+        return QueryBuilder.selectFrom(schema, table).countAll();
     }
 
     public static String cqlValue(String value, CassandraType cassandraType)
     {
         switch (cassandraType) {
+            case TIMESTAMP_WITH_TIMEZONE:
+                long millis = Long.parseLong(value);
+                return String.valueOf(unpackMillisUtc(millis));
             case ASCII:
             case TEXT:
             case VARCHAR:
@@ -181,6 +181,9 @@ public final class CassandraCqlUtils
 
     public static String toCQLCompatibleString(Object value)
     {
+        if (value instanceof Long) {
+            return value.toString();
+        }
         if (value instanceof Slice) {
             return ((Slice) value).toStringUtf8();
         }

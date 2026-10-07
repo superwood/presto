@@ -13,52 +13,89 @@
  */
 package com.facebook.presto.server;
 
-import com.facebook.presto.discovery.EmbeddedDiscoveryModule;
-import com.facebook.presto.execution.scheduler.FlatNetworkTopology;
-import com.facebook.presto.execution.scheduler.LegacyNetworkTopology;
-import com.facebook.presto.execution.scheduler.NetworkTopology;
+import com.facebook.airlift.bootstrap.Bootstrap;
+import com.facebook.airlift.discovery.client.Announcer;
+import com.facebook.airlift.discovery.client.DiscoveryModule;
+import com.facebook.airlift.discovery.client.ServiceAnnouncement;
+import com.facebook.airlift.event.client.HttpEventModule;
+import com.facebook.airlift.event.client.JsonEventModule;
+import com.facebook.airlift.jaxrs.JaxrsModule;
+import com.facebook.airlift.jmx.JmxHttpModule;
+import com.facebook.airlift.jmx.JmxModule;
+import com.facebook.airlift.json.JsonModule;
+import com.facebook.airlift.json.smile.SmileModule;
+import com.facebook.airlift.log.LogJmxModule;
+import com.facebook.airlift.log.Logger;
+import com.facebook.airlift.node.NodeInfo;
+import com.facebook.airlift.node.NodeModule;
+import com.facebook.airlift.tracetoken.TraceTokenModule;
+import com.facebook.drift.server.DriftServer;
+import com.facebook.drift.transport.netty.server.DriftNettyServerTransport;
+import com.facebook.presto.ClientRequestFilterManager;
+import com.facebook.presto.ClientRequestFilterModule;
+import com.facebook.presto.builtin.tools.WorkerFunctionRegistryTool;
+import com.facebook.presto.common.AuthClientConfigs;
+import com.facebook.presto.dispatcher.QueryPrerequisitesManager;
+import com.facebook.presto.dispatcher.QueryPrerequisitesManagerModule;
+import com.facebook.presto.eventlistener.EventListenerManager;
+import com.facebook.presto.eventlistener.EventListenerModule;
+import com.facebook.presto.execution.resourceGroups.ResourceGroupManager;
 import com.facebook.presto.execution.scheduler.NodeSchedulerConfig;
+import com.facebook.presto.execution.warnings.WarningCollectorModule;
+import com.facebook.presto.metadata.Catalog;
 import com.facebook.presto.metadata.CatalogManager;
-import com.facebook.presto.metadata.Metadata;
+import com.facebook.presto.metadata.DiscoveryNodeManager;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.metadata.InternalNodeManager;
+import com.facebook.presto.metadata.SessionPropertyManager;
+import com.facebook.presto.metadata.StaticCatalogStore;
+import com.facebook.presto.metadata.StaticFunctionNamespaceStore;
+import com.facebook.presto.metadata.StaticTypeManagerStore;
+import com.facebook.presto.nodeManager.PluginNodeManager;
 import com.facebook.presto.security.AccessControlManager;
 import com.facebook.presto.security.AccessControlModule;
+import com.facebook.presto.server.security.PasswordAuthenticatorManager;
+import com.facebook.presto.server.security.PrestoAuthenticatorManager;
+import com.facebook.presto.server.security.SecurityConfig;
 import com.facebook.presto.server.security.ServerSecurityModule;
+import com.facebook.presto.server.security.oauth2.OAuth2Client;
+import com.facebook.presto.spi.function.SqlFunction;
+import com.facebook.presto.sql.analyzer.FeaturesConfig;
+import com.facebook.presto.sql.expressions.ExpressionOptimizerManager;
 import com.facebook.presto.sql.parser.SqlParserOptions;
+import com.facebook.presto.sql.planner.sanity.PlanCheckerProviderManager;
+import com.facebook.presto.storage.TempStorageManager;
+import com.facebook.presto.storage.TempStorageModule;
+import com.facebook.presto.tracing.TracerProviderManager;
+import com.facebook.presto.ttl.clusterttlprovidermanagers.ClusterTtlProviderManager;
+import com.facebook.presto.ttl.clusterttlprovidermanagers.ClusterTtlProviderManagerModule;
+import com.facebook.presto.ttl.nodettlfetchermanagers.NodeTtlFetcherManager;
+import com.facebook.presto.ttl.nodettlfetchermanagers.NodeTtlFetcherManagerModule;
+import com.fasterxml.jackson.core.StreamReadConstraints;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.module.afterburner.AfterburnerModule;
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Injector;
 import com.google.inject.Module;
-import com.google.inject.Scopes;
-import io.airlift.bootstrap.Bootstrap;
-import io.airlift.discovery.client.Announcer;
-import io.airlift.discovery.client.DiscoveryModule;
-import io.airlift.discovery.client.ServiceAnnouncement;
-import io.airlift.event.client.HttpEventModule;
-import io.airlift.event.client.JsonEventModule;
-import io.airlift.http.server.HttpServerModule;
-import io.airlift.jaxrs.JaxrsModule;
-import io.airlift.jmx.JmxHttpModule;
-import io.airlift.jmx.JmxModule;
-import io.airlift.json.JsonModule;
-import io.airlift.log.LogJmxModule;
-import io.airlift.log.Logger;
-import io.airlift.node.NodeModule;
-import io.airlift.tracetoken.TraceTokenModule;
+import com.google.inject.util.Modules;
 import org.weakref.jmx.guice.MBeanModule;
 
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static com.facebook.presto.execution.scheduler.NodeSchedulerConfig.LEGACY_NETWORK_TOPOLOGY;
-import static com.facebook.presto.server.ConditionalModule.installModuleIf;
+import static com.facebook.airlift.configuration.ConditionalModule.installModuleIf;
+import static com.facebook.airlift.discovery.client.ServiceAnnouncement.ServiceAnnouncementBuilder;
+import static com.facebook.airlift.discovery.client.ServiceAnnouncement.serviceAnnouncement;
+import static com.facebook.airlift.json.JsonBinder.jsonBinder;
 import static com.facebook.presto.server.PrestoSystemRequirements.verifyJvmRequirements;
 import static com.facebook.presto.server.PrestoSystemRequirements.verifySystemTimeIsReasonable;
+import static com.facebook.presto.server.security.SecurityConfig.AuthenticationType.OAUTH2;
 import static com.google.common.base.Strings.nullToEmpty;
-import static io.airlift.discovery.client.ServiceAnnouncement.ServiceAnnouncementBuilder;
-import static io.airlift.discovery.client.ServiceAnnouncement.serviceAnnouncement;
 import static java.util.Objects.requireNonNull;
 
 public class PrestoServer
@@ -84,8 +121,25 @@ public class PrestoServer
     @Override
     public void run()
     {
+        // Allow JSON property names longer than Jackson 2.18's default 50,000-char limit.
+        // Without this, JsonCodec<PlanFragment> fails on workers when Assignments map keys
+        // (VariableReferenceExpression names) exceed maxNameLength for complex projection chains
+        // over deeply nested struct schemas. Must be set before any JsonFactory is constructed
+        // (including the static one inside JsonCodec).
+        StreamReadConstraints.overrideDefaultStreamReadConstraints(
+                StreamReadConstraints.builder()
+                        .maxNameLength(Integer.MAX_VALUE)
+                        .build());
+
         verifyJvmRequirements();
         verifySystemTimeIsReasonable();
+
+        // Netty 4.2 enables SSL endpoint verification by default. The Drift Netty transport
+        // does not pass hostnames to the SSL engine, causing SSLHandshakeException. Disable
+        // the default endpoint verification until Drift is updated to support it.
+        if (System.getProperty("io.netty.handler.ssl.defaultEndpointVerificationAlgorithm") == null) {
+            System.setProperty("io.netty.handler.ssl.defaultEndpointVerificationAlgorithm", "NONE");
+        }
 
         Logger log = Logger.get(PrestoServer.class);
 
@@ -94,7 +148,14 @@ public class PrestoServer
                 new NodeModule(),
                 new DiscoveryModule(),
                 new HttpServerModule(),
-                new JsonModule(),
+                new ClientRequestFilterModule(),
+                Modules.override(new JsonModule()).with(
+                        binder -> binder.bind(ObjectMapper.class).toProvider(PrestoObjectMapperProvider.class)),
+                installModuleIf(
+                        FeaturesConfig.class,
+                        FeaturesConfig::isJsonSerdeCodeGenerationEnabled,
+                        binder -> jsonBinder(binder).addModuleBinding().to(AfterburnerModule.class)),
+                new SmileModule(),
                 new JaxrsModule(true),
                 new MBeanModule(),
                 new JmxModule(),
@@ -103,43 +164,106 @@ public class PrestoServer
                 new TraceTokenModule(),
                 new JsonEventModule(),
                 new HttpEventModule(),
-                new EmbeddedDiscoveryModule(),
                 new ServerSecurityModule(),
                 new AccessControlModule(),
+                new EventListenerModule(),
                 new ServerMainModule(sqlParserOptions),
                 new GracefulShutdownModule(),
-                installModuleIf(
-                        NodeSchedulerConfig.class,
-                        config -> LEGACY_NETWORK_TOPOLOGY.equalsIgnoreCase(config.getNetworkTopology()),
-                        binder -> binder.bind(NetworkTopology.class).to(LegacyNetworkTopology.class).in(Scopes.SINGLETON)),
-                installModuleIf(
-                        NodeSchedulerConfig.class,
-                        config -> "flat".equalsIgnoreCase(config.getNetworkTopology()),
-                        binder -> binder.bind(NetworkTopology.class).to(FlatNetworkTopology.class).in(Scopes.SINGLETON))
-
-        );
+                new WarningCollectorModule(),
+                new TempStorageModule(),
+                new QueryPrerequisitesManagerModule(),
+                new NodeTtlFetcherManagerModule(),
+                new ClusterTtlProviderManagerModule());
 
         modules.addAll(getAdditionalModules());
 
         Bootstrap app = new Bootstrap(modules.build());
 
         try {
-            Injector injector = app.strictConfig().initialize();
+            Injector injector = app.initialize();
 
-            injector.getInstance(PluginManager.class).loadPlugins();
+            PluginManager pluginManager = injector.getInstance(PluginManager.class);
 
-            injector.getInstance(CatalogManager.class).loadCatalogs();
+            // Load only CoordinatorPlugin service providers first
+            pluginManager.loadCoordinatorPluginsOnly();
+
+            // todo: fix this hack
+            //  Load type managers before loading any other plugin service providers as we could have a new serving type manager.
+            //  Currently, when sidecar plugin is installed, the serving type manager is NativeTypeManager and we need to ensure
+            //  any types loaded from plugins are added to the serving type manager.
+            injector.getInstance(StaticTypeManagerStore.class).loadTypeManagers();
+
+            // Load remaining service providers (Plugin and RouterPlugin)
+            pluginManager.loadRemainingPlugins();
+
+            // get all required auth configs to pass down to http clients
+            AuthClientConfigs authClientConfigs =
+                    createAuthClientConfigs(
+                            injector.getInstance(InternalCommunicationConfig.class),
+                            injector.getInstance(NodeInfo.class));
+
+            ServerConfig serverConfig = injector.getInstance(ServerConfig.class);
+
+            if (!serverConfig.isResourceManager()) {
+                injector.getInstance(StaticCatalogStore.class).loadCatalogs();
+            }
 
             // TODO: remove this huge hack
-            updateDatasources(
+            updateConnectorIds(
                     injector.getInstance(Announcer.class),
-                    injector.getInstance(Metadata.class),
+                    injector.getInstance(CatalogManager.class),
                     injector.getInstance(ServerConfig.class),
                     injector.getInstance(NodeSchedulerConfig.class));
 
-            injector.getInstance(AccessControlManager.class).loadSystemAccessControl();
+            // TODO: thrift server port should be announced by discovery server similar to http/https ports
+            updateThriftServerPort(
+                    injector.getInstance(Announcer.class),
+                    injector.getInstance(DriftServer.class));
+
+            injector.getInstance(StaticFunctionNamespaceStore.class).loadFunctionNamespaceManagers(authClientConfigs);
+            injector.getInstance(SessionPropertyDefaults.class).loadConfigurationManager();
+            injector.getInstance(ResourceGroupManager.class).loadConfigurationManager();
+            if (injector.getInstance(FeaturesConfig.class).isBuiltInSidecarFunctionsEnabled()) {
+                List<? extends SqlFunction> functions = injector.getInstance(WorkerFunctionRegistryTool.class).getWorkerFunctions();
+                injector.getInstance(FunctionAndTypeManager.class).registerWorkerFunctions(functions);
+            }
+
+            if (!serverConfig.isResourceManager()) {
+                injector.getInstance(AccessControlManager.class).loadSystemAccessControl();
+            }
+            injector.getInstance(PasswordAuthenticatorManager.class).loadPasswordAuthenticator();
+            injector.getInstance(PrestoAuthenticatorManager.class).loadPrestoAuthenticator();
+            injector.getInstance(EventListenerManager.class).loadConfiguredEventListeners();
+            injector.getInstance(TempStorageManager.class).loadTempStorages();
+            injector.getInstance(QueryPrerequisitesManager.class).loadQueryPrerequisites();
+            injector.getInstance(NodeTtlFetcherManager.class).loadNodeTtlFetcher();
+            injector.getInstance(ClusterTtlProviderManager.class).loadClusterTtlProvider();
+            injector.getInstance(TracerProviderManager.class).loadTracerProvider();
+            injector.getInstance(NodeStatusNotificationManager.class).loadNodeStatusNotificationProvider();
+            injector.getInstance(GracefulShutdownHandler.class).loadNodeStatusNotification();
+            injector.getInstance(SessionPropertyManager.class).loadSessionPropertyProviders(authClientConfigs);
+            PlanCheckerProviderManager planCheckerProviderManager = injector.getInstance(PlanCheckerProviderManager.class);
+            InternalNodeManager nodeManager = injector.getInstance(DiscoveryNodeManager.class);
+            NodeInfo nodeInfo = injector.getInstance(NodeInfo.class);
+            PluginNodeManager pluginNodeManager = new PluginNodeManager(nodeManager, nodeInfo.getEnvironment());
+            planCheckerProviderManager.loadPlanCheckerProviders(pluginNodeManager, authClientConfigs);
+
+            injector.getInstance(ClientRequestFilterManager.class).loadClientRequestFilters();
+            injector.getInstance(ExpressionOptimizerManager.class).loadExpressionOptimizerFactories(authClientConfigs);
+
+            injector.getInstance(FunctionAndTypeManager.class)
+                    .getBuiltInPluginFunctionNamespaceManager().triggerConflictCheckWithBuiltInFunctions();
+
+            startAssociatedProcesses(injector);
+
+            SecurityConfig securityConfig = injector.getInstance(SecurityConfig.class);
+            if (securityConfig.getAuthenticationTypes().contains(OAUTH2)) {
+                injector.getInstance(OAuth2Client.class).load();
+            }
 
             injector.getInstance(Announcer.class).start();
+
+            injector.getInstance(ServerStartupState.class).setStartupComplete();
 
             log.info("======== SERVER STARTED ========");
         }
@@ -149,47 +273,88 @@ public class PrestoServer
         }
     }
 
+    public static AuthClientConfigs createAuthClientConfigs(InternalCommunicationConfig config, NodeInfo nodeInfo)
+    {
+        return new AuthClientConfigs(
+                nodeInfo.getNodeId(),
+                config.getKeyStorePath(),
+                config.getKeyStorePassword(),
+                config.getTrustStorePath(),
+                config.getTrustStorePassword(),
+                config.getExcludeCipherSuites(),
+                config.getIncludedCipherSuites(),
+                config.isInternalJwtEnabled(),
+                config.getSharedSecret());
+    }
+
     protected Iterable<? extends Module> getAdditionalModules()
     {
         return ImmutableList.of();
     }
 
-    private static void updateDatasources(Announcer announcer, Metadata metadata, ServerConfig serverConfig, NodeSchedulerConfig schedulerConfig)
+    protected void startAssociatedProcesses(Injector injector)
+    {
+    }
+
+    private static void updateConnectorIds(Announcer announcer, CatalogManager metadata, ServerConfig serverConfig, NodeSchedulerConfig schedulerConfig)
     {
         // get existing announcement
         ServiceAnnouncement announcement = getPrestoAnnouncement(announcer.getServiceAnnouncements());
 
-        // get existing sources
-        String property = nullToEmpty(announcement.getProperties().get("datasources"));
+        // get existing connectorIds
+        String property = nullToEmpty(announcement.getProperties().get("connectorIds"));
         List<String> values = Splitter.on(',').trimResults().omitEmptyStrings().splitToList(property);
-        Set<String> datasources = new LinkedHashSet<>(values);
+        Set<String> connectorIds = new LinkedHashSet<>(values);
 
-        // automatically build sources if not configured
-        if (datasources.isEmpty()) {
-            Set<String> catalogs = metadata.getCatalogNames().keySet();
+        // automatically build connectorIds if not configured
+        if (connectorIds.isEmpty()) {
+            List<Catalog> catalogs = metadata.getCatalogs();
             // if this is a dedicated coordinator, only add jmx
             if (serverConfig.isCoordinator() && !schedulerConfig.isIncludeCoordinator()) {
-                if (catalogs.contains("jmx")) {
-                    datasources.add("jmx");
-                }
+                catalogs.stream()
+                        .map(Catalog::getConnectorId)
+                        .filter(connectorId -> connectorId.getCatalogName().equals("jmx"))
+                        .map(Object::toString)
+                        .forEach(connectorIds::add);
             }
             else {
-                datasources.addAll(catalogs);
+                catalogs.stream()
+                        .map(Catalog::getConnectorId)
+                        .map(Object::toString)
+                        .forEach(connectorIds::add);
             }
         }
 
         // build announcement with updated sources
         ServiceAnnouncementBuilder builder = serviceAnnouncement(announcement.getType());
         for (Map.Entry<String, String> entry : announcement.getProperties().entrySet()) {
-            if (!entry.getKey().equals("datasources")) {
+            if (!entry.getKey().equals("connectorIds")) {
                 builder.addProperty(entry.getKey(), entry.getValue());
             }
         }
-        builder.addProperty("datasources", Joiner.on(',').join(datasources));
+        builder.addProperty("connectorIds", Joiner.on(',').join(connectorIds));
 
         // update announcement
         announcer.removeServiceAnnouncement(announcement.getId());
         announcer.addServiceAnnouncement(builder.build());
+    }
+
+    private static void updateThriftServerPort(Announcer announcer, DriftServer driftServer)
+    {
+        // get existing announcement
+        ServiceAnnouncement announcement = getPrestoAnnouncement(announcer.getServiceAnnouncements());
+
+        // drift server::start can be called multiple times
+        driftServer.start();
+
+        // update announcement and thrift port property
+        int thriftPort = ((DriftNettyServerTransport) driftServer.getServerTransport()).getPort();
+        Map<String, String> properties = new LinkedHashMap<>(announcement.getProperties());
+        properties.put("thriftServerPort", String.valueOf(thriftPort));
+        announcer.removeServiceAnnouncement(announcement.getId());
+        announcer.addServiceAnnouncement(serviceAnnouncement(announcement.getType()).addProperties(properties).build());
+
+        announcer.forceAnnounce();
     }
 
     private static ServiceAnnouncement getPrestoAnnouncement(Set<ServiceAnnouncement> announcements)

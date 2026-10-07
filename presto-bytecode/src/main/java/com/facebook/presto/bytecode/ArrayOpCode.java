@@ -14,8 +14,7 @@
 package com.facebook.presto.bytecode;
 
 import com.google.common.collect.ImmutableMap;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.Map;
 
@@ -106,7 +105,7 @@ public enum ArrayOpCode
 
     static Map<Class<?>, ArrayOpCode> initializeArrayOpCodeMap()
     {
-        ImmutableMap.Builder<Class<?>, ArrayOpCode> builder = ImmutableMap.<Class<?>, ArrayOpCode>builder();
+        ImmutableMap.Builder<Class<?>, ArrayOpCode> builder = ImmutableMap.builder();
         for (ArrayOpCode arrayOpCode : values()) {
             if (arrayOpCode.getType() != null) {
                 builder.put(arrayOpCode.getType(), arrayOpCode);

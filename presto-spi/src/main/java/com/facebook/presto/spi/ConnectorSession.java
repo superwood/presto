@@ -13,27 +13,78 @@
  */
 package com.facebook.presto.spi;
 
-import com.facebook.presto.spi.security.Identity;
-import com.facebook.presto.spi.type.TimeZoneKey;
+import com.facebook.presto.common.RuntimeStats;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.resourceGroups.QueryType;
+import com.facebook.presto.common.type.TimeZoneKey;
+import com.facebook.presto.spi.function.SqlFunctionId;
+import com.facebook.presto.spi.function.SqlInvokedFunction;
+import com.facebook.presto.spi.security.ConnectorIdentity;
 
 import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+
+import static java.util.Collections.emptyMap;
 
 public interface ConnectorSession
 {
     String getQueryId();
+
+    Optional<String> getSource();
 
     default String getUser()
     {
         return getIdentity().getUser();
     }
 
-    Identity getIdentity();
+    ConnectorIdentity getIdentity();
 
     TimeZoneKey getTimeZoneKey();
 
     Locale getLocale();
 
+    Optional<String> getTraceToken();
+
+    Optional<String> getClientInfo();
+
+    Set<String> getClientTags();
+
     long getStartTime();
 
+    SqlFunctionProperties getSqlFunctionProperties();
+
+    Map<SqlFunctionId, SqlInvokedFunction> getSessionFunctions();
+
     <T> T getProperty(String name, Class<T> type);
+
+    Optional<String> getSchema();
+
+    default boolean isReadConstraints()
+    {
+        return false;
+    }
+
+    WarningCollector getWarningCollector();
+
+    RuntimeStats getRuntimeStats();
+
+    Optional<QueryType> getQueryType();
+
+    /**
+     * returns a ConnectorSession for a specific ConnectorId
+     * @return
+     */
+    ConnectorSession forConnectorId(ConnectorId connectorId);
+
+    default Optional<ConnectorId> getConnectorId()
+    {
+        return Optional.empty();
+    }
+
+    default Map<String, String> getSystemProperties()
+    {
+        return emptyMap();
+    }
 }

@@ -15,40 +15,48 @@ package com.facebook.presto.sql.tree;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Streams;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.collect.Iterables.isEmpty;
-import static com.google.common.collect.Iterables.transform;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.Streams.stream;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 
 public class QualifiedName
 {
     private final List<String> parts;
-    private final List<String> originalParts;
+    private final List<Identifier> originalParts;
 
     public static QualifiedName of(String first, String... rest)
     {
         requireNonNull(first, "first is null");
-        return new QualifiedName(ImmutableList.copyOf(Lists.asList(first, rest)));
+        return of(ImmutableList.copyOf(Lists.asList(first, rest).stream().map(Identifier::new).collect(Collectors.toList())));
     }
 
-    public QualifiedName(String name)
+    public static QualifiedName of(String name)
     {
-        this(ImmutableList.of(name));
+        requireNonNull(name, "name is null");
+        return of(ImmutableList.of(new Identifier(name)));
     }
 
-    public QualifiedName(Iterable<String> parts)
+    public static QualifiedName of(Iterable<Identifier> originalParts)
     {
-        requireNonNull(parts, "parts is null");
-        checkArgument(!isEmpty(parts), "parts is empty");
-        this.parts = ImmutableList.copyOf(transform(parts, part -> part.toLowerCase(ENGLISH)));
-        this.originalParts = ImmutableList.copyOf(parts);
+        requireNonNull(originalParts, "originalParts is null");
+        checkArgument(stream(originalParts).findAny().isPresent(), "originalParts is empty");
+
+        return new QualifiedName(ImmutableList.copyOf(originalParts));
+    }
+
+    private QualifiedName(List<Identifier> originalParts)
+    {
+        this.originalParts = originalParts;
+        this.parts = originalParts.stream().map(identifier -> identifier.getValue().toLowerCase(ENGLISH)).collect(toImmutableList());
     }
 
     public List<String> getParts()
@@ -56,7 +64,7 @@ public class QualifiedName
         return parts;
     }
 
-    public List<String> getOriginalParts()
+    public List<Identifier> getOriginalParts()
     {
         return originalParts;
     }
@@ -73,11 +81,12 @@ public class QualifiedName
      */
     public Optional<QualifiedName> getPrefix()
     {
-        if (parts.size() == 1) {
+        if (originalParts.size() == 1) {
             return Optional.empty();
         }
 
-        return Optional.of(new QualifiedName(parts.subList(0, parts.size() - 1)));
+        List<Identifier> subList = originalParts.subList(0, originalParts.size() - 1);
+        return Optional.of(new QualifiedName(subList));
     }
 
     public boolean hasSuffix(QualifiedName suffix)
@@ -93,7 +102,12 @@ public class QualifiedName
 
     public String getSuffix()
     {
-        return Iterables.getLast(parts);
+        return Streams.findLast(parts.stream()).orElseThrow(() -> new IllegalStateException("No suffix found for " + this));
+    }
+
+    public Identifier getOriginalSuffix()
+    {
+        return Streams.findLast(originalParts.stream()).orElseThrow(() -> new IllegalStateException("No original suffix found for " + this));
     }
 
     @Override

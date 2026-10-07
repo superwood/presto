@@ -13,14 +13,14 @@
  */
 package com.facebook.presto.failureDetector;
 
-import io.airlift.configuration.Config;
-import io.airlift.configuration.ConfigDescription;
-import io.airlift.units.Duration;
-import io.airlift.units.MinDuration;
-
-import javax.validation.constraints.DecimalMax;
-import javax.validation.constraints.DecimalMin;
-import javax.validation.constraints.NotNull;
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigDescription;
+import com.facebook.airlift.units.Duration;
+import com.facebook.airlift.units.MinDuration;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 
 import java.util.concurrent.TimeUnit;
 
@@ -31,6 +31,7 @@ public class FailureDetectorConfig
     private Duration heartbeatInterval = new Duration(500, TimeUnit.MILLISECONDS);
     private Duration warmupInterval = new Duration(5, TimeUnit.SECONDS);
     private Duration expirationGraceInterval = new Duration(10, TimeUnit.MINUTES);
+    private int exponentialDecaySeconds = 60;
 
     @NotNull
     public Duration getExpirationGraceInterval()
@@ -97,6 +98,19 @@ public class FailureDetectorConfig
     public FailureDetectorConfig setFailureRatioThreshold(double threshold)
     {
         this.failureRatioThreshold = threshold;
+        return this;
+    }
+
+    @Min(1)
+    public int getExponentialDecaySeconds()
+    {
+        return exponentialDecaySeconds;
+    }
+
+    @Config("failure-detector.exponential-decay-seconds")
+    public FailureDetectorConfig setExponentialDecaySeconds(int exponentialDecaySeconds)
+    {
+        this.exponentialDecaySeconds = exponentialDecaySeconds;
         return this;
     }
 }

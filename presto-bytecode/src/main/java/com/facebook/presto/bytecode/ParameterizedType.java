@@ -14,10 +14,9 @@
 package com.facebook.presto.bytecode;
 
 import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.Immutable;
+import jakarta.annotation.Nullable;
 import org.objectweb.asm.Type;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.Immutable;
 
 import java.util.List;
 
@@ -30,18 +29,12 @@ public class ParameterizedType
     public static ParameterizedType typeFromJavaClassName(String className)
     {
         requireNonNull(className, "type is null");
-        if (className.endsWith("/")) {
-            checkArgument(!className.endsWith(";"), "Invalid class name %s", className);
-        }
         return new ParameterizedType(className.replace('.', '/'));
     }
 
     public static ParameterizedType typeFromPathName(String className)
     {
         requireNonNull(className, "type is null");
-        if (className.indexOf(".") > 0) {
-            checkArgument(!className.endsWith(";"), "Invalid class name %s", className);
-        }
         return new ParameterizedType(className);
     }
 

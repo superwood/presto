@@ -13,19 +13,18 @@
  */
 package com.facebook.presto.benchmark;
 
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
-
-import javax.annotation.Nullable;
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
+import jakarta.annotation.Nullable;
 
 import java.util.Map;
 
+import static com.facebook.airlift.units.DataSize.Unit.BYTE;
 import static com.facebook.presto.benchmark.FormatUtils.formatCount;
 import static com.facebook.presto.benchmark.FormatUtils.formatCountRate;
 import static com.facebook.presto.benchmark.FormatUtils.formatDataRate;
 import static com.facebook.presto.benchmark.FormatUtils.formatDataSize;
 import static com.google.common.base.Preconditions.checkArgument;
-import static io.airlift.units.DataSize.Unit.BYTE;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
@@ -123,9 +122,12 @@ public abstract class AbstractBenchmark
         long outputRows = resultsAvg.get("output_rows").longValue();
         DataSize outputBytes = new DataSize(resultsAvg.get("output_bytes"), BYTE);
 
-        System.out.printf("%35s :: %8.3f cpu ms :: in %5s,  %6s,  %8s,  %8s :: out %5s,  %6s,  %8s,  %8s%n",
+        DataSize memory = new DataSize(resultsAvg.get("peak_memory"), BYTE);
+        System.out.printf("%35s :: %8.3f cpu ms :: %5s peak memory :: in %5s,  %6s,  %8s,  %8s :: out %5s,  %6s,  %8s,  %8s%n",
                 getBenchmarkName(),
                 cpuNanos.getValue(MILLISECONDS),
+
+                formatDataSize(memory, true),
 
                 formatCount(inputRows),
                 formatDataSize(inputBytes, true),

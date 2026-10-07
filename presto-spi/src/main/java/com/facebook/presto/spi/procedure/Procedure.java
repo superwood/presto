@@ -13,38 +13,30 @@
  */
 package com.facebook.presto.spi.procedure;
 
+import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.type.Type;
+import jakarta.annotation.Nullable;
 
 import java.lang.invoke.MethodHandle;
-import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
-import static java.util.Collections.unmodifiableList;
-import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
-import static java.util.stream.Collectors.joining;
 
 public class Procedure
+        extends BaseProcedure<Procedure.Argument>
 {
-    private final String schema;
-    private final String name;
-    private final List<Argument> arguments;
     private final MethodHandle methodHandle;
+
+    public Procedure(String schema, String name, List<Argument> arguments)
+    {
+        super(schema, name, arguments);
+        this.methodHandle = null;
+    }
 
     public Procedure(String schema, String name, List<Argument> arguments, MethodHandle methodHandle)
     {
-        this.schema = checkNotNullOrEmpty(schema, "schema").toLowerCase(ENGLISH);
-        this.name = checkNotNullOrEmpty(name, "name").toLowerCase(ENGLISH);
-        this.arguments = unmodifiableList(new ArrayList<>(arguments));
+        super(schema, name, arguments);
         this.methodHandle = requireNonNull(methodHandle, "methodHandle is null");
-
-        Set<String> names = new HashSet<>();
-        for (Argument argument : arguments) {
-            checkArgument(names.add(argument.getName()), "Duplicate argument name: " + argument.getName());
-        }
 
         checkArgument(!methodHandle.isVarargsCollector(), "Method must have fixed arity");
         checkArgument(methodHandle.type().returnType() == void.class, "Method must return void");
@@ -55,78 +47,27 @@ public class Procedure
         checkArgument(parameterCount == arguments.size(), "Method parameter count must match arguments");
     }
 
-    public String getSchema()
-    {
-        return schema;
-    }
-
-    public String getName()
-    {
-        return name;
-    }
-
-    public List<Argument> getArguments()
-    {
-        return arguments;
-    }
-
     public MethodHandle getMethodHandle()
     {
         return methodHandle;
     }
 
-    @Override
-    public String toString()
-    {
-        return new StringBuilder()
-                .append(schema).append('.').append(name)
-                .append('(')
-                .append(arguments.stream()
-                        .map(Object::toString)
-                        .collect(joining(", ")))
-                .append(')')
-                .toString();
-    }
-
     public static class Argument
+            extends BaseProcedure.BaseArgument
     {
-        private final String name;
-        private final Type type;
-
-        public Argument(String name, Type type)
+        public Argument(String name, String type)
         {
-            this.name = checkNotNullOrEmpty(name, "name");
-            this.type = requireNonNull(type, "type is null");
+            super(name, type);
         }
 
-        public String getName()
+        public Argument(String name, String type, boolean required, @Nullable Object defaultValue)
         {
-            return name;
+            super(name, type, required, defaultValue);
         }
 
-        public Type getType()
+        public Argument(String name, TypeSignature type, boolean required, @Nullable Object defaultValue)
         {
-            return type;
-        }
-
-        @Override
-        public String toString()
-        {
-            return name + " " + type;
-        }
-    }
-
-    private static String checkNotNullOrEmpty(String value, String name)
-    {
-        requireNonNull(value, name + " is null");
-        checkArgument(!value.isEmpty(), name + " is empty");
-        return value;
-    }
-
-    private static void checkArgument(boolean assertion, String message)
-    {
-        if (!assertion) {
-            throw new IllegalArgumentException(message);
+            super(name, type, required, defaultValue);
         }
     }
 }

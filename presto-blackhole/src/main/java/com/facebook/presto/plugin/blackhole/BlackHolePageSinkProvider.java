@@ -11,56 +11,43 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package com.facebook.presto.plugin.blackhole;
 
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
 import com.facebook.presto.spi.ConnectorPageSink;
 import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.spi.PageSinkContext;
 import com.facebook.presto.spi.connector.ConnectorPageSinkProvider;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.google.common.collect.ImmutableList;
-import io.airlift.slice.Slice;
+import com.google.common.util.concurrent.ListeningScheduledExecutorService;
 
-import java.util.Collection;
-import java.util.concurrent.CompletableFuture;
+import static com.google.common.base.Preconditions.checkArgument;
+import static java.util.Objects.requireNonNull;
 
 public class BlackHolePageSinkProvider
         implements ConnectorPageSinkProvider
 {
-    @Override
-    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorOutputTableHandle outputTableHandle)
+    private final ListeningScheduledExecutorService executorService;
+
+    public BlackHolePageSinkProvider(ListeningScheduledExecutorService executorService)
     {
-        return new NoOpConnectorPageSink();
+        this.executorService = requireNonNull(executorService, "executorService is null");
     }
 
     @Override
-    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorInsertTableHandle insertTableHandle)
+    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorOutputTableHandle outputTableHandle, PageSinkContext pageSinkContext)
     {
-        return new NoOpConnectorPageSink();
+        checkArgument(!pageSinkContext.isCommitRequired(), "Black hole connector does not support page sink commit");
+        BlackHoleOutputTableHandle handle = (BlackHoleOutputTableHandle) outputTableHandle;
+        return new BlackHolePageSink(executorService, handle.getPageProcessingDelay());
     }
 
-    private static class NoOpConnectorPageSink
-            implements ConnectorPageSink
+    @Override
+    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorInsertTableHandle insertTableHandle, PageSinkContext pageSinkContext)
     {
-        @Override
-        public CompletableFuture<?> appendPage(Page page, Block sampleWeightBlock)
-        {
-            return NOT_BLOCKED;
-        }
-
-        @Override
-        public Collection<Slice> finish()
-        {
-            return ImmutableList.of();
-        }
-
-        @Override
-        public void abort()
-        {
-        }
+        checkArgument(!pageSinkContext.isCommitRequired(), "Black hole connector does not support page sink commit");
+        BlackHoleInsertTableHandle handle = (BlackHoleInsertTableHandle) insertTableHandle;
+        return new BlackHolePageSink(executorService, handle.getPageProcessingDelay());
     }
 }

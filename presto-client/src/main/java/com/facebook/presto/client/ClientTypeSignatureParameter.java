@@ -13,9 +13,13 @@
  */
 package com.facebook.presto.client;
 
-import com.facebook.presto.spi.type.NamedTypeSignature;
-import com.facebook.presto.spi.type.ParameterKind;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
+import com.facebook.airlift.json.JsonObjectMapperProvider;
+import com.facebook.presto.common.type.BigintEnumType.LongEnumMap;
+import com.facebook.presto.common.type.DistinctTypeInfo;
+import com.facebook.presto.common.type.NamedTypeSignature;
+import com.facebook.presto.common.type.ParameterKind;
+import com.facebook.presto.common.type.TypeSignatureParameter;
+import com.facebook.presto.common.type.VarcharEnumType.VarcharEnumMap;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonParser;
@@ -24,8 +28,7 @@ import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
-
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
 
 import java.io.IOException;
 import java.util.Objects;
@@ -51,6 +54,15 @@ public class ClientTypeSignatureParameter
                 break;
             case NAMED_TYPE:
                 value = typeParameterSignature.getNamedTypeSignature();
+                break;
+            case LONG_ENUM:
+                value = typeParameterSignature.getLongEnumMap();
+                break;
+            case VARCHAR_ENUM:
+                value = typeParameterSignature.getVarcharEnumMap();
+                break;
+            case DISTINCT_TYPE:
+                value = typeParameterSignature.getDistinctTypeInfo();
                 break;
             default:
                 throw new UnsupportedOperationException(format("Unknown kind [%s]", kind));
@@ -129,12 +141,13 @@ public class ClientTypeSignatureParameter
         return Objects.hash(kind, value);
     }
 
-    public static class ClientTypeSignatureParameterDeserializer extends JsonDeserializer<ClientTypeSignatureParameter>
+    public static class ClientTypeSignatureParameterDeserializer
+            extends JsonDeserializer<ClientTypeSignatureParameter>
     {
-        private static final ObjectMapper MAPPER = new ObjectMapper();
+        private static final ObjectMapper MAPPER = new JsonObjectMapperProvider().get();
 
         @Override
-        public ClientTypeSignatureParameter deserialize(JsonParser jp, DeserializationContext ctxt)
+        public ClientTypeSignatureParameter deserialize(JsonParser jp, DeserializationContext ctx)
                 throws IOException
         {
             JsonNode node = jp.getCodec().readTree(jp);
@@ -150,6 +163,15 @@ public class ClientTypeSignatureParameter
                     break;
                 case LONG:
                     value = MAPPER.readValue(jsonValue, Long.class);
+                    break;
+                case LONG_ENUM:
+                    value = MAPPER.readValue(jsonValue, LongEnumMap.class);
+                    break;
+                case VARCHAR_ENUM:
+                    value = MAPPER.readValue(jsonValue, VarcharEnumMap.class);
+                    break;
+                case DISTINCT_TYPE:
+                    value = MAPPER.readValue(jsonValue, DistinctTypeInfo.class);
                     break;
                 default:
                     throw new UnsupportedOperationException(format("Unsupported kind [%s]", kind));

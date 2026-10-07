@@ -13,10 +13,11 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
-import com.facebook.presto.spi.ColumnHandle;
+import com.facebook.airlift.units.Duration;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.SchemaTableName;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.google.common.collect.ImmutableMap;
 import org.h2.Driver;
 
@@ -25,15 +26,23 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Properties;
+import java.util.concurrent.ThreadLocalRandom;
 
+import static com.facebook.airlift.concurrent.MoreFutures.getFutureValue;
+import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
+import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static io.airlift.concurrent.MoreFutures.getFutureValue;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 final class TestingDatabase
         implements AutoCloseable
 {
+    public static final Duration LOCK_TIMEOUT = new Duration(30, SECONDS);
     public static final String CONNECTOR_ID = "test";
+    private static final ConnectorSession session = testSessionBuilder().build().toConnectorSession();
 
     private final Connection connection;
     private final JdbcClient jdbcClient;
@@ -41,24 +50,24 @@ final class TestingDatabase
     public TestingDatabase()
             throws SQLException
     {
-        String connectionUrl = "jdbc:h2:mem:test" + System.nanoTime();
+        String connectionUrl = "jdbc:h2:mem:test" + System.nanoTime() + "_" + ThreadLocalRandom.current().nextInt() + ";LOCK_TIMEOUT=" + LOCK_TIMEOUT.toMillis();
         jdbcClient = new BaseJdbcClient(
                 new JdbcConnectorId(CONNECTOR_ID),
-                new BaseJdbcConfig().setConnectionUrl(connectionUrl),
+                new BaseJdbcConfig(),
                 "\"",
-                new Driver());
+                new DriverConnectionFactory(new Driver(), connectionUrl, Optional.empty(), Optional.empty(), new Properties()));
 
         connection = DriverManager.getConnection(connectionUrl);
         connection.createStatement().execute("CREATE SCHEMA example");
 
-        connection.createStatement().execute("CREATE TABLE example.numbers(text varchar primary key, value bigint)");
-        connection.createStatement().execute("INSERT INTO example.numbers(text, value) VALUES " +
-                "('one', 1)," +
-                "('two', 2)," +
-                "('three', 3)," +
-                "('ten', 10)," +
-                "('eleven', 11)," +
-                "('twelve', 12)" +
+        connection.createStatement().execute("CREATE TABLE example.numbers(text varchar primary key, text_short varchar(32), value bigint)");
+        connection.createStatement().execute("INSERT INTO example.numbers(text, text_short, value) VALUES " +
+                "('one', 'one', 1)," +
+                "('two', 'two', 2)," +
+                "('three', 'three', 3)," +
+                "('ten', 'ten', 10)," +
+                "('eleven', 'eleven', 11)," +
+                "('twelve', 'twelve', 12)" +
                 "");
         connection.createStatement().execute("CREATE TABLE example.view_source(id varchar primary key)");
         connection.createStatement().execute("CREATE VIEW example.view AS SELECT id FROM example.view_source");
@@ -68,7 +77,9 @@ final class TestingDatabase
 
         connection.createStatement().execute("CREATE SCHEMA exa_ple");
         connection.createStatement().execute("CREATE TABLE exa_ple.num_ers(te_t varchar primary key, \"VA%UE\" bigint)");
+        connection.createStatement().execute("CREATE TABLE exa_ple.table_with_float_col(col1 bigint, col2 double, col3 float, col4 real)");
 
+        connection.createStatement().execute("CREATE SCHEMA schema_for_create_table_tests");
         connection.commit();
     }
 
@@ -90,23 +101,23 @@ final class TestingDatabase
     }
 
     public JdbcSplit getSplit(String schemaName, String tableName)
-            throws InterruptedException
     {
-        JdbcTableHandle jdbcTableHandle = jdbcClient.getTableHandle(new SchemaTableName(schemaName, tableName));
-        JdbcTableLayoutHandle jdbcLayoutHandle = new JdbcTableLayoutHandle(jdbcTableHandle, TupleDomain.<ColumnHandle>all());
-        ConnectorSplitSource splits = jdbcClient.getSplits(jdbcLayoutHandle);
-        return (JdbcSplit) getOnlyElement(getFutureValue(splits.getNextBatch(1000)));
+        JdbcIdentity identity = JdbcIdentity.from(session);
+        JdbcTableHandle jdbcTableHandle = jdbcClient.getTableHandle(session, identity, new SchemaTableName(schemaName, tableName));
+        JdbcTableLayoutHandle jdbcLayoutHandle = new JdbcTableLayoutHandle(session.getSqlFunctionProperties(), jdbcTableHandle, TupleDomain.all(), Optional.empty());
+        ConnectorSplitSource splits = jdbcClient.getSplits(session, identity, jdbcLayoutHandle);
+        return (JdbcSplit) getOnlyElement(getFutureValue(splits.getNextBatch(NOT_PARTITIONED, 1000)).getSplits());
     }
 
     public Map<String, JdbcColumnHandle> getColumnHandles(String schemaName, String tableName)
     {
-        JdbcTableHandle tableHandle = jdbcClient.getTableHandle(new SchemaTableName(schemaName, tableName));
-        List<JdbcColumnHandle> columns = jdbcClient.getColumns(tableHandle);
+        JdbcTableHandle tableHandle = jdbcClient.getTableHandle(session, JdbcIdentity.from(session), new SchemaTableName(schemaName, tableName));
+        List<JdbcColumnHandle> columns = jdbcClient.getColumns(session, tableHandle);
         checkArgument(columns != null, "table not found: %s.%s", schemaName, tableName);
 
         ImmutableMap.Builder<String, JdbcColumnHandle> columnHandles = ImmutableMap.builder();
         for (JdbcColumnHandle column : columns) {
-            columnHandles.put(column.getColumnMetadata().getName(), column);
+            columnHandles.put(column.getColumnMetadata(session, jdbcClient).getName(), column);
         }
         return columnHandles.build();
     }

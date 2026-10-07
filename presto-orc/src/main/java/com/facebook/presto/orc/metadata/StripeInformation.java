@@ -13,26 +13,45 @@
  */
 package com.facebook.presto.orc.metadata;
 
+import com.google.common.collect.ImmutableList;
+
+import java.util.List;
+import java.util.OptionalLong;
+
 import static com.google.common.base.MoreObjects.toStringHelper;
+import static com.google.common.base.Preconditions.checkArgument;
+import static java.util.Objects.requireNonNull;
 
 public class StripeInformation
 {
-    private final int numberOfRows;
+    private final long numberOfRows;
     private final long offset;
     private final long indexLength;
     private final long dataLength;
     private final long footerLength;
+    private final OptionalLong rawDataSize;
 
-    public StripeInformation(int numberOfRows, long offset, long indexLength, long dataLength, long footerLength)
+    // Arbitrary binary representing key metadata. It could be identifier
+    // of key in KMS, encrypted DEK or other form of user defined key metadata.
+    // only set for run start, and reuse until next run
+    private final List<byte[]> keyMetadata;
+
+    public StripeInformation(long numberOfRows, long offset, long indexLength, long dataLength, long footerLength, OptionalLong rawDataSize, List<byte[]> keyMetadata)
     {
+        // dataLength can be zero when the stripe only contains empty flat maps.
+        checkArgument(numberOfRows > 0, "Stripe must have at least one row");
+        checkArgument(footerLength > 0, "Stripe must have a footer section");
+        requireNonNull(keyMetadata, "keyMetadata is null");
         this.numberOfRows = numberOfRows;
         this.offset = offset;
         this.indexLength = indexLength;
         this.dataLength = dataLength;
         this.footerLength = footerLength;
+        this.rawDataSize = requireNonNull(rawDataSize, "rawDataSize is null");
+        this.keyMetadata = ImmutableList.copyOf(requireNonNull(keyMetadata, "keyMetadata is null"));
     }
 
-    public int getNumberOfRows()
+    public long getNumberOfRows()
     {
         return numberOfRows;
     }
@@ -62,6 +81,11 @@ public class StripeInformation
         return indexLength + dataLength + footerLength;
     }
 
+    public OptionalLong getRawDataSize()
+    {
+        return rawDataSize;
+    }
+
     @Override
     public String toString()
     {
@@ -72,5 +96,10 @@ public class StripeInformation
                 .add("dataLength", dataLength)
                 .add("footerLength", footerLength)
                 .toString();
+    }
+
+    public List<byte[]> getKeyMetadata()
+    {
+        return keyMetadata;
     }
 }

@@ -15,12 +15,10 @@ package com.facebook.presto.bytecode;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
+import com.google.common.collect.Iterables;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.tree.InsnNode;
-
-import javax.annotation.concurrent.NotThreadSafe;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -30,11 +28,12 @@ import java.util.Optional;
 import static com.facebook.presto.bytecode.Access.STATIC;
 import static com.facebook.presto.bytecode.Access.toAccessModifier;
 import static com.facebook.presto.bytecode.ParameterizedType.type;
-import static com.google.common.collect.Iterables.transform;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.Streams.stream;
 import static org.objectweb.asm.Opcodes.RETURN;
 
 @SuppressWarnings("UnusedDeclaration")
-@NotThreadSafe
 public class MethodDefinition
 {
     private final Scope scope;
@@ -56,8 +55,7 @@ public class MethodDefinition
             EnumSet<Access> access,
             String name,
             ParameterizedType returnType,
-            Parameter... parameters
-    )
+            Parameter... parameters)
     {
         this(declaringClass, access, name, returnType, ImmutableList.copyOf(parameters));
     }
@@ -67,9 +65,10 @@ public class MethodDefinition
             EnumSet<Access> access,
             String name,
             ParameterizedType returnType,
-            Iterable<Parameter> parameters
-    )
+            Iterable<Parameter> parameters)
     {
+        checkArgument(Iterables.size(parameters) <= 254, "Too many parameters for method");
+
         this.declaringClass = declaringClass;
         body = new BytecodeBlock();
 
@@ -82,11 +81,10 @@ public class MethodDefinition
             this.returnType = type(void.class);
         }
         this.parameters = ImmutableList.copyOf(parameters);
-        this.parameterTypes = Lists.transform(this.parameters, Parameter::getType);
-        this.parameterAnnotations = ImmutableList.copyOf(transform(parameters, input -> new ArrayList<>()));
-
+        this.parameterTypes = this.parameters.stream().map(Parameter::getType).collect(toImmutableList());
+        this.parameterAnnotations = stream(parameters).<List<AnnotationDefinition>>map(input -> new ArrayList<>()).collect(toImmutableList());
         Optional<ParameterizedType> thisType = Optional.empty();
-        if (!access.contains(STATIC)) {
+        if (!declaringClass.isInterface() && !access.contains(STATIC)) {
             thisType = Optional.of(declaringClass.getType());
         }
         scope = new Scope(thisType, parameters);
@@ -171,6 +169,9 @@ public class MethodDefinition
 
     public BytecodeBlock getBody()
     {
+        if (declaringClass.isInterface()) {
+            throw new IllegalAccessError("Interface does not have method body");
+        }
         return body;
     }
 
@@ -236,19 +237,19 @@ public class MethodDefinition
                 parameterAnnotation.visitParameterAnnotation(parameterIndex, methodVisitor);
             }
         }
+        if (!declaringClass.isInterface()) {
+            // visit code
+            methodVisitor.visitCode();
 
-        // visit code
-        methodVisitor.visitCode();
-
-        // visit instructions
-        MethodGenerationContext generationContext = new MethodGenerationContext(methodVisitor);
-        generationContext.enterScope(scope);
-        body.accept(methodVisitor, generationContext);
-        if (addReturn) {
-            new InsnNode(RETURN).accept(methodVisitor);
+            // visit instructions
+            MethodGenerationContext generationContext = new MethodGenerationContext(methodVisitor);
+            generationContext.enterScope(scope);
+            body.accept(methodVisitor, generationContext);
+            if (addReturn) {
+                new InsnNode(RETURN).accept(methodVisitor);
+            }
+            generationContext.exitScope(scope);
         }
-        generationContext.exitScope(scope);
-
         // done
         methodVisitor.visitMaxs(-1, -1);
         methodVisitor.visitEnd();
@@ -260,7 +261,7 @@ public class MethodDefinition
         Joiner.on(' ').appendTo(sb, access).append(' ');
         sb.append(returnType.getJavaClassName()).append(' ');
         sb.append(name).append('(');
-        Joiner.on(", ").appendTo(sb, transform(parameters, Parameter::getSourceString)).append(')');
+        Joiner.on(", ").appendTo(sb, parameters.stream().map(Parameter::getSourceString).collect(toImmutableList())).append(')');
         return sb.toString();
     }
 
@@ -279,26 +280,23 @@ public class MethodDefinition
     {
         return methodDescription(
                 type(returnType),
-                Lists.transform(parameterTypes, ParameterizedType::type)
-        );
+                parameterTypes.stream().map(ParameterizedType::type).collect(toImmutableList()));
     }
 
     public static String methodDescription(
             ParameterizedType returnType,
-            ParameterizedType... parameterTypes
-    )
+            ParameterizedType... parameterTypes)
     {
         return methodDescription(returnType, ImmutableList.copyOf(parameterTypes));
     }
 
     public static String methodDescription(
             ParameterizedType returnType,
-            List<ParameterizedType> parameterTypes
-    )
+            List<ParameterizedType> parameterTypes)
     {
         StringBuilder sb = new StringBuilder();
         sb.append("(");
-        Joiner.on("").appendTo(sb, transform(parameterTypes, ParameterizedType::getType));
+        Joiner.on("").appendTo(sb, parameterTypes.stream().map(ParameterizedType::getType).iterator());
         sb.append(")");
         sb.append(returnType.getType());
         return sb.toString();
@@ -306,16 +304,14 @@ public class MethodDefinition
 
     public static String genericMethodSignature(
             ParameterizedType returnType,
-            ParameterizedType... parameterTypes
-    )
+            ParameterizedType... parameterTypes)
     {
         return genericMethodSignature(returnType, ImmutableList.copyOf(parameterTypes));
     }
 
     public static String genericMethodSignature(
             ParameterizedType returnType,
-            List<ParameterizedType> parameterTypes
-    )
+            List<ParameterizedType> parameterTypes)
     {
         StringBuilder sb = new StringBuilder();
         sb.append("(");

@@ -13,21 +13,46 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.google.common.collect.ImmutableList;
+
+import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
+import static java.util.Objects.requireNonNull;
 
 public final class ShowCatalogs
         extends Statement
 {
-    public ShowCatalogs()
+    private final Optional<String> likePattern;
+    private final Optional<String> escape;
+
+    public ShowCatalogs(Optional<String> likePattern, Optional<String> escape)
     {
-        super(Optional.empty());
+        this(Optional.empty(), likePattern, escape);
     }
 
-    public ShowCatalogs(NodeLocation location)
+    public ShowCatalogs(NodeLocation location, Optional<String> likePattern, Optional<String> escape)
     {
-        super(Optional.of(location));
+        this(Optional.of(location), likePattern, escape);
+    }
+
+    public ShowCatalogs(Optional<NodeLocation> location, Optional<String> likePattern, Optional<String> escape)
+    {
+        super(location);
+        this.likePattern = requireNonNull(likePattern, "likePattern is null");
+        this.escape = requireNonNull(escape, "escape is null");
+    }
+
+    public Optional<String> getLikePattern()
+    {
+        return likePattern;
+    }
+
+    public Optional<String> getEscape()
+    {
+        return escape;
     }
 
     @Override
@@ -37,9 +62,15 @@ public final class ShowCatalogs
     }
 
     @Override
+    public List<Node> getChildren()
+    {
+        return ImmutableList.of();
+    }
+
+    @Override
     public int hashCode()
     {
-        return 0;
+        return Objects.hash(likePattern, escape);
     }
 
     @Override
@@ -48,12 +79,20 @@ public final class ShowCatalogs
         if (this == obj) {
             return true;
         }
-        return (obj != null) && (getClass() == obj.getClass());
+        if ((obj == null) || (getClass() != obj.getClass())) {
+            return false;
+        }
+        ShowCatalogs o = (ShowCatalogs) obj;
+        return Objects.equals(likePattern, o.likePattern) &&
+                Objects.equals(escape, o.escape);
     }
 
     @Override
     public String toString()
     {
-        return toStringHelper(this).toString();
+        return toStringHelper(this)
+                .add("likePattern", likePattern)
+                .add("escape", escape)
+                .toString();
     }
 }

@@ -15,16 +15,15 @@ package com.facebook.presto.redis;
 
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplit;
-import com.facebook.presto.spi.ConnectorSplitManager;
 import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
 import com.facebook.presto.spi.FixedSplitSource;
 import com.facebook.presto.spi.HostAddress;
-import com.google.common.base.Throwables;
+import com.facebook.presto.spi.connector.ConnectorSplitManager;
+import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 import com.google.common.collect.ImmutableList;
+import jakarta.inject.Inject;
 import redis.clients.jedis.Jedis;
-
-import javax.inject.Inject;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -59,7 +58,11 @@ public class RedisSplitManager
     }
 
     @Override
-    public ConnectorSplitSource getSplits(ConnectorSession session, ConnectorTableLayoutHandle layout)
+    public ConnectorSplitSource getSplits(
+            ConnectorTransactionHandle transaction,
+            ConnectorSession session,
+            ConnectorTableLayoutHandle layout,
+            SplitSchedulingContext splitSchedulingContext)
     {
         RedisTableHandle redisTableHandle = convertLayout(layout).getTable();
 
@@ -75,9 +78,6 @@ public class RedisSplitManager
         if (redisTableHandle.getKeyDataFormat().equals("zset")) {
             try (Jedis jedis = jedisManager.getJedisPool(nodes.get(0)).getResource()) {
                 numberOfKeys = jedis.zcount(redisTableHandle.getKeyName(), "-inf", "+inf");
-            }
-            catch (Exception e) {
-                throw Throwables.propagate(e);
             }
         }
 
@@ -105,6 +105,6 @@ public class RedisSplitManager
 
             builder.add(split);
         }
-        return new FixedSplitSource(connectorId, builder.build());
+        return new FixedSplitSource(builder.build());
     }
 }

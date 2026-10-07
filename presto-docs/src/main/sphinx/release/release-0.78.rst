@@ -8,7 +8,7 @@ ARRAY and MAP Types in Hive Connector
 The Hive connector now returns arrays and maps instead of json encoded strings,
 for columns whose underlying type is array or map. Please note that this is a backwards
 incompatible change, and the :doc:`/functions/json` will no longer work on these columns,
-unless you :func:`cast` them to the ``json`` type.
+unless you :func:`!cast` them to the ``json`` type.
 
 Session Properties
 ------------------
@@ -38,7 +38,7 @@ For JDBC, the properties can be set by unwrapping the ``Connection`` as follows:
     Specifically, we are planning to require preregistration of properties so
     the user can list available session properties and so the engine can verify
     property values. Additionally, the Presto grammar will be extended to
-    allow setting properties via a query.
+    allow setting properties with a query.
 
 Hive Changes
 ------------
@@ -53,7 +53,7 @@ General Changes
 ---------------
 
 * Fix expression optimizer, so that it runs in linear time instead of exponential time.
-* Add :func:`cardinality` for maps.
+* Add :func:`!cardinality` for maps.
 * Fix race condition in SqlTask creation which can cause queries to hang.
 * Fix ``node-scheduler.multiple-tasks-per-node-enabled`` option.
 * Fix an exception when planning a query with a UNION under a JOIN.

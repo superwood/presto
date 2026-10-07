@@ -13,67 +13,74 @@
  */
 package com.facebook.presto.cassandra;
 
-import com.datastax.driver.core.ConsistencyLevel;
-import com.datastax.driver.core.SocketOptions;
+import com.datastax.oss.driver.api.core.DefaultConsistencyLevel;
+import com.facebook.airlift.configuration.testing.ConfigAssertions;
+import com.facebook.airlift.units.Duration;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.configuration.testing.ConfigAssertions;
-import io.airlift.units.Duration;
 import org.testng.annotations.Test;
 
+import java.io.File;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.MINUTES;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class TestCassandraClientConfig
 {
+    // Default timeout values from the new driver
+    private static final int DEFAULT_READ_TIMEOUT_MILLIS = 12000;
+    private static final int DEFAULT_CONNECT_TIMEOUT_MILLIS = 5000;
+
     @Test
     public void testDefaults()
     {
         ConfigAssertions.assertRecordedDefaults(ConfigAssertions.recordDefaults(CassandraClientConfig.class)
-                .setLimitForPartitionKeySelect(200)
-                .setFetchSizeForPartitionKeySelect(20_000)
-                .setMaxSchemaRefreshThreads(10)
-                .setSchemaCacheTtl(new Duration(1, TimeUnit.HOURS))
-                .setSchemaRefreshInterval(new Duration(2, TimeUnit.MINUTES))
                 .setFetchSize(5_000)
-                .setConsistencyLevel(ConsistencyLevel.ONE)
+                .setConsistencyLevel(DefaultConsistencyLevel.LOCAL_ONE)
                 .setContactPoints("")
                 .setNativeProtocolPort(9042)
                 .setPartitionSizeForBatchSelect(100)
                 .setSplitSize(1_024)
-                .setPartitioner("Murmur3Partitioner")
-                .setThriftPort(9160)
-                .setTransportFactoryOptions("")
-                .setThriftConnectionFactoryClassName("org.apache.cassandra.thrift.TFramedTransportFactory")
+                .setSplitsPerNode(null)
                 .setAllowDropTable(false)
                 .setUsername(null)
                 .setPassword(null)
-                .setClientReadTimeout(new Duration(SocketOptions.DEFAULT_READ_TIMEOUT_MILLIS, MILLISECONDS))
-                .setClientConnectTimeout(new Duration(SocketOptions.DEFAULT_CONNECT_TIMEOUT_MILLIS, MILLISECONDS))
+                .setClientReadTimeout(new Duration(DEFAULT_READ_TIMEOUT_MILLIS, MILLISECONDS))
+                .setClientConnectTimeout(new Duration(DEFAULT_CONNECT_TIMEOUT_MILLIS, MILLISECONDS))
                 .setClientSoLinger(null)
-                .setRetryPolicy(RetryPolicyType.DEFAULT));
+                .setRetryPolicy(RetryPolicyType.DEFAULT)
+                .setUseDCAware(false)
+                .setDcAwareLocalDC(null)
+                .setDcAwareUsedHostsPerRemoteDc(0)
+                .setDcAwareAllowRemoteDCsForLocal(false)
+                .setUseTokenAware(false)
+                .setTokenAwareShuffleReplicas(false)
+                .setNoHostAvailableRetryTimeout(new Duration(1, MINUTES))
+                .setSpeculativeExecutionLimit(1)
+                .setSpeculativeExecutionDelay(new Duration(500, MILLISECONDS))
+                .setKeystorePath(null)
+                .setKeystorePassword(null)
+                .setTruststorePath(null)
+                .setTruststorePassword(null)
+                .setTlsEnabled(false)
+                .setCaseSensitiveNameMatchingEnabled(false)
+                .setProtocolVersion(null)
+                .setSecureConnectBundle(null)
+                .setVectorMaxDimensions(8192));
     }
 
     @Test
     public void testExplicitPropertyMappings()
     {
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
-                .put("cassandra.limit-for-partition-key-select", "100")
-                .put("cassandra.fetch-size-for-partition-key-select", "500")
-                .put("cassandra.max-schema-refresh-threads", "2")
-                .put("cassandra.schema-cache-ttl", "2h")
-                .put("cassandra.schema-refresh-interval", "30m")
                 .put("cassandra.contact-points", "host1,host2")
                 .put("cassandra.native-protocol-port", "9999")
                 .put("cassandra.fetch-size", "10000")
                 .put("cassandra.consistency-level", "TWO")
                 .put("cassandra.partition-size-for-batch-select", "77")
                 .put("cassandra.split-size", "1025")
-                .put("cassandra.thrift-port", "9161")
-                .put("cassandra.partitioner", "RandomPartitioner")
-                .put("cassandra.transport-factory-options", "a=b")
-                .put("cassandra.thrift-connection-factory-class", "org.apache.cassandra.thrift.TFramedTransportFactory1")
+                .put("cassandra.splits-per-node", "10000")
                 .put("cassandra.allow-drop-table", "true")
                 .put("cassandra.username", "my_username")
                 .put("cassandra.password", "my_password")
@@ -81,31 +88,59 @@ public class TestCassandraClientConfig
                 .put("cassandra.client.connect-timeout", "22ms")
                 .put("cassandra.client.so-linger", "33")
                 .put("cassandra.retry-policy", "BACKOFF")
+                .put("cassandra.load-policy.use-dc-aware", "true")
+                .put("cassandra.load-policy.dc-aware.local-dc", "dc1")
+                .put("cassandra.load-policy.dc-aware.used-hosts-per-remote-dc", "1")
+                .put("cassandra.load-policy.dc-aware.allow-remote-dc-for-local", "true")
+                .put("cassandra.load-policy.use-token-aware", "true")
+                .put("cassandra.load-policy.token-aware.shuffle-replicas", "true")
+                .put("cassandra.no-host-available-retry-timeout", "3m")
+                .put("cassandra.speculative-execution.limit", "10")
+                .put("cassandra.speculative-execution.delay", "101s")
+                .put("cassandra.tls.enabled", "true")
+                .put("cassandra.tls.keystore-path", "/tmp/keystore")
+                .put("cassandra.tls.keystore-password", "keystore-password")
+                .put("cassandra.tls.truststore-path", "/tmp/truststore")
+                .put("cassandra.tls.truststore-password", "truststore-password")
+                .put("cassandra.cloud.secure-connect-bundle", "/tmp/secure-connect-bundle.zip")
+                .put("case-sensitive-name-matching", "true")
+                .put("cassandra.protocol-version", "V4")
+                .put("cassandra.vector.max-dimensions", "1024")
                 .build();
 
         CassandraClientConfig expected = new CassandraClientConfig()
-                .setLimitForPartitionKeySelect(100)
-                .setFetchSizeForPartitionKeySelect(500)
-                .setMaxSchemaRefreshThreads(2)
-                .setSchemaCacheTtl(new Duration(2, TimeUnit.HOURS))
-                .setSchemaRefreshInterval(new Duration(30, TimeUnit.MINUTES))
                 .setContactPoints("host1", "host2")
                 .setNativeProtocolPort(9999)
                 .setFetchSize(10_000)
-                .setConsistencyLevel(ConsistencyLevel.TWO)
+                .setConsistencyLevel(DefaultConsistencyLevel.TWO)
                 .setPartitionSizeForBatchSelect(77)
                 .setSplitSize(1_025)
-                .setThriftPort(9161)
-                .setPartitioner("RandomPartitioner")
-                .setTransportFactoryOptions("a=b")
-                .setThriftConnectionFactoryClassName("org.apache.cassandra.thrift.TFramedTransportFactory1")
+                .setSplitsPerNode(10_000L)
                 .setAllowDropTable(true)
                 .setUsername("my_username")
                 .setPassword("my_password")
                 .setClientReadTimeout(new Duration(11, MILLISECONDS))
                 .setClientConnectTimeout(new Duration(22, MILLISECONDS))
                 .setClientSoLinger(33)
-                .setRetryPolicy(RetryPolicyType.BACKOFF);
+                .setRetryPolicy(RetryPolicyType.BACKOFF)
+                .setUseDCAware(true)
+                .setDcAwareLocalDC("dc1")
+                .setDcAwareUsedHostsPerRemoteDc(1)
+                .setDcAwareAllowRemoteDCsForLocal(true)
+                .setUseTokenAware(true)
+                .setTokenAwareShuffleReplicas(true)
+                .setNoHostAvailableRetryTimeout(new Duration(3, MINUTES))
+                .setSpeculativeExecutionLimit(10)
+                .setSpeculativeExecutionDelay(new Duration(101, SECONDS))
+                .setTlsEnabled(true)
+                .setKeystorePath(new File("/tmp/keystore"))
+                .setKeystorePassword("keystore-password")
+                .setTruststorePath(new File("/tmp/truststore"))
+                .setTruststorePassword("truststore-password")
+                .setCaseSensitiveNameMatchingEnabled(true)
+                .setProtocolVersion("V4")
+                .setSecureConnectBundle(new File("/tmp/secure-connect-bundle.zip"))
+                .setVectorMaxDimensions(1024);
 
         ConfigAssertions.assertFullMapping(properties, expected);
     }

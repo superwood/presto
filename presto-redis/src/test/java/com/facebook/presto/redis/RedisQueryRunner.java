@@ -13,9 +13,11 @@
  */
 package com.facebook.presto.redis;
 
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.Session;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.QualifiedObjectName;
 import com.facebook.presto.redis.util.CodecSupplier;
 import com.facebook.presto.redis.util.EmbeddedRedis;
 import com.facebook.presto.redis.util.RedisTestUtils;
@@ -25,18 +27,16 @@ import com.facebook.presto.tests.TestingPrestoClient;
 import com.facebook.presto.tpch.TpchPlugin;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.json.JsonCodec;
-import io.airlift.log.Logger;
 import io.airlift.tpch.TpchTable;
 
 import java.util.Map;
 
+import static com.facebook.airlift.testing.Closeables.closeAllSuppress;
+import static com.facebook.airlift.units.Duration.nanosSince;
 import static com.facebook.presto.redis.util.RedisTestUtils.installRedisPlugin;
 import static com.facebook.presto.redis.util.RedisTestUtils.loadTpchTableDescription;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.tpch.TpchMetadata.TINY_SCHEMA_NAME;
-import static io.airlift.testing.Closeables.closeAllSuppress;
-import static io.airlift.units.Duration.nanosSince;
 import static java.util.Locale.ENGLISH;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
@@ -69,9 +69,9 @@ public final class RedisQueryRunner
 
             Map<SchemaTableName, RedisTableDescription> tableDescriptions = createTpchTableDescriptions(queryRunner.getCoordinator().getMetadata(), tables, dataFormat);
 
-            installRedisPlugin(embeddedRedis, queryRunner, tableDescriptions);
+            installRedisPlugin(embeddedRedis, queryRunner, tableDescriptions, ImmutableMap.of());
 
-            TestingPrestoClient prestoClient = queryRunner.getClient();
+            TestingPrestoClient prestoClient = queryRunner.getRandomClient();
 
             log.info("Loading data...");
             long startTime = System.nanoTime();
@@ -106,7 +106,7 @@ public final class RedisQueryRunner
         return TPCH_SCHEMA + ":" + table.getTableName().toLowerCase(ENGLISH);
     }
 
-    private static Map<SchemaTableName, RedisTableDescription> createTpchTableDescriptions(Metadata metadata, Iterable<TpchTable<?>> tables, String dataFormat)
+    public static Map<SchemaTableName, RedisTableDescription> createTpchTableDescriptions(Metadata metadata, Iterable<TpchTable<?>> tables, String dataFormat)
             throws Exception
     {
         JsonCodec<RedisTableDescription> tableDescriptionJsonCodec = new CodecSupplier<>(RedisTableDescription.class, metadata).get();

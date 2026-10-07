@@ -13,19 +13,21 @@
  */
 package com.facebook.presto.hive;
 
+import com.google.common.collect.ImmutableSet;
+import jakarta.inject.Inject;
 import org.apache.hadoop.conf.Configuration;
 
-import javax.inject.Inject;
-
 import java.net.URI;
-import java.util.Map;
+import java.util.Set;
 
+import static com.facebook.presto.hive.util.ConfigurationUtils.copy;
+import static com.facebook.presto.hive.util.ConfigurationUtils.getInitialConfiguration;
 import static java.util.Objects.requireNonNull;
 
 public class HiveHdfsConfiguration
         implements HdfsConfiguration
 {
-    private static final Configuration DEFAULT_CONFIGURATION = new Configuration();
+    private static final Configuration INITIAL_CONFIGURATION = getInitialConfiguration();
 
     @SuppressWarnings("ThreadLocalNotStaticFinal")
     private final ThreadLocal<Configuration> hadoopConfiguration = new ThreadLocal<Configuration>()
@@ -33,27 +35,65 @@ public class HiveHdfsConfiguration
         @Override
         protected Configuration initialValue()
         {
-            Configuration config = new Configuration(false);
-            for (Map.Entry<String, String> entry : DEFAULT_CONFIGURATION) {
-                config.set(entry.getKey(), entry.getValue());
-            }
-            updater.updateConfiguration(config);
-            return config;
+            Configuration configuration = new Configuration(false);
+            // Configuration captures Thread.currentThread().getContextClassLoader() in an instance
+            // initializer, so every thread would otherwise bake in its own ClassLoader here. Query
+            // planning threads carry the system ClassLoader, which cannot see plugin classes such as
+            // PrestoS3FileSystem (registered as "fs.s3.impl"), making Configuration.getClassByName()
+            // fail with ClassNotFoundException. Pin the plugin ClassLoader so class resolution does
+            // not depend on which thread happened to populate this ThreadLocal.
+            configuration.setClassLoader(HiveHdfsConfiguration.class.getClassLoader());
+            copy(INITIAL_CONFIGURATION, configuration);
+            initializer.updateConfiguration(configuration);
+            return configuration;
         }
     };
 
-    private final HdfsConfigurationUpdater updater;
+    private final HdfsConfigurationInitializer initializer;
+    private final Set<DynamicConfigurationProvider> dynamicProviders;
+
+    // This is set to TRUE if the configuration providers are empty or they do NOT dependent on the URI
+    private final boolean isConfigReusable;
+    private final boolean isCopyOnFirstWriteConfigurationEnabled;
+    private Configuration uriAgnosticConfiguration;
 
     @Inject
-    public HiveHdfsConfiguration(HdfsConfigurationUpdater updater)
+    public HiveHdfsConfiguration(HdfsConfigurationInitializer initializer, Set<DynamicConfigurationProvider> dynamicProviders, HiveClientConfig hiveClientConfig)
     {
-        this.updater = requireNonNull(updater, "updater is null");
+        this.initializer = requireNonNull(initializer, "initializer is null");
+        this.dynamicProviders = ImmutableSet.copyOf(requireNonNull(dynamicProviders, "dynamicProviders is null"));
+        boolean isUriIndependentConfig = true;
+        for (DynamicConfigurationProvider provider : dynamicProviders) {
+            isUriIndependentConfig = isUriIndependentConfig && provider.isUriIndependentConfigurationProvider();
+        }
+        this.isConfigReusable = isUriIndependentConfig;
+        this.isCopyOnFirstWriteConfigurationEnabled = hiveClientConfig.isCopyOnFirstWriteConfigurationEnabled();
     }
 
     @Override
-    public Configuration getConfiguration(URI uri)
+    public Configuration getConfiguration(HdfsContext context, URI uri)
     {
-        // use the same configuration for everything
-        return hadoopConfiguration.get();
+        if (dynamicProviders.isEmpty()) {
+            // use the same configuration for everything
+            return hadoopConfiguration.get();
+        }
+
+        if (isCopyOnFirstWriteConfigurationEnabled && isConfigReusable && uriAgnosticConfiguration != null) {
+            // use the same configuration for everything
+            return new CopyOnFirstWriteConfiguration(uriAgnosticConfiguration);
+        }
+
+        Configuration config = new Configuration(hadoopConfiguration.get());
+        for (DynamicConfigurationProvider provider : dynamicProviders) {
+            provider.updateConfiguration(config, context, uri);
+        }
+
+        if (isCopyOnFirstWriteConfigurationEnabled && isConfigReusable && uriAgnosticConfiguration == null) {
+            uriAgnosticConfiguration = config;
+            // return a CopyOnFirstWrite configuration so that we make a copy before modifying it down the lane
+            return new CopyOnFirstWriteConfiguration(uriAgnosticConfiguration);
+        }
+
+        return config;
     }
 }

@@ -13,10 +13,11 @@
  */
 package com.facebook.presto.benchmark;
 
+import com.facebook.airlift.log.Logger;
+import com.facebook.presto.Session;
 import com.facebook.presto.testing.LocalQueryRunner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.io.Files;
-import io.airlift.log.Logger;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -34,7 +35,10 @@ public class BenchmarkSuite
 
     public static List<AbstractBenchmark> createBenchmarks(LocalQueryRunner localQueryRunner)
     {
-        return ImmutableList.<AbstractBenchmark>of(
+        Session optimizeHashSession = Session.builder(localQueryRunner.getDefaultSession())
+                .setSystemProperty(OPTIMIZE_HASH_GENERATION, "true")
+                .build();
+        return ImmutableList.of(
                 // hand built benchmarks
                 new CountAggregationBenchmark(localQueryRunner),
                 new DoubleSumAggregationBenchmark(localQueryRunner),
@@ -46,7 +50,7 @@ public class BenchmarkSuite
                 new HashBuildBenchmark(localQueryRunner),
                 new HashJoinBenchmark(localQueryRunner),
                 new HashBuildAndJoinBenchmark(localQueryRunner.getDefaultSession(), localQueryRunner),
-                new HashBuildAndJoinBenchmark(localQueryRunner.getDefaultSession().withSystemProperty(OPTIMIZE_HASH_GENERATION, "true"), localQueryRunner),
+                new HashBuildAndJoinBenchmark(optimizeHashSession, localQueryRunner),
                 new HandTpchQuery1(localQueryRunner),
                 new HandTpchQuery6(localQueryRunner),
 
@@ -94,8 +98,7 @@ public class BenchmarkSuite
 
                 new SqlApproximateCountDistinctLongBenchmark(localQueryRunner),
                 new SqlApproximateCountDistinctDoubleBenchmark(localQueryRunner),
-                new SqlApproximateCountDistinctVarBinaryBenchmark(localQueryRunner)
-        );
+                new SqlApproximateCountDistinctVarBinaryBenchmark(localQueryRunner));
     }
 
     private final LocalQueryRunner localQueryRunner;
@@ -137,10 +140,7 @@ public class BenchmarkSuite
                                         new JsonBenchmarkResultWriter(jsonOut),
                                         new JsonAvgBenchmarkResultWriter(jsonAvgOut),
                                         new SimpleLineBenchmarkResultWriter(csvOut),
-                                        new OdsBenchmarkResultWriter("presto.benchmark." + benchmark.getBenchmarkName(), odsOut)
-                                )
-                        )
-                );
+                                        new OdsBenchmarkResultWriter("presto.benchmark." + benchmark.getBenchmarkName(), odsOut))));
             }
         }
     }

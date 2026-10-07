@@ -1,0 +1,358 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.facebook.presto.hive.hudi;
+
+import com.facebook.presto.Session;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.hive.HivePlugin;
+import com.facebook.presto.hive.metastore.Column;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.testing.QueryRunner;
+import com.facebook.presto.tests.AbstractTestQueryFramework;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Streams;
+import org.intellij.lang.annotations.Language;
+import org.testng.annotations.Test;
+
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import static com.facebook.presto.hive.hudi.HudiTestingDataGenerator.DATA_COLUMNS;
+import static com.facebook.presto.hive.hudi.HudiTestingDataGenerator.DATA_COLUMNS_1X;
+import static com.facebook.presto.hive.hudi.HudiTestingDataGenerator.HUDI_META_COLUMNS;
+import static com.facebook.presto.hive.hudi.HudiTestingDataGenerator.PARTITION_COLUMNS;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.lang.String.format;
+import static java.util.Locale.ENGLISH;
+
+public class TestHudiIntegration
+        extends AbstractTestQueryFramework
+{
+    @Override
+    protected QueryRunner createQueryRunner()
+            throws Exception
+    {
+        return HudiTestUtils.createQueryRunner(
+                ImmutableMap.of(),
+                ImmutableMap.of(),
+                metastore -> new HivePlugin("hive", metastore),
+                "hive",
+                "hive",
+                "testing");
+    }
+
+    /**
+     * Hudi 1.x writes Parquet columns in Hudi schema order, which may differ from the Hive schema order,
+     * so 1.x tables need name-based column resolution. 0.x tables are queried with the default session
+     * to keep the original index-based resolution covered.
+     */
+    private Session getHudi1xSession()
+    {
+        return Session.builder(getSession())
+                .setCatalogSessionProperty(getSession().getCatalog().get(), "parquet_use_column_names", "true")
+                .build();
+    }
+
+    @Test
+    public void testMetadata()
+    {
+        assertQuery("show tables",
+                "SELECT * FROM VALUES " +
+                        "('stock_ticks_cow'), " +
+                        "('stock_ticks_cow_1x'), " +
+                        "('stock_ticks_cown'), " +
+                        "('stock_ticks_cown_1x'), " +
+                        "('stock_ticks_mor_ro'), " +
+                        "('stock_ticks_mor_ro_1x'), " +
+                        "('stock_ticks_mor_rt')," +
+                        "('stock_ticks_mor_rt_1x')," +
+                        "('stock_ticks_morn_ro')," +
+                        "('stock_ticks_morn_ro_1x')," +
+                        "('stock_ticks_morn_rt')," +
+                        "('stock_ticks_morn_rt_1x')," +
+                        "('stock_ticks_morn_only_log_ro')," +
+                        "('stock_ticks_morn_only_log_ro_1x')," +
+                        "('stock_ticks_morn_only_log_rt')," +
+                        "('stock_ticks_morn_only_log_rt_1x')");
+
+        FunctionAndTypeManager typeManager = getQueryRunner().getMetadata().getFunctionAndTypeManager();
+
+        // partition tables
+        @Language("SQL") String sql = generateDescribeIdenticalQuery(typeManager, HUDI_META_COLUMNS, DATA_COLUMNS, PARTITION_COLUMNS);
+        assertQuery("DESCRIBE stock_ticks_cow", sql);
+        assertQuery("DESCRIBE stock_ticks_mor_ro", sql);
+        assertQuery("DESCRIBE stock_ticks_mor_rt", sql);
+
+        // non-partition tables
+        @Language("SQL") String sql2 = generateDescribeIdenticalQuery(typeManager, HUDI_META_COLUMNS, DATA_COLUMNS, ImmutableList.of());
+        assertQuery("DESCRIBE stock_ticks_cown", sql2);
+        assertQuery("DESCRIBE stock_ticks_morn_ro", sql2);
+        assertQuery("DESCRIBE stock_ticks_morn_rt", sql2);
+
+        // 1.x partitioned tables: dt is the partition column, not a data column
+        List<Column> dataColumns1xPartitioned = DATA_COLUMNS_1X.stream()
+                .filter(c -> !c.getName().equals("dt"))
+                .collect(toImmutableList());
+        @Language("SQL") String sql1xPartitioned = generateDescribeIdenticalQuery(typeManager, HUDI_META_COLUMNS, dataColumns1xPartitioned, PARTITION_COLUMNS);
+        assertQuery("DESCRIBE stock_ticks_cow_1x", sql1xPartitioned);
+        assertQuery("DESCRIBE stock_ticks_mor_ro_1x", sql1xPartitioned);
+        assertQuery("DESCRIBE stock_ticks_mor_rt_1x", sql1xPartitioned);
+
+        // 1.x non-partitioned tables: dt is a regular data column
+        @Language("SQL") String sql1xNonPartitioned = generateDescribeIdenticalQuery(typeManager, HUDI_META_COLUMNS, DATA_COLUMNS_1X, ImmutableList.of());
+        assertQuery("DESCRIBE stock_ticks_cown_1x", sql1xNonPartitioned);
+        assertQuery("DESCRIBE stock_ticks_morn_ro_1x", sql1xNonPartitioned);
+        assertQuery("DESCRIBE stock_ticks_morn_rt_1x", sql1xNonPartitioned);
+    }
+
+    @Test
+    public void testDemoQuery1()
+    {
+        @Language("SQL") String sqlTemplate = "SELECT symbol, max(ts) FROM %s GROUP BY symbol HAVING symbol = 'GOOG'";
+        @Language("SQL") String sqlResult = "SELECT 'GOOG', '2018-08-31 10:59:00'";
+        @Language("SQL") String sqlResultReadOptimized = "SELECT 'GOOG', '2018-08-31 10:29:00'";
+        @Language("SQL") String sqlResultEmpty = "SELECT * FROM VALUES ('', '') LIMIT 0";
+
+        assertQuery(format(sqlTemplate, "stock_ticks_cow"), sqlResult);
+        assertQuery(format(sqlTemplate, "stock_ticks_cown"), sqlResult);
+        assertQuery(format(sqlTemplate, "stock_ticks_mor_ro"), sqlResultReadOptimized);
+        assertQuery(format(sqlTemplate, "stock_ticks_mor_rt"), sqlResult);
+        assertQuery(format(sqlTemplate, "stock_ticks_morn_ro"), sqlResultReadOptimized);
+        assertQuery(format(sqlTemplate, "stock_ticks_morn_rt"), sqlResult);
+        assertQuery(format(sqlTemplate, "stock_ticks_morn_only_log_ro"), sqlResultEmpty);
+        assertQuery(format(sqlTemplate, "stock_ticks_morn_only_log_rt"), sqlResult);
+
+        // Hudi 1.x tables
+        Session session1x = getHudi1xSession();
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_cow_1x"), sqlResult);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_cown_1x"), sqlResult);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_mor_ro_1x"), sqlResultReadOptimized);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_mor_rt_1x"), sqlResult);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_morn_ro_1x"), sqlResultReadOptimized);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_morn_rt_1x"), sqlResult);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_morn_only_log_ro_1x"), sqlResultEmpty);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_morn_only_log_rt_1x"), sqlResult);
+    }
+
+    @Test
+    public void testDemoQuery2()
+    {
+        @Language("SQL") String sqlTemplate = "SELECT \"_hoodie_record_key\", symbol, ts, volume, open, close  FROM %s WHERE symbol = 'GOOG'";
+        @Language("SQL") String sqlResult = "SELECT * FROM VALUES " +
+                "('GOOG_2018-08-31 09', 'GOOG', '2018-08-31 09:59:00', 6330, 1230.5, 1230.02), " +
+                "('GOOG_2018-08-31 10', 'GOOG', '2018-08-31 10:59:00', 9021, 1227.1993, 1227.215)";
+        @Language("SQL") String sqlResultReadOptimized = "SELECT * FROM VALUES " +
+                "('GOOG_2018-08-31 09', 'GOOG', '2018-08-31 09:59:00', 6330, 1230.5, 1230.02), " +
+                "('GOOG_2018-08-31 10', 'GOOG', '2018-08-31 10:29:00', 3391, 1230.1899, 1230.085)";
+        @Language("SQL") String sqlResultEmpty = "SELECT * FROM VALUES ('', '') LIMIT 0";
+
+        assertQuery(format(sqlTemplate, "stock_ticks_cow"), sqlResult);
+        assertQuery(format(sqlTemplate, "stock_ticks_cown"), sqlResult);
+        assertQuery(format(sqlTemplate, "stock_ticks_mor_ro"), sqlResultReadOptimized);
+        assertQuery(format(sqlTemplate, "stock_ticks_mor_rt"), sqlResult);
+        assertQuery(format(sqlTemplate, "stock_ticks_morn_ro"), sqlResultReadOptimized);
+        assertQuery(format(sqlTemplate, "stock_ticks_morn_rt"), sqlResult);
+        assertQuery(format(sqlTemplate, "stock_ticks_morn_only_log_ro"), sqlResultEmpty);
+        assertQuery(format(sqlTemplate, "stock_ticks_morn_only_log_rt"), sqlResult);
+
+        // Hudi 1.x tables use "key" as the record key
+        @Language("SQL") String sqlResult1x = "SELECT * FROM VALUES " +
+                "('key2', 'GOOG', '2018-08-31 09:59:00', 6330, 1230.5, 1230.02), " +
+                "('key1', 'GOOG', '2018-08-31 10:59:00', 9021, 1227.1993, 1227.215)";
+        @Language("SQL") String sqlResultReadOptimized1x = "SELECT * FROM VALUES " +
+                "('key2', 'GOOG', '2018-08-31 09:59:00', 6330, 1230.5, 1230.02), " +
+                "('key1', 'GOOG', '2018-08-31 10:29:00', 100, 1230.5, 1230.02)";
+
+        Session session1x = getHudi1xSession();
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_cow_1x"), sqlResult1x);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_cown_1x"), sqlResult1x);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_mor_ro_1x"), sqlResultReadOptimized1x);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_mor_rt_1x"), sqlResult1x);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_morn_ro_1x"), sqlResultReadOptimized1x);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_morn_rt_1x"), sqlResult1x);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_morn_only_log_ro_1x"), sqlResultEmpty);
+        assertQuery(session1x, format(sqlTemplate, "stock_ticks_morn_only_log_rt_1x"), sqlResult1x);
+    }
+
+    @Test
+    public void testQueryWithPartitionColumn()
+    {
+        @Language("SQL") String sqlTemplate = "SELECT symbol, ts, dt FROM %s WHERE symbol = 'GOOG' AND dt = '2018-08-31'";
+        @Language("SQL") String sqlResult = "SELECT * FROM VALUES " +
+                "('GOOG', '2018-08-31 09:59:00', '2018-08-31')," +
+                "('GOOG', '2018-08-31 10:59:00', '2018-08-31')";
+        @Language("SQL") String sqlResultReadOptimized = "SELECT * FROM VALUES " +
+                "('GOOG', '2018-08-31 09:59:00', '2018-08-31')," +
+                "('GOOG', '2018-08-31 10:29:00', '2018-08-31')";
+
+        assertQuery(format(sqlTemplate, "stock_ticks_cow"), sqlResult);
+        assertQuery(format(sqlTemplate, "stock_ticks_mor_ro"), sqlResultReadOptimized);
+        assertQuery(format(sqlTemplate, "stock_ticks_mor_rt"), sqlResult);
+    }
+
+    @Test
+    public void testQueryOnUnavailablePartition()
+    {
+        @Language("SQL") String sqlTemplate = "SELECT symbol, ts, dt FROM %s WHERE symbol = 'GOOG' AND dt = '2018-08-30'";
+        @Language("SQL") String sqlResult = "SELECT * FROM VALUES ('', '', '') LIMIT 0";
+
+        assertQuery(format(sqlTemplate, "stock_ticks_cow"), sqlResult);
+        assertQuery(format(sqlTemplate, "stock_ticks_mor_ro"), sqlResult);
+        assertQuery(format(sqlTemplate, "stock_ticks_mor_rt"), sqlResult);
+    }
+
+    @Test
+    public void testHudi1xCopyOnWritePartitionedTable()
+    {
+        @Language("SQL") String sqlCount = "SELECT COUNT(*) FROM stock_ticks_cow_1x";
+        @Language("SQL") String sqlResultCount = "VALUES 2";
+
+        @Language("SQL") String sqlMaxTs = "SELECT symbol, max(ts) FROM stock_ticks_cow_1x GROUP BY symbol HAVING symbol = 'GOOG'";
+        @Language("SQL") String sqlResultMaxTs = "SELECT 'GOOG', '2018-08-31 10:59:00'";
+
+        @Language("SQL") String sqlPartition = "SELECT symbol, ts, dt FROM stock_ticks_cow_1x WHERE symbol = 'GOOG' AND dt = '2018-08-31'";
+        @Language("SQL") String sqlResultPartition = "SELECT * FROM VALUES " +
+                "('GOOG', '2018-08-31 09:59:00', '2018-08-31'), " +
+                "('GOOG', '2018-08-31 10:59:00', '2018-08-31')";
+
+        Session session1x = getHudi1xSession();
+        assertQuery(session1x, sqlCount, sqlResultCount);
+        assertQuery(session1x, sqlMaxTs, sqlResultMaxTs);
+        assertQuery(session1x, sqlPartition, sqlResultPartition);
+    }
+
+    @Test
+    public void testHudi1xMergeOnReadPartitionedTableRealtimeView()
+    {
+        @Language("SQL") String sqlCount = "SELECT COUNT(*) FROM stock_ticks_mor_rt_1x";
+        @Language("SQL") String sqlResultCount = "VALUES 2";
+
+        @Language("SQL") String sqlMaxTs = "SELECT symbol, max(ts) FROM stock_ticks_mor_rt_1x GROUP BY symbol HAVING symbol = 'GOOG'";
+        @Language("SQL") String sqlResultMaxTs = "SELECT 'GOOG', '2018-08-31 10:59:00'";
+
+        @Language("SQL") String sqlVolume = "SELECT volume FROM stock_ticks_mor_rt_1x WHERE ts = '2018-08-31 10:59:00'";
+        @Language("SQL") String sqlResultVolume = "VALUES 9021";
+
+        Session session1x = getHudi1xSession();
+        assertQuery(session1x, sqlCount, sqlResultCount);
+        assertQuery(session1x, sqlMaxTs, sqlResultMaxTs);
+        assertQuery(session1x, sqlVolume, sqlResultVolume);
+    }
+
+    @Test
+    public void testHudi1xMergeOnReadPartitionedTableReadOptimizedView()
+    {
+        @Language("SQL") String sqlCount = "SELECT COUNT(*) FROM stock_ticks_mor_ro_1x";
+        @Language("SQL") String sqlResultCount = "VALUES 2";
+
+        @Language("SQL") String sqlVolume = "SELECT volume FROM stock_ticks_mor_ro_1x WHERE key = 'key1'";
+        @Language("SQL") String sqlResultVolume = "VALUES 100";
+
+        Session session1x = getHudi1xSession();
+        assertQuery(session1x, sqlCount, sqlResultCount);
+        assertQuery(session1x, sqlVolume, sqlResultVolume);
+    }
+
+    @Test
+    public void testHudi1xCopyOnWriteNonPartitionedTable()
+    {
+        @Language("SQL") String sqlCount = "SELECT COUNT(*) FROM stock_ticks_cown_1x";
+        @Language("SQL") String sqlResultCount = "VALUES 2";
+
+        @Language("SQL") String sqlMaxTs = "SELECT symbol, max(ts) FROM stock_ticks_cown_1x GROUP BY symbol HAVING symbol = 'GOOG'";
+        @Language("SQL") String sqlResultMaxTs = "SELECT 'GOOG', '2018-08-31 10:59:00'";
+
+        Session session1x = getHudi1xSession();
+        assertQuery(session1x, sqlCount, sqlResultCount);
+        assertQuery(session1x, sqlMaxTs, sqlResultMaxTs);
+    }
+
+    @Test
+    public void testHudi1xMergeOnReadNonPartitionedTableRealtimeView()
+    {
+        @Language("SQL") String sqlCount = "SELECT COUNT(*) FROM stock_ticks_morn_rt_1x";
+        @Language("SQL") String sqlResultCount = "VALUES 2";
+
+        @Language("SQL") String sqlMaxTs = "SELECT symbol, max(ts) FROM stock_ticks_morn_rt_1x GROUP BY symbol HAVING symbol = 'GOOG'";
+        @Language("SQL") String sqlResultMaxTs = "SELECT 'GOOG', '2018-08-31 10:59:00'";
+
+        @Language("SQL") String sqlVolume = "SELECT volume FROM stock_ticks_morn_rt_1x WHERE key = 'key1'";
+        @Language("SQL") String sqlResultVolume = "VALUES 9021";
+
+        Session session1x = getHudi1xSession();
+        assertQuery(session1x, sqlCount, sqlResultCount);
+        assertQuery(session1x, sqlMaxTs, sqlResultMaxTs);
+        assertQuery(session1x, sqlVolume, sqlResultVolume);
+    }
+
+    @Test
+    public void testHudi1xMergeOnReadNonPartitionedTableReadOptimizedView()
+    {
+        @Language("SQL") String sqlCount = "SELECT COUNT(*) FROM stock_ticks_morn_ro_1x";
+        @Language("SQL") String sqlResultCount = "VALUES 2";
+
+        @Language("SQL") String sqlVolume = "SELECT volume FROM stock_ticks_morn_ro_1x WHERE key = 'key1'";
+        @Language("SQL") String sqlResultVolume = "VALUES 100";
+
+        Session session1x = getHudi1xSession();
+        assertQuery(session1x, sqlCount, sqlResultCount);
+        assertQuery(session1x, sqlVolume, sqlResultVolume);
+    }
+
+    private static String generateDescribeIdenticalQuery(TypeManager typeManager, List<Column> metaColumns, List<Column> dataColumns, List<Column> partitionColumns)
+    {
+        Stream<String> regularRows = Streams.concat(metaColumns.stream(), dataColumns.stream())
+                .map(column -> {
+                    return format("('%s', '%s', '', '', %s, NULL, %s)", column.getName(), column.getType().getType(typeManager).getDisplayName(),
+                            getColumnSize(column.getType().getType(typeManager).getDisplayName()),
+                            (column.getType().getType(typeManager).getDisplayName()).toLowerCase(ENGLISH).equals("varchar") ? "2147483647" : "NULL");
+                });
+
+        Stream<String> partitionRows = partitionColumns.stream()
+                .map(column -> {
+                    return format("('%s', '%s', 'partition key', '', %s, NULL, %s)", column.getName(),
+                            column.getType().getType(typeManager).getDisplayName(),
+                            getColumnSize(column.getType().getType(typeManager).getDisplayName()),
+                            (column.getType().getType(typeManager).getDisplayName()).toLowerCase(ENGLISH).equals("varchar") ? "2147483647" : "NULL");
+                });
+
+        String rows = Streams.concat(regularRows, partitionRows)
+                .collect(Collectors.joining(", "));
+
+        return "SELECT * FROM VALUES " + rows;
+    }
+
+    private static String getColumnSize(String type)
+    {
+        switch (type.toLowerCase(ENGLISH)) {
+            case "bigint":
+                return "19";
+            case "integer":
+                return "10";
+            case "smallint":
+                return "5";
+            case "tinyint":
+                return "3";
+            case "double":
+                return "53";
+            case "real":
+                return "24";
+            default:
+                return "NULL";
+        }
+    }
+}

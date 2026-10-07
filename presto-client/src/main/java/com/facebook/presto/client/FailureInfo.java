@@ -16,10 +16,8 @@ package com.facebook.presto.client;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.Immutable;
-import javax.validation.constraints.NotNull;
+import com.google.errorprone.annotations.Immutable;
+import jakarta.annotation.Nullable;
 
 import java.util.List;
 import java.util.regex.Matcher;
@@ -60,7 +58,6 @@ public class FailureInfo
         this.errorLocation = errorLocation;
     }
 
-    @NotNull
     @JsonProperty
     public String getType()
     {
@@ -81,14 +78,12 @@ public class FailureInfo
         return cause;
     }
 
-    @NotNull
     @JsonProperty
     public List<FailureInfo> getSuppressed()
     {
         return suppressed;
     }
 
-    @NotNull
     @JsonProperty
     public List<String> getStack()
     {
@@ -152,7 +147,7 @@ public class FailureInfo
 
         FailureException(String type, String message, FailureException cause)
         {
-            super(message, cause, true, true);
+            super(message, cause);
             this.type = requireNonNull(type, "type is null");
         }
 

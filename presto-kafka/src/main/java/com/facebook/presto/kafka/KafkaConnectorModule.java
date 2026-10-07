@@ -13,58 +13,61 @@
  */
 package com.facebook.presto.kafka;
 
+import com.facebook.airlift.configuration.AbstractConfigurationAwareModule;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.decoder.DecoderModule;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.kafka.encoder.EncoderModule;
+import com.facebook.presto.kafka.schema.file.FileTableDescriptionSupplier;
+import com.facebook.presto.kafka.schema.file.FileTableDescriptionSupplierModule;
+import com.facebook.presto.kafka.server.file.FileKafkaClusterMetadataSupplier;
+import com.facebook.presto.kafka.server.file.FileKafkaClusterMetadataSupplierModule;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.deser.std.FromStringDeserializer;
 import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Scopes;
-import com.google.inject.multibindings.Multibinder;
+import jakarta.inject.Inject;
 
-import javax.inject.Inject;
+import java.util.function.Function;
 
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
-import static com.google.common.base.Preconditions.checkArgument;
-import static io.airlift.configuration.ConfigBinder.configBinder;
-import static io.airlift.json.JsonBinder.jsonBinder;
-import static io.airlift.json.JsonCodecBinder.jsonCodecBinder;
+import static com.facebook.airlift.configuration.ConditionalModule.installModuleIf;
+import static com.facebook.airlift.configuration.ConfigBinder.configBinder;
+import static com.facebook.airlift.json.JsonBinder.jsonBinder;
+import static com.facebook.airlift.json.JsonCodecBinder.jsonCodecBinder;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 import static java.util.Objects.requireNonNull;
+import static org.apache.kafka.common.security.auth.SecurityProtocol.SASL_PLAINTEXT;
+import static org.apache.kafka.common.security.auth.SecurityProtocol.SASL_SSL;
 
 /**
  * Guice module for the Apache Kafka connector.
  */
 public class KafkaConnectorModule
-        implements Module
+        extends AbstractConfigurationAwareModule
 {
     @Override
-    public void configure(Binder binder)
+    public void setup(Binder binder)
     {
         binder.bind(KafkaConnector.class).in(Scopes.SINGLETON);
 
         binder.bind(KafkaMetadata.class).in(Scopes.SINGLETON);
         binder.bind(KafkaSplitManager.class).in(Scopes.SINGLETON);
         binder.bind(KafkaRecordSetProvider.class).in(Scopes.SINGLETON);
-
-        binder.bind(KafkaSimpleConsumerManager.class).in(Scopes.SINGLETON);
+        binder.bind(KafkaPageSinkProvider.class).in(Scopes.SINGLETON);
 
         configBinder(binder).bindConfig(KafkaConnectorConfig.class);
+        configBinder(binder).bindConfig(KafkaSecurityConfig.class);
+        bindTopicSchemaProviderModule(FileTableDescriptionSupplier.NAME, new FileTableDescriptionSupplierModule(), KafkaConnectorConfig::getTableDescriptionSupplier);
+        bindTopicSchemaProviderModule(FileKafkaClusterMetadataSupplier.NAME, new FileKafkaClusterMetadataSupplierModule(), KafkaConnectorConfig::getClusterMetadataSupplier);
+        bindDefaultModule();
+        bindSaslModule();
 
         jsonBinder(binder).addDeserializerBinding(Type.class).to(TypeDeserializer.class);
         jsonCodecBinder(binder).bindJsonCodec(KafkaTopicDescription.class);
 
         binder.install(new DecoderModule());
-
-        for (KafkaInternalFieldDescription internalFieldDescription : KafkaInternalFieldDescription.getInternalFields()) {
-            bindInternalColumn(binder, internalFieldDescription);
-        }
-    }
-
-    private static void bindInternalColumn(Binder binder, KafkaInternalFieldDescription fieldDescription)
-    {
-        Multibinder<KafkaInternalFieldDescription> fieldDescriptionBinder = Multibinder.newSetBinder(binder, KafkaInternalFieldDescription.class);
-        fieldDescriptionBinder.addBinding().toInstance(fieldDescription);
+        binder.install(new EncoderModule());
     }
 
     public static final class TypeDeserializer
@@ -84,9 +87,32 @@ public class KafkaConnectorModule
         @Override
         protected Type _deserialize(String value, DeserializationContext context)
         {
-            Type type = typeManager.getType(parseTypeSignature(value));
-            checkArgument(type != null, "Unknown type %s", value);
-            return type;
+            return typeManager.getType(parseTypeSignature(value));
         }
+    }
+
+    public void bindTopicSchemaProviderModule(String name, Module module, Function<KafkaConnectorConfig, String> configSupplier)
+    {
+        install(installModuleIf(
+                KafkaConnectorConfig.class,
+                kafkaConfig -> name.equalsIgnoreCase(configSupplier.apply(kafkaConfig)),
+                module));
+    }
+
+    private void bindDefaultModule()
+    {
+        install(installModuleIf(
+                KafkaSecurityConfig.class,
+                config -> config.getSecurityProtocol().isPresent() && config.getSecurityProtocol().get().equals(SASL_PLAINTEXT)
+                        || !config.getSecurityProtocol().isPresent(),
+                new KafkaPlainTextModule()));
+    }
+
+    private void bindSaslModule()
+    {
+        install(installModuleIf(
+                KafkaSecurityConfig.class,
+                config -> config.getSecurityProtocol().isPresent() && config.getSecurityProtocol().get().equals(SASL_SSL),
+                new KafkaSaslModule()));
     }
 }

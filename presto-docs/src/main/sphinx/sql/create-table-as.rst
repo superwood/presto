@@ -7,7 +7,8 @@ Synopsis
 
 .. code-block:: none
 
-    CREATE TABLE [ IF NOT EXISTS ] table_name
+    CREATE TABLE [ IF NOT EXISTS ] table_name [ ( column_alias, ... ) ]
+    [ COMMENT table_comment ]
     [ WITH ( property_name = expression [, ...] ) ]
     AS query
     [ WITH [ NO ] DATA ]
@@ -30,9 +31,17 @@ properties, run the following query::
 Examples
 --------
 
+Create a new table ``orders_column_aliased`` with the results of a query and the given column names::
+
+    CREATE TABLE orders_column_aliased (order_date, total_price)
+    AS
+    SELECT orderdate, totalprice
+    FROM orders
+
 Create a new table ``orders_by_date`` that summarizes ``orders``::
 
     CREATE TABLE orders_by_date
+    COMMENT 'Summary of orders by date'
     WITH (format = 'ORC')
     AS
     SELECT orderdate, sum(totalprice) AS price
@@ -49,6 +58,11 @@ Create the table ``orders_by_date`` if it does not already exist::
 Create a new ``empty_nation`` table with the same schema as ``nation`` and no data::
 
     CREATE TABLE empty_nation AS
-    SELECT * 
-    FROM nation 
+    SELECT *
+    FROM nation
     WITH NO DATA
+
+See Also
+--------
+
+:doc:`create-table`, :doc:`select`

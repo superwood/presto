@@ -13,8 +13,10 @@
  */
 package com.facebook.presto.sql.tree;
 
-import javax.annotation.concurrent.Immutable;
+import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.Immutable;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -82,6 +84,12 @@ public class Extract
     public <R, C> R accept(AstVisitor<R, C> visitor, C context)
     {
         return visitor.visitExtract(this, context);
+    }
+
+    @Override
+    public List<Node> getChildren()
+    {
+        return ImmutableList.of(expression);
     }
 
     @Override

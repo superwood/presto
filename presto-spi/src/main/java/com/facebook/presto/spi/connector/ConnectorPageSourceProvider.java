@@ -13,14 +13,45 @@
  */
 package com.facebook.presto.spi.connector;
 
+import com.facebook.presto.common.RuntimeStats;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplit;
+import com.facebook.presto.spi.ConnectorTableLayoutHandle;
+import com.facebook.presto.spi.SplitContext;
 
 import java.util.List;
 
 public interface ConnectorPageSourceProvider
 {
-    ConnectorPageSource createPageSource(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorSplit split, List<ColumnHandle> columns);
+    /**
+     * @param columns columns that should show up in the output page, in this order
+     */
+    @Deprecated
+    default ConnectorPageSource createPageSource(
+            ConnectorTransactionHandle transactionHandle,
+            ConnectorSession session,
+            ConnectorSplit split,
+            List<ColumnHandle> columns,
+            SplitContext splitContext)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * @param columns columns that should show up in the output page, in this order
+     * @param runtimeStats
+     */
+    default ConnectorPageSource createPageSource(
+            ConnectorTransactionHandle transactionHandle,
+            ConnectorSession session,
+            ConnectorSplit split,
+            ConnectorTableLayoutHandle layout,
+            List<ColumnHandle> columns,
+            SplitContext splitContext,
+            RuntimeStats runtimeStats)
+    {
+        return createPageSource(transactionHandle, session, split, columns, splitContext);
+    }
 }

@@ -45,12 +45,16 @@ Property Name                       Description
 ``redis.default-schema``            Default schema name for tables
 ``redis.nodes``                     Location of the Redis server
 ``redis.scan-count``                Redis parameter for scanning of the keys
-``redis.key-prefix-schema-table``   Redis keys have schema-name:table-name prefix
+``redis.key-prefix-schema-table``   Redis keys have schema-name:table-name: prefix
 ``redis.key-delimiter``             Delimiter separating schema_name and table_name if redis.key-prefix-schema-table is used
 ``redis.table-description-dir``     Directory containing table description files
 ``redis.hide-internal-columns``     Controls whether internal columns are part of the table schema or not
 ``redis.database-index``            Redis database index
 ``redis.password``                  Redis server password
+``redis.user``                      Redis server username
+``redis.tls.enabled``               Whether TLS security is enabled (defaults to ``false``)
+``redis.tls.truststore-path``       Path to the TLS certificate file
+``case-sensitive-name-matching``    Enable case sensitive identifier support for schema, table, and column names for the connector. When disabled, names are matched case-insensitively using lowercase normalization. Defaults to ``false``.
 =================================   ==============================================================
 
 ``redis.table-names``
@@ -96,9 +100,10 @@ This property is optional; the default is ``100``.
 ``redis.key-prefix-schema-table``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-If true, only keys prefixed with the ``schema-name:table-name`` are be scanned
+If true, only keys prefixed with the ``schema-name:table-name:`` are scanned
 for a table, and all other keys will be filtered out.  If false, all keys are
-scanned.
+scanned.  Note that if the schema-name is default schema, then the prefix to
+be scanned is just ``table-name:``.
 
 This property is optional; the default is ``false``.
 
@@ -129,19 +134,39 @@ show up in ``DESCRIBE <table-name>`` or ``SELECT *``.
 This property is optional; the default is ``true``.
 
 ``redis.database-index``
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^
 
 The Redis database to query.
 
 This property is optional; the default is ``0``.
 
 ``redis.password``
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^
 
 The password for password-protected Redis server.
 
 This property is optional; the default is ``null``.
 
+``redis.user``
+^^^^^^^^^^^^^^
+
+Redis server username.
+
+This property is required; there is no default.
+
+``redis.tls.enabled``
+^^^^^^^^^^^^^^^^^^^^^
+
+Enable or disable TLS security.
+
+This property is optional; default is ``false``.
+
+``redis.tls.truststore-path``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Path to the TLS certificate file.
+
+This property is required if ``redis.tls.enabled`` is set to ``true``.
 
 Internal Columns
 ----------------
@@ -172,7 +197,7 @@ will define new columns that can be further queried from Presto.
 A table definition file consists of a JSON definition for a table. The
 name of the file can be arbitrary but must end in ``.json``.
 
-.. code-block:: json
+.. code-block:: none
 
     {
         "tableName": ...,
@@ -204,7 +229,7 @@ Please refer to the `Kafka connector`_ page for the description of the ``dataFor
 
 In addition to the above Kafka types, the Redis connector supports ``hash`` type for the ``value`` field which represent data stored in the Redis hash.
 
-.. code-block:: json
+.. code-block:: none
 
     {
         "tableName": ...,

@@ -18,8 +18,7 @@ import com.facebook.presto.spi.SchemaTableName;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Joiner;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.Objects;
 
@@ -30,6 +29,8 @@ public final class JdbcTableHandle
 {
     private final String connectorId;
     private final SchemaTableName schemaTableName;
+
+    // catalog, schema and table names are reported by the remote database
     private final String catalogName;
     private final String schemaName;
     private final String tableName;
